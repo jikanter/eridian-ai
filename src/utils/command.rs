@@ -71,7 +71,7 @@ pub fn detect_shell() -> Shell {
         }
     };
     let shell_arg = match name {
-        "powershel" => "-Command",
+        "powershell" => "-Command",
         "cmd" => "/C",
         _ => "-c",
     };

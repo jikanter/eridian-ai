@@ -14,7 +14,7 @@ extern crate log;
 
 use crate::cli::Cli;
 use crate::client::{
-    call_chat_completions, call_chat_completions_streaming, list_models, ModelType,
+    call_chat_completions, call_chat_completions_streaming, call_react, list_models, ModelType,
 };
 use crate::config::{
     ensure_parent_exists, list_agents, load_env_file, macro_execute, Config, GlobalConfig, Input,
@@ -195,38 +195,18 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
 #[async_recursion::async_recursion]
 async fn start_directive(
     config: &GlobalConfig,
-    input: Input,
-    code_mode: bool,
+    mut input: Input,
+    _code_mode: bool,
     abort_signal: AbortSignal,
 ) -> Result<()> {
     let client = input.create_client()?;
-    let extract_code = !*IS_STDOUT_TERMINAL && code_mode;
     config.write().before_chat_completion(&input)?;
-    let (output, tool_results) = if !input.stream() || extract_code {
-        call_chat_completions(
-            &input,
-            true,
-            extract_code,
-            client.as_ref(),
-            abort_signal.clone(),
-        )
-        .await?
-    } else {
-        call_chat_completions_streaming(&input, client.as_ref(), abort_signal.clone()).await?
-    };
+    let (output, tool_results) =
+        call_react(&mut input, client.as_ref(), abort_signal.clone()).await?;
+
     config
         .write()
         .after_chat_completion(&input, &output, &tool_results)?;
-
-    if !tool_results.is_empty() {
-        start_directive(
-            config,
-            input.merge_tool_results(output, tool_results),
-            code_mode,
-            abort_signal,
-        )
-        .await?;
-    }
 
     config.write().exit_session()?;
     Ok(())
