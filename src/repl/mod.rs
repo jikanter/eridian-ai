@@ -6,7 +6,7 @@ use self::completer::ReplCompleter;
 use self::highlighter::ReplHighlighter;
 use self::prompt::ReplPrompt;
 
-use crate::client::{call_chat_completions, call_chat_completions_streaming};
+use crate::client::call_react;
 use crate::config::{
     macro_execute, AgentVariables, AssertState, Config, GlobalConfig, Input, LastMessage,
     StateFlags,
@@ -735,27 +735,14 @@ async fn ask(
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
-    let (output, tool_results) = if input.stream() {
-        call_chat_completions_streaming(&input, client.as_ref(), abort_signal.clone()).await?
-    } else {
-        call_chat_completions(&input, true, false, client.as_ref(), abort_signal.clone()).await?
-    };
+    let (output, tool_results) =
+        call_react(&mut input, client.as_ref(), abort_signal.clone()).await?;
     config
         .write()
         .after_chat_completion(&input, &output, &tool_results)?;
-    if !tool_results.is_empty() {
-        ask(
-            config,
-            abort_signal,
-            input.merge_tool_results(output, tool_results),
-            false,
-        )
-        .await
-    } else {
-        Config::maybe_autoname_session(config.clone());
-        Config::maybe_compress_session(config.clone());
-        Ok(())
-    }
+    Config::maybe_autoname_session(config.clone());
+    Config::maybe_compress_session(config.clone());
+    Ok(())
 }
 
 fn unknown_command() -> Result<()> {

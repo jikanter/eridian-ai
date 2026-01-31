@@ -403,6 +403,36 @@ pub async fn create_openai_compatible_client_config(
     Ok(Some((model, clients)))
 }
 
+const MAX_REACT_STEPS: usize = 10;
+
+pub async fn call_react(
+    input: &mut Input,
+    client: &dyn Client,
+    abort_signal: AbortSignal,
+) -> Result<(String, Vec<ToolResult>)> {
+    let mut total_text = String::new();
+    let mut step = 0;
+    loop {
+        let (text, tool_results) = if input.stream() {
+            call_chat_completions_streaming(input, client, abort_signal.clone()).await?
+        } else {
+            call_chat_completions(input, true, false, client, abort_signal.clone()).await?
+        };
+        if !total_text.is_empty() {
+            total_text.push('\n');
+        }
+        total_text.push_str(&text);
+        if tool_results.is_empty() {
+            return Ok((total_text, vec![]));
+        }
+        step += 1;
+        if step >= MAX_REACT_STEPS {
+            bail!("ReAct loop exceeded maximum steps ({MAX_REACT_STEPS})");
+        }
+        *input = input.clone().merge_tool_results(text, tool_results);
+    }
+}
+
 pub async fn call_chat_completions(
     input: &Input,
     print: bool,
