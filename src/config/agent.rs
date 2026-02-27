@@ -237,7 +237,7 @@ impl Agent {
         for (k, v) in self.variables() {
             output = output.replace(&format!("{{{{{k}}}}}"), v)
         }
-        interpolate_variables(&mut output);
+        interpolate_variables_with_model(&mut output, Some(&self.model));
         output
     }
 
