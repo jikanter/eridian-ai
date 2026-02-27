@@ -284,6 +284,7 @@ impl RoleLike for Role {
         if !self.model().id().is_empty() {
             self.model_id = Some(model.id().to_string());
         }
+        interpolate_variables_with_model(&mut self.prompt, Some(&model));
         self.model = model;
     }
 
