@@ -2,7 +2,7 @@
 name = "aichat"
 version = "0.30.0"
 edition = "2021"
-authors = ["sigoden <sigoden@gmail.com>"]
+authors = ["sigoden <sigoden@gmail.com>", "jikanter <jikanter@gmail.com>"]
 description = "All-in-one LLM CLI Tool"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/sigoden/aichat"
