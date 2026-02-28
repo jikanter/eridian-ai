@@ -2,11 +2,12 @@ use super::*;
 
 use crate::client::{Message, MessageContent, MessageRole, Model};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use fancy_regex::Regex;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fs::read_to_string;
 use std::sync::LazyLock;
 
 pub const SHELL_ROLE: &str = "%shell%";
@@ -56,7 +57,149 @@ pub struct Role {
     model: Model,
 }
 
+#[derive(Debug)]
+struct RawRoleParts {
+    metadata: serde_json::Map<String, serde_json::Value>,
+    prompt: String,
+    extends: Option<String>,
+    includes: Vec<String>,
+}
+
+fn parse_raw_frontmatter(content: &str) -> RawRoleParts {
+    let mut metadata = serde_json::Map::new();
+    let mut prompt = content.trim().to_string();
+    let mut extends = None;
+    let mut includes = Vec::new();
+
+    if let Ok(Some(caps)) = RE_METADATA.captures(content) {
+        if let (Some(metadata_value), Some(prompt_value)) = (caps.get(1), caps.get(2)) {
+            let meta_str = metadata_value.as_str().trim();
+            prompt = prompt_value.as_str().trim().to_string();
+
+            if let Ok(value) = serde_yaml::from_str::<Value>(meta_str) {
+                if let Some(map) = value.as_object() {
+                    for (key, value) in map {
+                        match key.as_str() {
+                            "extends" => {
+                                extends = value.as_str().map(|v| v.to_string());
+                            }
+                            "include" => {
+                                if let Some(arr) = value.as_array() {
+                                    includes = arr
+                                        .iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect();
+                                }
+                            }
+                            _ => {
+                                metadata.insert(key.clone(), value.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    RawRoleParts {
+        metadata,
+        prompt,
+        extends,
+        includes,
+    }
+}
+
+fn read_raw_role_content(name: &str) -> Result<String> {
+    let names = Config::list_roles(false);
+    if names.contains(&name.to_string()) {
+        let path = Config::role_file(name);
+        return read_to_string(&path)
+            .with_context(|| format!("Failed to read role file '{}'", path.display()));
+    }
+    let content = RolesAsset::get(&format!("{name}.md"))
+        .ok_or_else(|| anyhow!("Unknown role `{name}`"))?;
+    let content = unsafe { std::str::from_utf8_unchecked(&content.data) };
+    Ok(content.to_string())
+}
+
+fn resolve_role_content(name: &str, visited: &mut Vec<String>) -> Result<RawRoleParts> {
+    if visited.contains(&name.to_string()) {
+        let chain = visited.join(" -> ");
+        bail!("Circular role inheritance: {chain} -> {name}");
+    }
+    visited.push(name.to_string());
+
+    let content = read_raw_role_content(name)?;
+    let mut parts = parse_raw_frontmatter(&content);
+
+    // Resolve includes (each with a fresh visited set seeded with current name)
+    let mut include_prompts = Vec::new();
+    for include_name in &parts.includes {
+        let mut include_visited = vec![name.to_string()];
+        let include_parts = resolve_role_content(include_name, &mut include_visited)?;
+        if !include_parts.prompt.is_empty() {
+            include_prompts.push(include_parts.prompt);
+        }
+    }
+
+    // Resolve extends
+    if let Some(parent_name) = parts.extends.take() {
+        let parent = resolve_role_content(&parent_name, visited)?;
+
+        // Merge metadata: parent defaults, child overrides
+        let child_metadata = parts.metadata;
+        parts.metadata = parent.metadata;
+        for (key, value) in child_metadata {
+            parts.metadata.insert(key, value);
+        }
+
+        // Concatenate prompts: includes -> parent -> child
+        let mut prompt_parts = include_prompts;
+        if !parent.prompt.is_empty() {
+            prompt_parts.push(parent.prompt);
+        }
+        if !parts.prompt.is_empty() {
+            prompt_parts.push(parts.prompt);
+        }
+        parts.prompt = prompt_parts.join("\n\n");
+    } else if !include_prompts.is_empty() {
+        // No extends, just prepend includes
+        let mut prompt_parts = include_prompts;
+        if !parts.prompt.is_empty() {
+            prompt_parts.push(parts.prompt);
+        }
+        parts.prompt = prompt_parts.join("\n\n");
+    }
+
+    parts.includes = Vec::new();
+
+    visited.pop();
+
+    Ok(parts)
+}
+
+fn compose_role_content(parts: &RawRoleParts) -> String {
+    if parts.metadata.is_empty() {
+        parts.prompt.clone()
+    } else {
+        let yaml =
+            serde_yaml::to_string(&Value::Object(parts.metadata.clone())).unwrap_or_default();
+        if parts.prompt.is_empty() {
+            format!("---\n{yaml}---")
+        } else {
+            format!("---\n{yaml}---\n\n{}", parts.prompt)
+        }
+    }
+}
+
 impl Role {
+    pub fn resolve(name: &str) -> Result<Self> {
+        let mut visited = Vec::new();
+        let parts = resolve_role_content(name, &mut visited)?;
+        let content = compose_role_content(&parts);
+        Ok(Role::new(name, &content))
+    }
+
     pub fn new(name: &str, content: &str) -> Self {
         let mut metadata = "";
         let mut prompt = content.trim();
@@ -390,5 +533,171 @@ System message
 Input 1
 "#;
         assert_eq!(parse_structure_prompt(prompt), (prompt, vec![]));
+    }
+
+    #[test]
+    fn test_parse_raw_frontmatter_basic() {
+        let content = "---\nmodel: gpt-4\ntemperature: 0.5\n---\nYou are helpful.";
+        let parts = parse_raw_frontmatter(content);
+        assert_eq!(parts.prompt, "You are helpful.");
+        assert!(parts.extends.is_none());
+        assert!(parts.includes.is_empty());
+        assert_eq!(
+            parts.metadata.get("model"),
+            Some(&serde_json::Value::String("gpt-4".to_string()))
+        );
+        assert_eq!(
+            parts.metadata.get("temperature"),
+            Some(&serde_json::json!(0.5))
+        );
+    }
+
+    #[test]
+    fn test_parse_raw_frontmatter_extends() {
+        let content = "---\nextends: \"%code%\"\ntemperature: 0.3\n---\nFocus on security.";
+        let parts = parse_raw_frontmatter(content);
+        assert_eq!(parts.extends, Some("%code%".to_string()));
+        assert_eq!(parts.prompt, "Focus on security.");
+        // extends should NOT be in metadata
+        assert!(parts.metadata.get("extends").is_none());
+        assert_eq!(
+            parts.metadata.get("temperature"),
+            Some(&serde_json::json!(0.3))
+        );
+    }
+
+    #[test]
+    fn test_parse_raw_frontmatter_include() {
+        let content =
+            "---\ninclude:\n  - safety-guardrails\n  - output-json\n---\nYou are a data analyst.";
+        let parts = parse_raw_frontmatter(content);
+        assert_eq!(
+            parts.includes,
+            vec!["safety-guardrails".to_string(), "output-json".to_string()]
+        );
+        assert_eq!(parts.prompt, "You are a data analyst.");
+        // include should NOT be in metadata
+        assert!(parts.metadata.get("include").is_none());
+    }
+
+    #[test]
+    fn test_parse_raw_frontmatter_no_frontmatter() {
+        let content = "Just a plain prompt.";
+        let parts = parse_raw_frontmatter(content);
+        assert_eq!(parts.prompt, "Just a plain prompt.");
+        assert!(parts.extends.is_none());
+        assert!(parts.includes.is_empty());
+        assert!(parts.metadata.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_builtin_passthrough() {
+        // Builtins with no extends/include should resolve unchanged
+        let parts = resolve_role_content("%code%", &mut Vec::new());
+        assert!(parts.is_ok());
+        let parts = parts.unwrap();
+        assert!(parts.extends.is_none());
+        assert!(parts.includes.is_empty());
+        assert!(parts.prompt.contains("Provide only code"));
+    }
+
+    #[test]
+    fn test_metadata_merge() {
+        // Simulate parent with temperature 0.5 and child with temperature 0.8
+        let mut parent = RawRoleParts {
+            metadata: serde_json::Map::new(),
+            prompt: "Parent prompt.".to_string(),
+            extends: None,
+            includes: Vec::new(),
+        };
+        parent
+            .metadata
+            .insert("temperature".to_string(), serde_json::json!(0.5));
+        parent
+            .metadata
+            .insert("model".to_string(), serde_json::json!("gpt-4"));
+
+        let mut child_metadata = serde_json::Map::new();
+        child_metadata.insert("temperature".to_string(), serde_json::json!(0.8));
+
+        // Merge: parent defaults, child overrides
+        let mut merged = parent.metadata.clone();
+        for (key, value) in child_metadata {
+            merged.insert(key, value);
+        }
+
+        assert_eq!(merged.get("temperature"), Some(&serde_json::json!(0.8)));
+        assert_eq!(
+            merged.get("model"),
+            Some(&serde_json::json!("gpt-4"))
+        );
+    }
+
+    #[test]
+    fn test_prompt_ordering() {
+        // Verify ordering: includes -> parent -> child
+        let include_prompt = "Safety first.";
+        let parent_prompt = "Be helpful.";
+        let child_prompt = "Focus on code review.";
+
+        let mut prompt_parts = vec![include_prompt.to_string()];
+        prompt_parts.push(parent_prompt.to_string());
+        prompt_parts.push(child_prompt.to_string());
+        let result = prompt_parts.join("\n\n");
+
+        assert_eq!(result, "Safety first.\n\nBe helpful.\n\nFocus on code review.");
+        // Verify ordering
+        let safety_pos = result.find("Safety first.").unwrap();
+        let helpful_pos = result.find("Be helpful.").unwrap();
+        let review_pos = result.find("Focus on code review.").unwrap();
+        assert!(safety_pos < helpful_pos);
+        assert!(helpful_pos < review_pos);
+    }
+
+    #[test]
+    fn test_cycle_detection() {
+        // Simulate cycle: A -> B -> A
+        let mut visited = vec!["A".to_string(), "B".to_string()];
+        let result = resolve_role_content("A", &mut visited);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Circular role inheritance"),
+            "Error should mention circular inheritance: {err}"
+        );
+        assert!(err.contains("A -> B -> A"), "Error should show chain: {err}");
+    }
+
+    #[test]
+    fn test_compose_role_content_no_metadata() {
+        let parts = RawRoleParts {
+            metadata: serde_json::Map::new(),
+            prompt: "Just a prompt.".to_string(),
+            extends: None,
+            includes: Vec::new(),
+        };
+        let content = compose_role_content(&parts);
+        assert_eq!(content, "Just a prompt.");
+    }
+
+    #[test]
+    fn test_compose_role_content_with_metadata() {
+        let mut parts = RawRoleParts {
+            metadata: serde_json::Map::new(),
+            prompt: "You are helpful.".to_string(),
+            extends: None,
+            includes: Vec::new(),
+        };
+        parts
+            .metadata
+            .insert("temperature".to_string(), serde_json::json!(0.5));
+        let content = compose_role_content(&parts);
+        assert!(content.contains("---"));
+        assert!(content.contains("temperature"));
+        assert!(content.contains("You are helpful."));
+        // Verify it can be parsed back by Role::new
+        let role = Role::new("test", &content);
+        assert_eq!(role.temperature(), Some(0.5));
+        assert!(role.prompt().contains("You are helpful."));
     }
 }

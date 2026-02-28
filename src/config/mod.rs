@@ -915,14 +915,7 @@ impl Config {
     }
 
     pub fn retrieve_role(&self, name: &str) -> Result<Role> {
-        let names = Self::list_roles(false);
-        let mut role = if names.contains(&name.to_string()) {
-            let path = Self::role_file(name);
-            let content = read_to_string(&path)?;
-            Role::new(name, &content)
-        } else {
-            Role::builtin(name)?
-        };
+        let mut role = Role::resolve(name)?;
         let current_model = self.current_model().clone();
         match role.model_id() {
             Some(model_id) => {
@@ -1034,8 +1027,7 @@ impl Config {
             .collect();
         let names = Self::list_roles(false);
         for name in names {
-            if let Ok(content) = read_to_string(Self::role_file(&name)) {
-                let role = Role::new(&name, &content);
+            if let Ok(role) = Role::resolve(&name) {
                 roles.insert(name, role);
             }
         }
