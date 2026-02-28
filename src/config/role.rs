@@ -52,6 +52,10 @@ pub struct Role {
     top_p: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     use_tools: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_schema: Option<serde_json::Value>,
 
     #[serde(skip)]
     model: Model,
@@ -225,6 +229,8 @@ impl Role {
                             "temperature" => role.temperature = value.as_f64(),
                             "top_p" => role.top_p = value.as_f64(),
                             "use_tools" => role.use_tools = value.as_str().map(|v| v.to_string()),
+                            "input_schema" => role.input_schema = Some(value.clone()),
+                            "output_schema" => role.output_schema = Some(value.clone()),
                             _ => (),
                         }
                     }
@@ -258,25 +264,34 @@ impl Role {
     }
 
     pub fn export(&self) -> String {
-        let mut metadata = vec![];
+        let mut meta = serde_json::Map::new();
         if let Some(model) = self.model_id() {
-            metadata.push(format!("model: {model}"));
+            meta.insert("model".into(), Value::String(model.to_string()));
         }
         if let Some(temperature) = self.temperature() {
-            metadata.push(format!("temperature: {temperature}"));
+            meta.insert("temperature".into(), serde_json::json!(temperature));
         }
         if let Some(top_p) = self.top_p() {
-            metadata.push(format!("top_p: {top_p}"));
+            meta.insert("top_p".into(), serde_json::json!(top_p));
         }
         if let Some(use_tools) = self.use_tools() {
-            metadata.push(format!("use_tools: {use_tools}"));
+            meta.insert("use_tools".into(), Value::String(use_tools.to_string()));
         }
-        if metadata.is_empty() {
+        if let Some(s) = &self.input_schema {
+            meta.insert("input_schema".into(), s.clone());
+        }
+        if let Some(s) = &self.output_schema {
+            meta.insert("output_schema".into(), s.clone());
+        }
+        if meta.is_empty() {
             format!("{}\n", self.prompt)
-        } else if self.prompt.is_empty() {
-            format!("---\n{}\n---\n", metadata.join("\n"))
         } else {
-            format!("---\n{}\n---\n\n{}\n", metadata.join("\n"), self.prompt)
+            let yaml = serde_yaml::to_string(&Value::Object(meta)).unwrap_or_default();
+            if self.prompt.is_empty() {
+                format!("---\n{yaml}---\n")
+            } else {
+                format!("---\n{yaml}---\n\n{}\n", self.prompt)
+            }
         }
     }
 
@@ -350,6 +365,18 @@ impl Role {
         self.prompt.is_empty()
     }
 
+    pub fn input_schema(&self) -> Option<&Value> {
+        self.input_schema.as_ref()
+    }
+
+    pub fn output_schema(&self) -> Option<&Value> {
+        self.output_schema.as_ref()
+    }
+
+    pub fn has_output_schema(&self) -> bool {
+        self.output_schema.is_some()
+    }
+
     pub fn is_embedded_prompt(&self) -> bool {
         self.prompt.contains(INPUT_PLACEHOLDER)
     }
@@ -375,10 +402,23 @@ impl Role {
         } else {
             let mut messages = vec![];
             let (system, cases) = parse_structure_prompt(&self.prompt);
-            if !system.is_empty() {
+            let system_text = if let Some(schema) = &self.output_schema {
+                let schema_str = serde_json::to_string_pretty(schema).unwrap_or_default();
+                let suffix = format!(
+                    "\n\nYou MUST respond with valid JSON conforming to this JSON Schema:\n```json\n{schema_str}\n```\nDo not include any text outside the JSON object."
+                );
+                if system.is_empty() {
+                    suffix.trim_start().to_string()
+                } else {
+                    format!("{system}{suffix}")
+                }
+            } else {
+                system.to_string()
+            };
+            if !system_text.is_empty() {
                 messages.push(Message::new(
                     MessageRole::System,
-                    MessageContent::Text(system.to_string()),
+                    MessageContent::Text(system_text),
                 ));
             }
             if !cases.is_empty() {
@@ -442,6 +482,21 @@ impl RoleLike for Role {
     fn set_use_tools(&mut self, value: Option<String>) {
         self.use_tools = value;
     }
+}
+
+pub fn validate_schema(context: &str, schema: &Value, text: &str) -> Result<()> {
+    let data: Value = serde_json::from_str(text.trim())
+        .with_context(|| format!("Schema {context} validation failed: not valid JSON"))?;
+    let validator = jsonschema::validator_for(schema)
+        .map_err(|e| anyhow!("Invalid {context} schema: {e}"))?;
+    let errors: Vec<String> = validator
+        .iter_errors(&data)
+        .map(|e| format!("  - {e}"))
+        .collect();
+    if !errors.is_empty() {
+        bail!("Schema {context} validation failed:\n{}", errors.join("\n"));
+    }
+    Ok(())
 }
 
 fn parse_structure_prompt(prompt: &str) -> (&str, Vec<(&str, &str)>) {
@@ -678,6 +733,81 @@ Input 1
         };
         let content = compose_role_content(&parts);
         assert_eq!(content, "Just a prompt.");
+    }
+
+    #[test]
+    fn test_role_with_schemas() {
+        let content = r#"---
+model: openai:gpt-4o
+output_schema:
+  type: object
+  properties:
+    entities:
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          type:
+            type: string
+        required: [name, type]
+  required: [entities]
+---
+Extract all named entities."#;
+        let role = Role::new("test-schema", content);
+        assert!(role.output_schema().is_some());
+        assert!(role.has_output_schema());
+        assert!(role.input_schema().is_none());
+        let schema = role.output_schema().unwrap();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["entities"].is_object());
+    }
+
+    #[test]
+    fn test_validate_schema_success() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            },
+            "required": ["name"]
+        });
+        let result = validate_schema("output", &schema, r#"{"name": "Alice"}"#);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_schema_failure() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" }
+            },
+            "required": ["name"]
+        });
+        let result = validate_schema("output", &schema, r#"{"age": 30}"#);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Schema output validation failed"));
+    }
+
+    #[test]
+    fn test_validate_schema_not_json() {
+        let schema = serde_json::json!({ "type": "object" });
+        let result = validate_schema("input", &schema, "not json at all");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("not valid JSON"));
+    }
+
+    #[test]
+    fn test_role_without_schemas() {
+        let content = "---\nmodel: gpt-4\n---\nYou are helpful.";
+        let role = Role::new("no-schema", content);
+        assert!(role.input_schema().is_none());
+        assert!(role.output_schema().is_none());
+        assert!(!role.has_output_schema());
     }
 
     #[test]

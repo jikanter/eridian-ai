@@ -17,8 +17,8 @@ use crate::client::{
     call_chat_completions, call_chat_completions_streaming, call_react, list_models, ModelType,
 };
 use crate::config::{
-    ensure_parent_exists, list_agents, load_env_file, macro_execute, Config, GlobalConfig, Input,
-    WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
+    ensure_parent_exists, list_agents, load_env_file, macro_execute, validate_schema, Config,
+    GlobalConfig, Input, WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
 };
 use crate::render::render_error;
 use crate::repl::Repl;
@@ -199,10 +199,25 @@ async fn start_directive(
     _code_mode: bool,
     abort_signal: AbortSignal,
 ) -> Result<()> {
+    if let Some(schema) = input.role().input_schema() {
+        validate_schema("input", schema, &input.text())?;
+    }
+
+    let has_output_schema = input.role().output_schema().cloned();
+
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
     let (output, tool_results) =
         call_react(&mut input, client.as_ref(), abort_signal.clone()).await?;
+
+    if let Some(ref schema) = has_output_schema {
+        validate_schema("output", schema, &output)?;
+        print!("{output}");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        if !output.ends_with('\n') {
+            println!();
+        }
+    }
 
     config
         .write()

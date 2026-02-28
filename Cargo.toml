@@ -66,6 +66,7 @@ os_info = { version = "3.8.2", default-features = false }
 bm25 = { version = "2.0.1", features = ["parallelism"] }
 which = "8.0.0"
 fuzzy-matcher = "0.3.7"
+jsonschema = { version = "0.28", default-features = false }
 terminal-colorsaurus = "0.4.8"
 duct = "1.0.0"
 

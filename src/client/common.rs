@@ -412,11 +412,12 @@ pub async fn call_react(
 ) -> Result<(String, Vec<ToolResult>)> {
     let mut total_text = String::new();
     let mut step = 0;
+    let print_output = !input.role().has_output_schema();
     loop {
         let (text, tool_results) = if input.stream() {
             call_chat_completions_streaming(input, client, abort_signal.clone()).await?
         } else {
-            call_chat_completions(input, true, false, client, abort_signal.clone()).await?
+            call_chat_completions(input, print_output, false, client, abort_signal.clone()).await?
         };
         if !total_text.is_empty() {
             total_text.push('\n');

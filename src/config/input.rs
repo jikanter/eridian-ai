@@ -164,6 +164,9 @@ impl Input {
     }
 
     pub fn stream(&self) -> bool {
+        if self.role().has_output_schema() {
+            return false;
+        }
         self.config.read().stream && !self.role().model().no_stream()
     }
 
