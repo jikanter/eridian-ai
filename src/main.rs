@@ -54,8 +54,9 @@ async fn main() -> Result<()> {
     setup_logger(working_mode.is_serve())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
     if let Err(err) = run(config, cli, text).await {
+        let code = classify_error(&err);
         render_error(err);
-        std::process::exit(1);
+        std::process::exit(code.as_i32());
     }
     Ok(())
 }
