@@ -1,4 +1,4 @@
-# Briefing: 
+# Briefing: AIChat - A multi-target command-line for AI models.
 
 **Stack:** Rust 1.93.1, Cargo, Bash, argc
 
@@ -14,4 +14,5 @@
 - Incompatibility with the existing tooling for aichat (argc)
 - Reduced compatibility with llm-functions
 - Introduction of new programming languages
+- Significant increase in number of dependencies
 
