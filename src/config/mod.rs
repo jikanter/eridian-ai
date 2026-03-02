@@ -154,6 +154,8 @@ pub struct Config {
     pub info_flag: bool,
     #[serde(skip)]
     pub agent_variables: Option<AgentVariables>,
+    #[serde(skip)]
+    pub role_variables: Option<IndexMap<String, String>>,
 
     #[serde(skip)]
     pub model: Model,
@@ -226,6 +228,7 @@ impl Default for Config {
             macro_flag: false,
             info_flag: false,
             agent_variables: None,
+            role_variables: None,
 
             model: Default::default(),
             functions: Default::default(),
@@ -916,6 +919,11 @@ impl Config {
 
     pub fn retrieve_role(&self, name: &str) -> Result<Role> {
         let mut role = Role::resolve(name)?;
+        // Apply role variables before model interpolation
+        if !role.variables().is_empty() {
+            let resolved = self.resolve_role_variables(&role)?;
+            role.apply_variables(&resolved);
+        }
         let current_model = self.current_model().clone();
         match role.model_id() {
             Some(model_id) => {
@@ -937,6 +945,27 @@ impl Config {
             }
         }
         Ok(role)
+    }
+
+    fn resolve_role_variables(&self, role: &Role) -> Result<IndexMap<String, String>> {
+        let mut output = IndexMap::new();
+        for var in role.variables() {
+            let value = self
+                .role_variables
+                .as_ref()
+                .and_then(|vars| vars.get(&var.name))
+                .cloned()
+                .or_else(|| var.default.clone())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Role variable '{}' is required but not provided (use -v {}=VALUE)",
+                        var.name,
+                        var.name
+                    )
+                })?;
+            output.insert(var.name.clone(), value);
+        }
+        Ok(output)
     }
 
     pub fn new_role(&mut self, name: &str) -> Result<()> {

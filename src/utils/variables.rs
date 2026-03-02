@@ -6,6 +6,9 @@ use std::sync::LazyLock;
 
 pub static RE_VARIABLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{(\w+)\}\}").unwrap());
 
+static RE_ENV_VARIABLE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\{\$([A-Za-z_][A-Za-z0-9_]*)\}\}").unwrap());
+
 static RE_CONDITIONAL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?s)\{\{#(if|unless)\s+(\w+)(?:\s*(>=|<=|!=|==|>|<)\s*(\w+))?\s*\}\}(.*?)\{\{/(if|unless)\}\}")
         .unwrap()
@@ -70,6 +73,17 @@ pub fn interpolate_variables_with_model(text: &mut String, model: Option<&Model>
         .replace_all(text, |caps: &Captures<'_>| {
             let key = &caps[1];
             resolve_variable(key, &model_vars)
+        })
+        .to_string();
+
+    // Phase 3: Replace environment variable references {{$VAR}}
+    *text = RE_ENV_VARIABLE
+        .replace_all(text, |caps: &Captures<'_>| {
+            let var_name = &caps[1];
+            match std::env::var(var_name) {
+                Ok(value) => value,
+                Err(_) => caps[0].to_string(),
+            }
         })
         .to_string();
 }
@@ -318,5 +332,76 @@ mod tests {
         assert!(text.contains("gpt-4o supports vision."));
         assert!(text.contains("Done."));
         assert!(!text.contains("{{"));
+    }
+
+    #[test]
+    fn test_env_variable_substitution() {
+        std::env::set_var("AICHAT_TEST_VAR_1", "hello_world");
+        let mut text = "Value: {{$AICHAT_TEST_VAR_1}}".to_string();
+        interpolate_variables_with_model(&mut text, None);
+        assert_eq!(text, "Value: hello_world");
+        std::env::remove_var("AICHAT_TEST_VAR_1");
+    }
+
+    #[test]
+    fn test_env_variable_unset() {
+        std::env::remove_var("AICHAT_TEST_UNSET_VAR");
+        let mut text = "Value: {{$AICHAT_TEST_UNSET_VAR}}".to_string();
+        interpolate_variables_with_model(&mut text, None);
+        assert_eq!(text, "Value: {{$AICHAT_TEST_UNSET_VAR}}");
+    }
+
+    #[test]
+    fn test_env_variable_mixed_with_system_vars() {
+        std::env::set_var("AICHAT_TEST_VAR_2", "env_value");
+        let mut text = "OS: {{__os__}}, Env: {{$AICHAT_TEST_VAR_2}}".to_string();
+        interpolate_variables_with_model(&mut text, None);
+        assert!(!text.contains("{{__os__}}"));
+        assert!(text.contains("env_value"));
+        assert!(!text.contains("{{$AICHAT_TEST_VAR_2}}"));
+        std::env::remove_var("AICHAT_TEST_VAR_2");
+    }
+
+    #[test]
+    fn test_env_variable_with_model_vars() {
+        std::env::set_var("AICHAT_TEST_VAR_3", "from_env");
+        let model = make_test_model();
+        let mut text = "Model: {{__model_name__}}, Env: {{$AICHAT_TEST_VAR_3}}".to_string();
+        interpolate_variables_with_model(&mut text, Some(&model));
+        assert!(text.contains("gpt-4o"));
+        assert!(text.contains("from_env"));
+        std::env::remove_var("AICHAT_TEST_VAR_3");
+    }
+
+    #[test]
+    fn test_env_variable_does_not_match_regular_vars() {
+        let mut text = "Regular: {{foo}}, Env: {{$BAR}}".to_string();
+        std::env::remove_var("BAR");
+        interpolate_variables_with_model(&mut text, None);
+        // {{foo}} gets processed by RE_VARIABLE (unresolved, stays as {{foo}})
+        assert!(text.contains("{{foo}}"));
+        // {{$BAR}} stays unresolved since BAR is not set
+        assert!(text.contains("{{$BAR}}"));
+    }
+
+    #[test]
+    fn test_env_variable_ordering() {
+        std::env::set_var("AICHAT_TEST_VAR_4", "env_resolved");
+        let model = make_test_model();
+        let mut text = concat!(
+            "{{#if __supports_vision__}}\n",
+            "Vision model: {{__model_name__}}\n",
+            "{{/if}}\n",
+            "Deploy to: {{$AICHAT_TEST_VAR_4}}"
+        ).to_string();
+        interpolate_variables_with_model(&mut text, Some(&model));
+        // Phase 1: conditional resolved
+        assert!(text.contains("Vision model:"));
+        // Phase 2: model var resolved
+        assert!(text.contains("gpt-4o"));
+        // Phase 3: env var resolved
+        assert!(text.contains("env_resolved"));
+        assert!(!text.contains("{{"));
+        std::env::remove_var("AICHAT_TEST_VAR_4");
     }
 }

@@ -30,6 +30,9 @@ pub struct Cli {
     /// Set agent variables
     #[clap(long, value_names = ["NAME", "VALUE"], num_args = 2)]
     pub agent_variable: Vec<String>,
+    /// Set role variable (key=value)
+    #[clap(short = 'v', long = "variable", value_name = "KEY=VALUE")]
+    pub variable: Vec<String>,
     /// Start a RAG
     #[clap(long)]
     pub rag: Option<String>,

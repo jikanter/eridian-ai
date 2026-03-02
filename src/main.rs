@@ -118,6 +118,17 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         config.write().agent_variables = None;
         ret?;
     } else {
+        if !cli.variable.is_empty() {
+            config.write().role_variables = Some(
+                cli.variable
+                    .iter()
+                    .filter_map(|v| {
+                        v.split_once('=')
+                            .map(|(k, val)| (k.to_string(), val.to_string()))
+                    })
+                    .collect(),
+            );
+        }
         if let Some(prompt) = &cli.prompt {
             config.write().use_prompt(prompt)?;
         } else if let Some(name) = &cli.role {
@@ -135,6 +146,7 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         if let Some(rag) = &cli.rag {
             Config::use_rag(&config, Some(rag), abort_signal.clone()).await?;
         }
+        config.write().role_variables = None;
     }
     if cli.list_sessions {
         let sessions = config.read().list_sessions().join("\n");

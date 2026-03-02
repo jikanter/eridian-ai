@@ -4,6 +4,7 @@ use crate::client::{Message, MessageContent, MessageRole, Model};
 
 use anyhow::{Context, Result};
 use fancy_regex::Regex;
+use indexmap::IndexMap;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,6 +60,15 @@ pub struct Role {
 
     #[serde(skip)]
     model: Model,
+    #[serde(skip)]
+    variables: Vec<RoleVariable>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RoleVariable {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
 }
 
 #[derive(Debug)]
@@ -67,6 +77,7 @@ struct RawRoleParts {
     prompt: String,
     extends: Option<String>,
     includes: Vec<String>,
+    variables: Vec<RoleVariable>,
 }
 
 fn parse_raw_frontmatter(content: &str) -> RawRoleParts {
@@ -74,6 +85,7 @@ fn parse_raw_frontmatter(content: &str) -> RawRoleParts {
     let mut prompt = content.trim().to_string();
     let mut extends = None;
     let mut includes = Vec::new();
+    let mut variables = Vec::new();
 
     if let Ok(Some(caps)) = RE_METADATA.captures(content) {
         if let (Some(metadata_value), Some(prompt_value)) = (caps.get(1), caps.get(2)) {
@@ -95,6 +107,14 @@ fn parse_raw_frontmatter(content: &str) -> RawRoleParts {
                                         .collect();
                                 }
                             }
+                            "variables" => {
+                                if let Some(arr) = value.as_array() {
+                                    variables = arr
+                                        .iter()
+                                        .filter_map(|v| serde_json::from_value::<RoleVariable>(v.clone()).ok())
+                                        .collect();
+                                }
+                            }
                             _ => {
                                 metadata.insert(key.clone(), value.clone());
                             }
@@ -110,6 +130,7 @@ fn parse_raw_frontmatter(content: &str) -> RawRoleParts {
         prompt,
         extends,
         includes,
+        variables,
     }
 }
 
@@ -157,6 +178,19 @@ fn resolve_role_content(name: &str, visited: &mut Vec<String>) -> Result<RawRole
             parts.metadata.insert(key, value);
         }
 
+        // Merge variables: parent first, child overrides defaults by name
+        let child_variables = parts.variables;
+        parts.variables = parent.variables;
+        for cv in child_variables {
+            if let Some(existing) = parts.variables.iter_mut().find(|v| v.name == cv.name) {
+                if cv.default.is_some() {
+                    existing.default = cv.default;
+                }
+            } else {
+                parts.variables.push(cv);
+            }
+        }
+
         // Concatenate prompts: includes -> parent -> child
         let mut prompt_parts = include_prompts;
         if !parent.prompt.is_empty() {
@@ -200,8 +234,11 @@ impl Role {
     pub fn resolve(name: &str) -> Result<Self> {
         let mut visited = Vec::new();
         let parts = resolve_role_content(name, &mut visited)?;
+        let variables = parts.variables.clone();
         let content = compose_role_content(&parts);
-        Ok(Role::new(name, &content))
+        let mut role = Role::new(name, &content);
+        role.variables = variables;
+        Ok(role)
     }
 
     pub fn new(name: &str, content: &str) -> Self {
@@ -231,6 +268,14 @@ impl Role {
                             "use_tools" => role.use_tools = value.as_str().map(|v| v.to_string()),
                             "input_schema" => role.input_schema = Some(value.clone()),
                             "output_schema" => role.output_schema = Some(value.clone()),
+                            "variables" => {
+                                if let Some(arr) = value.as_array() {
+                                    role.variables = arr
+                                        .iter()
+                                        .filter_map(|v| serde_json::from_value::<RoleVariable>(v.clone()).ok())
+                                        .collect();
+                                }
+                            }
                             _ => (),
                         }
                     }
@@ -375,6 +420,16 @@ impl Role {
 
     pub fn has_output_schema(&self) -> bool {
         self.output_schema.is_some()
+    }
+
+    pub fn variables(&self) -> &[RoleVariable] {
+        &self.variables
+    }
+
+    pub fn apply_variables(&mut self, vars: &IndexMap<String, String>) {
+        for (k, v) in vars {
+            self.prompt = self.prompt.replace(&format!("{{{{{k}}}}}"), v);
+        }
     }
 
     pub fn is_embedded_prompt(&self) -> bool {
@@ -664,6 +719,7 @@ Input 1
             prompt: "Parent prompt.".to_string(),
             extends: None,
             includes: Vec::new(),
+            variables: Vec::new(),
         };
         parent
             .metadata
@@ -730,6 +786,7 @@ Input 1
             prompt: "Just a prompt.".to_string(),
             extends: None,
             includes: Vec::new(),
+            variables: Vec::new(),
         };
         let content = compose_role_content(&parts);
         assert_eq!(content, "Just a prompt.");
@@ -817,6 +874,7 @@ Extract all named entities."#;
             prompt: "You are helpful.".to_string(),
             extends: None,
             includes: Vec::new(),
+            variables: Vec::new(),
         };
         parts
             .metadata
@@ -829,5 +887,75 @@ Extract all named entities."#;
         let role = Role::new("test", &content);
         assert_eq!(role.temperature(), Some(0.5));
         assert!(role.prompt().contains("You are helpful."));
+    }
+
+    #[test]
+    fn test_parse_role_variables_from_frontmatter() {
+        let content = r#"---
+variables:
+  - name: language
+  - name: tone
+    default: formal
+---
+Translate to {{language}} in a {{tone}} tone."#;
+        let parts = parse_raw_frontmatter(content);
+        assert_eq!(parts.variables.len(), 2);
+        assert_eq!(parts.variables[0].name, "language");
+        assert!(parts.variables[0].default.is_none());
+        assert_eq!(parts.variables[1].name, "tone");
+        assert_eq!(parts.variables[1].default, Some("formal".to_string()));
+        // variables should NOT be in metadata
+        assert!(parts.metadata.get("variables").is_none());
+    }
+
+    #[test]
+    fn test_role_variable_with_default() {
+        let content = r#"---
+variables:
+  - name: lang
+    default: english
+---
+Respond in {{lang}}."#;
+        let role = Role::new("test-default", content);
+        assert_eq!(role.variables().len(), 1);
+        assert_eq!(role.variables()[0].default, Some("english".to_string()));
+    }
+
+    #[test]
+    fn test_role_variable_apply() {
+        let content = r#"---
+variables:
+  - name: language
+---
+Translate to {{language}}."#;
+        let mut role = Role::new("test-apply", content);
+        let mut vars = IndexMap::new();
+        vars.insert("language".to_string(), "french".to_string());
+        role.apply_variables(&vars);
+        assert_eq!(role.prompt(), "Translate to french.");
+    }
+
+    #[test]
+    fn test_role_variables_empty() {
+        let content = "---\nmodel: gpt-4\n---\nYou are helpful.";
+        let role = Role::new("no-vars", content);
+        assert!(role.variables().is_empty());
+    }
+
+    #[test]
+    fn test_role_variables_coexist_with_system_vars() {
+        let content = r#"---
+variables:
+  - name: lang
+---
+OS is {{__os__}}, translate to {{lang}}."#;
+        let mut role = Role::new("test-coexist", content);
+        let mut vars = IndexMap::new();
+        vars.insert("lang".to_string(), "spanish".to_string());
+        role.apply_variables(&vars);
+        // Role variable replaced, system var still present (resolved later by set_model)
+        assert!(role.prompt().contains("translate to spanish"));
+        // __os__ is resolved during Role::new via interpolate_variables
+        assert!(!role.prompt().contains("{{__os__}}"));
     }
 }
