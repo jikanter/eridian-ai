@@ -9,6 +9,7 @@
 
 ### Soft (Preferred)
 - This tool should function using the "one tool per job" unix ethos
+- This tool should use the 'showboat' command to demo its work. Use the output of `showboat --help` to understand how to implement.
 
 ### Ask First (Requires approval)
 - Incompatibility with the existing tooling for aichat (argc)

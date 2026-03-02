@@ -1,9 +1,5 @@
 # Important Instructions
 
-- `%%` 
-
-
-
 ### `%%`
 
 #### Functionality
