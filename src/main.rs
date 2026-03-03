@@ -2,6 +2,8 @@ mod cli;
 mod client;
 mod config;
 mod function;
+mod mcp;
+mod pipe;
 mod rag;
 mod render;
 mod repl;
@@ -35,8 +37,11 @@ use std::{env, process, sync::Arc};
 async fn main() -> Result<()> {
     load_env_file()?;
     let cli = Cli::parse();
-    let text = cli.text()?;
-    let working_mode = if cli.serve.is_some() {
+    // MCP mode uses stdin as transport — don't consume it here
+    let text = if cli.mcp { None } else { cli.text()? };
+    let working_mode = if cli.mcp {
+        WorkingMode::Mcp
+    } else if cli.serve.is_some() {
         WorkingMode::Serve
     } else if text.is_none() && cli.file.is_empty() {
         WorkingMode::Repl
@@ -51,7 +56,7 @@ async fn main() -> Result<()> {
         || cli.list_rags
         || cli.list_macros
         || cli.list_sessions;
-    setup_logger(working_mode.is_serve())?;
+    setup_logger(working_mode.is_serve() || working_mode.is_mcp())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
     if let Err(err) = run(config, cli, text).await {
         let code = classify_error(&err);
@@ -62,6 +67,14 @@ async fn main() -> Result<()> {
 }
 
 async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()> {
+    if cli.mcp {
+        return mcp::run(config).await;
+    }
+
+    if cli.pipe {
+        return pipe::run(config, cli, text).await;
+    }
+
     let abort_signal = create_abort_signal();
 
     if cli.sync_models {

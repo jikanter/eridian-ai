@@ -1637,7 +1637,7 @@ impl Config {
         let prelude = match self.working_mode {
             WorkingMode::Repl => self.repl_prelude.as_ref(),
             WorkingMode::Cmd => self.cmd_prelude.as_ref(),
-            WorkingMode::Serve => return Ok(()),
+            WorkingMode::Serve | WorkingMode::Mcp => return Ok(()),
         };
         let prelude = match prelude {
             Some(v) => {
@@ -2464,6 +2464,7 @@ pub enum WorkingMode {
     Cmd,
     Repl,
     Serve,
+    Mcp,
 }
 
 impl WorkingMode {
@@ -2475,6 +2476,9 @@ impl WorkingMode {
     }
     pub fn is_serve(&self) -> bool {
         *self == WorkingMode::Serve
+    }
+    pub fn is_mcp(&self) -> bool {
+        *self == WorkingMode::Mcp
     }
 }
 

@@ -45,6 +45,18 @@ pub struct Cli {
     /// Serve the LLM API and WebAPP
     #[clap(long, value_name = "ADDRESS")]
     pub serve: Option<Option<String>>,
+    /// Run as an MCP stdio server
+    #[clap(long)]
+    pub mcp: bool,
+    /// Run a multi-stage pipeline
+    #[clap(long)]
+    pub pipe: bool,
+    /// Pipeline stages (role or role@model)
+    #[clap(long = "stage", value_name = "ROLE[@MODEL]", requires = "pipe")]
+    pub stages: Vec<String>,
+    /// Pipeline definition file
+    #[clap(long = "pipe-def", value_name = "FILE", requires = "pipe")]
+    pub pipe_def: Option<String>,
     /// Execute commands in natural language
     #[clap(short = 'e', long)]
     pub execute: bool,
