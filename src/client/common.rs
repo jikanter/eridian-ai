@@ -412,7 +412,9 @@ pub async fn call_react(
 ) -> Result<(String, Vec<ToolResult>)> {
     let mut total_text = String::new();
     let mut step = 0;
-    let print_output = !input.role().has_output_schema();
+    let has_structured_output = input.role().has_output_schema()
+        || input.has_structured_output_format();
+    let print_output = !has_structured_output;
     loop {
         let (text, tool_results) = if input.stream() {
             call_chat_completions_streaming(input, client, abort_signal.clone()).await?

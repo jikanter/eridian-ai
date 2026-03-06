@@ -163,8 +163,16 @@ impl Input {
         self.text = text;
     }
 
+    pub fn has_structured_output_format(&self) -> bool {
+        self.config
+            .read()
+            .output_format
+            .map(|f| f.is_structured())
+            .unwrap_or(false)
+    }
+
     pub fn stream(&self) -> bool {
-        if self.role().has_output_schema() {
+        if self.role().has_output_schema() || self.has_structured_output_format() {
             return false;
         }
         self.config.read().stream && !self.role().model().no_stream()
@@ -258,6 +266,25 @@ impl Input {
         } else {
             self.role().build_messages(self)
         };
+        // Inject output format suffix into system message when -o is set
+        // and the role doesn't already have an output_schema (which takes precedence)
+        if let Some(fmt) = &self.config.read().output_format {
+            if !self.role().has_output_schema() {
+                if let Some(suffix) = fmt.system_prompt_suffix() {
+                    let injected = inject_system_suffix(&mut messages, suffix);
+                    if !injected {
+                        // No system message exists; prepend one
+                        messages.insert(
+                            0,
+                            Message::new(
+                                MessageRole::System,
+                                MessageContent::Text(suffix.trim_start().to_string()),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
         if let Some(tool_calls) = &self.tool_calls {
             messages.push(Message::new(
                 MessageRole::Assistant,
@@ -521,6 +548,18 @@ fn is_image(path: &str) -> bool {
     get_patch_extension(path)
         .map(|v| IMAGE_EXTS.contains(&v.as_str()))
         .unwrap_or_default()
+}
+
+fn inject_system_suffix(messages: &mut [Message], suffix: &str) -> bool {
+    for msg in messages.iter_mut() {
+        if msg.role == MessageRole::System {
+            if let MessageContent::Text(ref mut text) = msg.content {
+                text.push_str(suffix);
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn read_media_to_data_url(image_path: &str) -> Result<String> {

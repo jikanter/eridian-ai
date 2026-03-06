@@ -149,6 +149,8 @@ pub struct Config {
     pub clients: Vec<ClientConfig>,
 
     #[serde(skip)]
+    pub output_format: Option<crate::cli::OutputFormat>,
+    #[serde(skip)]
     pub macro_flag: bool,
     #[serde(skip)]
     pub info_flag: bool,
@@ -225,6 +227,7 @@ impl Default for Config {
 
             clients: vec![],
 
+            output_format: None,
             macro_flag: false,
             info_flag: false,
             agent_variables: None,

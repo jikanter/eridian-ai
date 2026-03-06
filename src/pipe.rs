@@ -105,9 +105,18 @@ async fn run_stage(
     }
 
     if is_last && !input.stream() {
-        print!("{output}");
+        let final_output = if let Some(fmt) = config.read().output_format {
+            if fmt.is_structured() {
+                fmt.clean_output(&output)?
+            } else {
+                output.clone()
+            }
+        } else {
+            output.clone()
+        };
+        print!("{final_output}");
         std::io::Write::flush(&mut std::io::stdout())?;
-        if !output.ends_with('\n') {
+        if !final_output.ends_with('\n') {
             println!();
         }
     }

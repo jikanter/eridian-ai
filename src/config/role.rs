@@ -58,6 +58,13 @@ pub struct Role {
     #[serde(skip_serializing_if = "Option::is_none")]
     output_schema: Option<serde_json::Value>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extends: Option<String>,
+    #[serde(
+        rename(serialize = "include", deserialize = "include"),
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    include: Vec<String>,
     #[serde(skip)]
     model: Model,
     #[serde(skip)]
@@ -168,7 +175,7 @@ fn resolve_role_content(name: &str, visited: &mut Vec<String>) -> Result<RawRole
     }
 
     // Resolve extends
-    if let Some(parent_name) = parts.extends.take() {
+    if let Some(parent_name) = parts.extends.clone() {
         let parent = resolve_role_content(&parent_name, visited)?;
 
         // Merge metadata: parent defaults, child overrides
@@ -209,7 +216,7 @@ fn resolve_role_content(name: &str, visited: &mut Vec<String>) -> Result<RawRole
         parts.prompt = prompt_parts.join("\n\n");
     }
 
-    parts.includes = Vec::new();
+    // parts.includes = Vec::new();
 
     visited.pop();
 
@@ -217,11 +224,17 @@ fn resolve_role_content(name: &str, visited: &mut Vec<String>) -> Result<RawRole
 }
 
 fn compose_role_content(parts: &RawRoleParts) -> String {
-    if parts.metadata.is_empty() {
+    let mut metadata = parts.metadata.clone();
+    if let Some(extends) = &parts.extends {
+        metadata.insert("extends".to_string(), serde_json::json!(extends));
+    }
+    if !parts.includes.is_empty() {
+        metadata.insert("include".to_string(), serde_json::json!(parts.includes));
+    }
+    if metadata.is_empty() {
         parts.prompt.clone()
     } else {
-        let yaml =
-            serde_yaml::to_string(&Value::Object(parts.metadata.clone())).unwrap_or_default();
+        let yaml = serde_yaml::to_string(&Value::Object(metadata)).unwrap_or_default();
         if parts.prompt.is_empty() {
             format!("---\n{yaml}---")
         } else {
@@ -255,6 +268,8 @@ impl Role {
         let mut role = Self {
             name: name.to_string(),
             prompt,
+            extends: None,
+            include: Vec::new(),
             ..Default::default()
         };
         if !metadata.is_empty() {
@@ -268,11 +283,22 @@ impl Role {
                             "use_tools" => role.use_tools = value.as_str().map(|v| v.to_string()),
                             "input_schema" => role.input_schema = Some(value.clone()),
                             "output_schema" => role.output_schema = Some(value.clone()),
+                            "extends" => role.extends = value.as_str().map(|v| v.to_string()),
+                            "include" => {
+                                if let Some(arr) = value.as_array() {
+                                    role.include = arr
+                                        .iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect();
+                                }
+                            }
                             "variables" => {
                                 if let Some(arr) = value.as_array() {
                                     role.variables = arr
                                         .iter()
-                                        .filter_map(|v| serde_json::from_value::<RoleVariable>(v.clone()).ok())
+                                        .filter_map(|v| {
+                                            serde_json::from_value::<RoleVariable>(v.clone()).ok()
+                                        })
                                         .collect();
                                 }
                             }
@@ -327,6 +353,12 @@ impl Role {
         }
         if let Some(s) = &self.output_schema {
             meta.insert("output_schema".into(), s.clone());
+        }
+        if let Some(extends) = &self.extends {
+            meta.insert("extends".into(), serde_json::json!(extends));
+        }
+        if !self.include.is_empty() {
+            meta.insert("include".into(), serde_json::json!(self.include));
         }
         if meta.is_empty() {
             format!("{}\n", self.prompt)
@@ -438,12 +470,15 @@ impl Role {
 
     pub fn echo_messages(&self, input: &Input) -> String {
         let input_markdown = input.render();
-        if self.is_empty_prompt() {
+        if self.is_embedded_prompt() {
+            let mut role = self.clone();
+            role.prompt = role.prompt.replace(INPUT_PLACEHOLDER, &input_markdown);
+            role.export().trim().to_string()
+        } else if self.is_empty_prompt() && self.export().trim().is_empty() {
             input_markdown
-        } else if self.is_embedded_prompt() {
-            self.prompt.replace(INPUT_PLACEHOLDER, &input_markdown)
         } else {
-            format!("{}\n\n{}", self.prompt, input_markdown)
+            let role_export = self.export();
+            format!("{}\n\n{}", role_export.trim(), input_markdown)
         }
     }
 

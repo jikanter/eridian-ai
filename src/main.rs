@@ -172,6 +172,12 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
     if cli.no_stream {
         config.write().stream = false;
     }
+    if let Some(fmt) = cli.output_format {
+        config.write().output_format = Some(fmt);
+        if fmt.is_structured() {
+            config.write().stream = false;
+        }
+    }
     if cli.empty_session {
         config.write().empty_session()?;
     }
@@ -230,18 +236,40 @@ async fn start_directive(
     }
 
     let has_output_schema = input.role().output_schema().cloned();
+    let output_format = config.read().output_format;
+    let is_dry_run = config.read().dry_run;
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
     let (output, tool_results) =
         call_react(&mut input, client.as_ref(), abort_signal.clone()).await?;
 
-    if let Some(ref schema) = has_output_schema {
+    // Structured output needs explicit printing since call_react suppresses it.
+    // In dry_run mode, just print the echoed prompt — no validation.
+    if is_dry_run {
+        if has_output_schema.is_some() || output_format.map(|f| f.is_structured()).unwrap_or(false)
+        {
+            print!("{output}");
+            std::io::Write::flush(&mut std::io::stdout())?;
+            if !output.ends_with('\n') {
+                println!();
+            }
+        }
+    } else if let Some(ref schema) = has_output_schema {
         validate_schema("output", schema, &output)?;
         print!("{output}");
         std::io::Write::flush(&mut std::io::stdout())?;
         if !output.ends_with('\n') {
             println!();
+        }
+    } else if let Some(fmt) = output_format {
+        if fmt.is_structured() {
+            let cleaned = fmt.clean_output(&output)?;
+            print!("{cleaned}");
+            std::io::Write::flush(&mut std::io::stdout())?;
+            if !cleaned.ends_with('\n') {
+                println!();
+            }
         }
     }
 

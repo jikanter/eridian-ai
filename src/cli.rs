@@ -1,7 +1,84 @@
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use is_terminal::IsTerminal;
 use std::io::{stdin, Read};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OutputFormat {
+    /// Raw JSON (validated)
+    Json,
+    /// One JSON object per line
+    Jsonl,
+    /// Tab-separated values
+    Tsv,
+    /// Comma-separated values
+    Csv,
+    /// Plain text (default behavior, explicit)
+    Text,
+}
+
+impl OutputFormat {
+    pub fn system_prompt_suffix(&self) -> Option<&'static str> {
+        match self {
+            OutputFormat::Json => Some(
+                "\n\nYou MUST respond with valid JSON only. No markdown, no code fences, no explanation — just the raw JSON object or array. Do not include any text outside the JSON."
+            ),
+            OutputFormat::Jsonl => Some(
+                "\n\nYou MUST respond with JSON Lines (one valid JSON object per line). No markdown, no code fences, no explanation. Each line must be a complete, valid JSON object."
+            ),
+            OutputFormat::Tsv => Some(
+                "\n\nYou MUST respond with tab-separated values only. No headers, no markdown, no code fences, no explanation. Each row on its own line, fields separated by tab characters."
+            ),
+            OutputFormat::Csv => Some(
+                "\n\nYou MUST respond with comma-separated values only. No headers, no markdown, no code fences, no explanation. Each row on its own line. Quote fields that contain commas."
+            ),
+            OutputFormat::Text => None,
+        }
+    }
+
+    pub fn is_structured(&self) -> bool {
+        !matches!(self, OutputFormat::Text)
+    }
+
+    pub fn clean_output(&self, output: &str) -> Result<String> {
+        let cleaned = strip_code_fences(output);
+        match self {
+            OutputFormat::Json => {
+                // Validate it's parseable JSON
+                serde_json::from_str::<serde_json::Value>(&cleaned)
+                    .context("Model output is not valid JSON")?;
+                Ok(cleaned)
+            }
+            OutputFormat::Jsonl => {
+                // Validate each non-empty line is valid JSON
+                for (i, line) in cleaned.lines().enumerate() {
+                    if !line.trim().is_empty() {
+                        serde_json::from_str::<serde_json::Value>(line)
+                            .with_context(|| format!("Line {} is not valid JSON", i + 1))?;
+                    }
+                }
+                Ok(cleaned)
+            }
+            OutputFormat::Tsv | OutputFormat::Csv | OutputFormat::Text => Ok(cleaned),
+        }
+    }
+}
+
+fn strip_code_fences(text: &str) -> String {
+    let trimmed = text.trim();
+    // Strip ```json ... ``` or ``` ... ``` wrapping
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        // Skip the optional language tag on the first line
+        let rest = match rest.find('\n') {
+            Some(pos) => &rest[pos + 1..],
+            None => return String::new(),
+        };
+        if let Some(inner) = rest.strip_suffix("```") {
+            return inner.trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -57,6 +134,9 @@ pub struct Cli {
     /// Pipeline definition file
     #[clap(long = "pipe-def", value_name = "FILE", requires = "pipe")]
     pub pipe_def: Option<String>,
+    /// Output format (json, jsonl, tsv, csv, text)
+    #[clap(short = 'o', long = "output", value_name = "FORMAT")]
+    pub output_format: Option<OutputFormat>,
     /// Execute commands in natural language
     #[clap(short = 'e', long)]
     pub execute: bool,
@@ -140,5 +220,89 @@ impl Cli {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strip_code_fences_json() {
+        let input = "```json\n{\"key\": \"value\"}\n```";
+        assert_eq!(strip_code_fences(input), r#"{"key": "value"}"#);
+    }
+
+    #[test]
+    fn test_strip_code_fences_bare() {
+        let input = "```\nsome text\n```";
+        assert_eq!(strip_code_fences(input), "some text");
+    }
+
+    #[test]
+    fn test_strip_code_fences_no_fences() {
+        let input = r#"{"key": "value"}"#;
+        assert_eq!(strip_code_fences(input), input);
+    }
+
+    #[test]
+    fn test_strip_code_fences_with_whitespace() {
+        let input = "  ```json\n{\"a\": 1}\n```  ";
+        assert_eq!(strip_code_fences(input), r#"{"a": 1}"#);
+    }
+
+    #[test]
+    fn test_clean_output_valid_json() {
+        let fmt = OutputFormat::Json;
+        let result = fmt.clean_output("```json\n{\"a\": 1}\n```");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), r#"{"a": 1}"#);
+    }
+
+    #[test]
+    fn test_clean_output_invalid_json() {
+        let fmt = OutputFormat::Json;
+        let result = fmt.clean_output("not json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_clean_output_jsonl() {
+        let fmt = OutputFormat::Jsonl;
+        let result = fmt.clean_output("{\"a\":1}\n{\"b\":2}");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_clean_output_jsonl_invalid_line() {
+        let fmt = OutputFormat::Jsonl;
+        let result = fmt.clean_output("{\"a\":1}\nnot json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_clean_output_tsv_passthrough() {
+        let fmt = OutputFormat::Tsv;
+        let result = fmt.clean_output("a\tb\nc\td");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "a\tb\nc\td");
+    }
+
+    #[test]
+    fn test_is_structured() {
+        assert!(OutputFormat::Json.is_structured());
+        assert!(OutputFormat::Jsonl.is_structured());
+        assert!(OutputFormat::Tsv.is_structured());
+        assert!(OutputFormat::Csv.is_structured());
+        assert!(!OutputFormat::Text.is_structured());
+    }
+
+    #[test]
+    fn test_system_prompt_suffix() {
+        assert!(OutputFormat::Json.system_prompt_suffix().is_some());
+        assert!(OutputFormat::Jsonl.system_prompt_suffix().is_some());
+        assert!(OutputFormat::Tsv.system_prompt_suffix().is_some());
+        assert!(OutputFormat::Csv.system_prompt_suffix().is_some());
+        assert!(OutputFormat::Text.system_prompt_suffix().is_none());
     }
 }

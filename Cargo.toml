@@ -69,6 +69,7 @@ fuzzy-matcher = "0.3.7"
 jsonschema = { version = "0.28", default-features = false }
 terminal-colorsaurus = "0.4.8"
 duct = "1.0.0"
+rmcp = { version = "0.17", features = ["server", "transport-io"] }
 
 [dependencies.reqwest]
 version = "0.12.0"
