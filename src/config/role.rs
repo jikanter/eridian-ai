@@ -199,14 +199,31 @@ fn resolve_role_content(name: &str, visited: &mut Vec<String>) -> Result<RawRole
         }
 
         // Concatenate prompts: includes -> parent -> child
+        // De-hoist __INPUT__ from parent when child extends it:
+        // - If child re-declares __INPUT__, strip the parent's (child wins)
+        // - If child doesn't, relocate parent's __INPUT__ to end of combined prompt
+        let parent_has_input = parent.prompt.contains(INPUT_PLACEHOLDER);
+        let child_has_input = parts.prompt.contains(INPUT_PLACEHOLDER);
+
         let mut prompt_parts = include_prompts;
         if !parent.prompt.is_empty() {
-            prompt_parts.push(parent.prompt);
+            let parent_prompt = if parent_has_input {
+                parent.prompt.replace(INPUT_PLACEHOLDER, "").trim().to_string()
+            } else {
+                parent.prompt
+            };
+            if !parent_prompt.is_empty() {
+                prompt_parts.push(parent_prompt);
+            }
         }
         if !parts.prompt.is_empty() {
             prompt_parts.push(parts.prompt);
         }
-        parts.prompt = prompt_parts.join("\n\n");
+        let mut combined = prompt_parts.join("\n\n");
+        if parent_has_input && !child_has_input {
+            combined = format!("{combined}\n\n{INPUT_PLACEHOLDER}");
+        }
+        parts.prompt = combined;
     } else if !include_prompts.is_empty() {
         // No extends, just prepend includes
         let mut prompt_parts = include_prompts;
@@ -992,5 +1009,71 @@ OS is {{__os__}}, translate to {{lang}}."#;
         assert!(role.prompt().contains("translate to spanish"));
         // __os__ is resolved during Role::new via interpolate_variables
         assert!(!role.prompt().contains("{{__os__}}"));
+    }
+
+    #[test]
+    fn test_dehoist_input_placeholder_auto_tail() {
+        // When parent has __INPUT__ and child doesn't, __INPUT__ moves to end
+        let parent = RawRoleParts {
+            metadata: serde_json::Map::new(),
+            prompt: "Parent instructions.\n\nMy request is: __INPUT__".to_string(),
+            extends: None,
+            includes: Vec::new(),
+            variables: Vec::new(),
+        };
+        let child_prompt = "Child refinement.".to_string();
+
+        // Simulate the de-hoist logic from resolve_role_content
+        let parent_has_input = parent.prompt.contains(INPUT_PLACEHOLDER);
+        let child_has_input = child_prompt.contains(INPUT_PLACEHOLDER);
+
+        let mut prompt_parts = Vec::new();
+        let parent_cleaned = parent.prompt.replace(INPUT_PLACEHOLDER, "").trim().to_string();
+        prompt_parts.push(parent_cleaned);
+        prompt_parts.push(child_prompt);
+        let mut combined = prompt_parts.join("\n\n");
+        if parent_has_input && !child_has_input {
+            combined = format!("{combined}\n\n{INPUT_PLACEHOLDER}");
+        }
+
+        // __INPUT__ should be at the very end, after child instructions
+        assert!(combined.ends_with(INPUT_PLACEHOLDER));
+        let input_pos = combined.rfind(INPUT_PLACEHOLDER).unwrap();
+        let child_pos = combined.find("Child refinement.").unwrap();
+        assert!(child_pos < input_pos, "Child instructions should precede __INPUT__");
+        // Only one __INPUT__ in the result
+        assert_eq!(combined.matches(INPUT_PLACEHOLDER).count(), 1);
+    }
+
+    #[test]
+    fn test_dehoist_input_placeholder_child_wins() {
+        // When child re-declares __INPUT__, parent's is stripped and child's is used
+        let parent = RawRoleParts {
+            metadata: serde_json::Map::new(),
+            prompt: "Parent instructions.\n\nMy request is: __INPUT__".to_string(),
+            extends: None,
+            includes: Vec::new(),
+            variables: Vec::new(),
+        };
+        let child_prompt = "Child instructions.\n\nRewrite this: __INPUT__".to_string();
+
+        let parent_has_input = parent.prompt.contains(INPUT_PLACEHOLDER);
+        let child_has_input = child_prompt.contains(INPUT_PLACEHOLDER);
+
+        let mut prompt_parts = Vec::new();
+        let parent_cleaned = parent.prompt.replace(INPUT_PLACEHOLDER, "").trim().to_string();
+        prompt_parts.push(parent_cleaned);
+        prompt_parts.push(child_prompt);
+        let combined = prompt_parts.join("\n\n");
+
+        // Should NOT auto-append since child has __INPUT__
+        assert!(child_has_input);
+        assert!(parent_has_input);
+        // Only one __INPUT__ in the result (the child's)
+        assert_eq!(combined.matches(INPUT_PLACEHOLDER).count(), 1);
+        // __INPUT__ should appear after "Rewrite this:"
+        assert!(combined.contains("Rewrite this: __INPUT__"));
+        // Parent's "My request is:" should NOT have __INPUT__
+        assert!(!combined.contains("My request is: __INPUT__"));
     }
 }
