@@ -125,6 +125,21 @@ pub struct Cli {
     /// Run as an MCP stdio server
     #[clap(long)]
     pub mcp: bool,
+    /// Connect to an external MCP server (stdio transport)
+    #[clap(long = "mcp-server", value_name = "COMMAND")]
+    pub mcp_server: Option<String>,
+    /// List tools from a connected MCP server
+    #[clap(long = "list-tools")]
+    pub list_tools: bool,
+    /// Show schema for a specific MCP tool
+    #[clap(long = "tool-info", value_name = "TOOL")]
+    pub tool_info: Option<String>,
+    /// Call an MCP tool directly
+    #[clap(long, value_name = "TOOL")]
+    pub call: Option<String>,
+    /// JSON arguments for --call
+    #[clap(long = "json", value_name = "JSON", requires = "call")]
+    pub call_json: Option<String>,
     /// Run a multi-stage pipeline
     #[clap(long)]
     pub pipe: bool,

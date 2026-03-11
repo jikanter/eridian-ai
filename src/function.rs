@@ -18,7 +18,7 @@ const PATH_SEP: &str = ";";
 #[cfg(not(windows))]
 const PATH_SEP: &str = ":";
 
-pub fn eval_tool_calls(config: &GlobalConfig, mut calls: Vec<ToolCall>) -> Result<Vec<ToolResult>> {
+pub async fn eval_tool_calls(config: &GlobalConfig, mut calls: Vec<ToolCall>) -> Result<Vec<ToolResult>> {
     let mut output = vec![];
     if calls.is_empty() {
         return Ok(output);
@@ -29,7 +29,20 @@ pub fn eval_tool_calls(config: &GlobalConfig, mut calls: Vec<ToolCall>) -> Resul
     }
     let mut is_all_null = true;
     for call in calls {
-        let mut result = call.eval(config)?;
+        let is_mcp = call.name.contains(':') && {
+            let cfg = config.read();
+            cfg.mcp_pool.is_some()
+                && cfg
+                    .functions
+                    .find(&call.name)
+                    .map(|d| matches!(d.source, ToolSource::Mcp { .. }))
+                    .unwrap_or(false)
+        };
+        let mut result = if is_mcp {
+            crate::mcp_client::eval_mcp_tool(config, &call.name, call.arguments.clone()).await?
+        } else {
+            call.eval(config)?
+        };
         if result.is_null() {
             result = json!("DONE");
         } else {
@@ -93,6 +106,19 @@ impl Functions {
     pub fn is_empty(&self) -> bool {
         self.declarations.is_empty()
     }
+
+    pub fn add_declarations(&mut self, decls: Vec<FunctionDeclaration>) {
+        self.declarations.extend(decls);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub enum ToolSource {
+    #[default]
+    Local,
+    Mcp {
+        server: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +128,8 @@ pub struct FunctionDeclaration {
     pub parameters: JsonSchema,
     #[serde(skip_serializing, default)]
     pub agent: bool,
+    #[serde(skip, default)]
+    pub source: ToolSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

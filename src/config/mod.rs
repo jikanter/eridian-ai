@@ -15,6 +15,7 @@ use crate::client::{
     Model, ModelType, ProviderModels, OPENAI_COMPATIBLE_PROVIDERS,
 };
 use crate::function::{FunctionDeclaration, Functions, ToolResult};
+use crate::mcp_client::McpConnectionPool;
 use crate::rag::Rag;
 use crate::render::{MarkdownRender, RenderOptions};
 use crate::repl::{run_repl_command, split_args_text};
@@ -96,6 +97,15 @@ const RIGHT_PROMPT: &str = "{color.purple}{?session {?consume_tokens {consume_to
 
 static EDITOR: OnceLock<Option<String>> = OnceLock::new();
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct McpServerConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -148,6 +158,9 @@ pub struct Config {
 
     pub clients: Vec<ClientConfig>,
 
+    #[serde(default)]
+    pub mcp_servers: IndexMap<String, McpServerConfig>,
+
     #[serde(skip)]
     pub output_format: Option<crate::cli::OutputFormat>,
     #[serde(skip)]
@@ -176,6 +189,8 @@ pub struct Config {
     pub rag: Option<Arc<Rag>>,
     #[serde(skip)]
     pub agent: Option<Agent>,
+    #[serde(skip)]
+    pub mcp_pool: Option<Arc<McpConnectionPool>>,
 }
 
 impl Default for Config {
@@ -226,6 +241,7 @@ impl Default for Config {
             sync_models_url: None,
 
             clients: vec![],
+            mcp_servers: Default::default(),
 
             output_format: None,
             macro_flag: false,
@@ -242,6 +258,7 @@ impl Default for Config {
             session: None,
             rag: None,
             agent: None,
+            mcp_pool: None,
         }
     }
 }
@@ -289,6 +306,23 @@ impl Config {
         if !info_flag {
             ret?;
         }
+
+        // Initialize MCP connection pool and load tool declarations from configured servers
+        if !config.mcp_servers.is_empty() && !info_flag {
+            let pool = McpConnectionPool::new(config.mcp_servers.clone());
+            match pool.all_tool_declarations().await {
+                Ok(decls) => {
+                    if !decls.is_empty() {
+                        config.functions.add_declarations(decls);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to load MCP server tools: {e}");
+                }
+            }
+            config.mcp_pool = Some(Arc::new(pool));
+        }
+
         Ok(config)
     }
 
@@ -1690,12 +1724,30 @@ impl Config {
                     for item in use_tools.split(',') {
                         let item = item.trim();
                         if let Some(values) = self.mapping_tools.get(item) {
+                            // Expand mapping_tools value, supporting wildcards like "github:*"
+                            for v in values.split(',') {
+                                let v = v.trim();
+                                if v.ends_with(":*") {
+                                    let prefix = &v[..v.len() - 1]; // "github:"
+                                    tool_names.extend(
+                                        declaration_names
+                                            .iter()
+                                            .filter(|n| n.starts_with(prefix))
+                                            .cloned(),
+                                    );
+                                } else if declaration_names.contains(v) {
+                                    tool_names.insert(v.to_string());
+                                }
+                            }
+                        } else if item.ends_with(":*") {
+                            // Direct wildcard in use_tools, e.g. "github:*"
+                            let prefix = &item[..item.len() - 1];
                             tool_names.extend(
-                                values
-                                    .split(',')
-                                    .map(|v| v.to_string())
-                                    .filter(|v| declaration_names.contains(v)),
-                            )
+                                declaration_names
+                                    .iter()
+                                    .filter(|n| n.starts_with(prefix))
+                                    .cloned(),
+                            );
                         } else if declaration_names.contains(item) {
                             tool_names.insert(item.to_string());
                         }

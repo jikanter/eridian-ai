@@ -74,16 +74,16 @@ cargo test test_parse_raw_frontmatter -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 4 tests
 test config::role::tests::test_parse_raw_frontmatter_no_frontmatter ... ok
-test config::role::tests::test_parse_raw_frontmatter_basic ... ok
-test config::role::tests::test_parse_raw_frontmatter_extends ... ok
 test config::role::tests::test_parse_raw_frontmatter_include ... ok
+test config::role::tests::test_parse_raw_frontmatter_extends ... ok
+test config::role::tests::test_parse_raw_frontmatter_basic ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.02s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 89 filtered out; finished in 0.00s
 
 ```
 
@@ -96,13 +96,13 @@ cargo test test_metadata_merge -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test config::role::tests::test_metadata_merge ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.00s
 
 ```
 
@@ -116,12 +116,12 @@ cargo test test_prompt_ordering -- --nocapture 2>&1
 
 ```output
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test config::role::tests::test_prompt_ordering ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.00s
 
 ```
 
@@ -135,12 +135,12 @@ cargo test test_cycle_detection -- --nocapture 2>&1
 
 ```output
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test config::role::tests::test_cycle_detection ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.00s
 
 ```
 
@@ -154,12 +154,12 @@ cargo test test_resolve_builtin_passthrough -- --nocapture 2>&1
 
 ```output
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test config::role::tests::test_resolve_builtin_passthrough ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.00s
 
 ```
 
@@ -173,13 +173,13 @@ cargo test test_compose_role_content -- --nocapture 2>&1
 
 ```output
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 2 tests
 test config::role::tests::test_compose_role_content_no_metadata ... ok
 test config::role::tests::test_compose_role_content_with_metadata ... ok
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 0.01s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.01s
 
 ```
 
@@ -192,8 +192,8 @@ grep -n 'Role::resolve' src/config/mod.rs
 ```
 
 ```output
-918:        let mut role = Role::resolve(name)?;
-1030:            if let Ok(role) = Role::resolve(&name) {
+958:        let mut role = Role::resolve(name)?;
+1096:            if let Ok(role) = Role::resolve(&name) {
 ```
 
 The config layer now calls `Role::resolve()` instead of reading role files directly. Both `retrieve_role()` (single role lookup) and the role listing loop go through the composition pipeline. The old `Role::builtin()` and raw `read_to_string()` paths are replaced.

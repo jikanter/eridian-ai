@@ -72,15 +72,16 @@ cargo test test_validate_schema -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+   Compiling aichat v0.31.0-mcp (/Volumes/ExternalData/admin/Developer/Projects/aichat/.claude/worktrees/phase-3)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.76s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 3 tests
 test config::role::tests::test_validate_schema_not_json ... ok
 test config::role::tests::test_validate_schema_success ... ok
 test config::role::tests::test_validate_schema_failure ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.02s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.03s
 
 ```
 
@@ -95,21 +96,21 @@ cargo test test_role_with_schemas -- --nocapture 2>&1 && cargo test test_role_wi
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test config::role::tests::test_role_with_schemas ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test config::role::tests::test_role_without_schemas ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
 ```
 

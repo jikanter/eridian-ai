@@ -3,6 +3,7 @@ mod client;
 mod config;
 mod function;
 mod mcp;
+mod mcp_client;
 mod pipe;
 mod rag;
 mod render;
@@ -43,6 +44,8 @@ async fn main() -> Result<()> {
         WorkingMode::Mcp
     } else if cli.serve.is_some() {
         WorkingMode::Serve
+    } else if cli.mcp_server.is_some() {
+        WorkingMode::Cmd
     } else if text.is_none() && cli.file.is_empty() {
         WorkingMode::Repl
     } else {
@@ -55,7 +58,8 @@ async fn main() -> Result<()> {
         || cli.list_agents
         || cli.list_rags
         || cli.list_macros
-        || cli.list_sessions;
+        || cli.list_sessions
+        || cli.list_tools;
     setup_logger(working_mode.is_serve() || working_mode.is_mcp())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
     if let Err(err) = run(config, cli, text).await {
@@ -69,6 +73,10 @@ async fn main() -> Result<()> {
 async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()> {
     if cli.mcp {
         return mcp::run(config).await;
+    }
+
+    if let Some(ref server_cmd) = cli.mcp_server {
+        return mcp_client::run_mcp_client_command(&cli, server_cmd).await;
     }
 
     if cli.pipe {
@@ -106,6 +114,45 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
     if cli.list_macros {
         let macros = Config::list_macros().join("\n");
         println!("{macros}");
+        return Ok(());
+    }
+    if cli.list_tools {
+        // --list-tools without --mcp-server: list tools from config-based MCP servers
+        let cfg = config.read();
+        let decls: Vec<_> = cfg
+            .functions
+            .declarations()
+            .iter()
+            .filter(|d| matches!(d.source, crate::function::ToolSource::Mcp { .. }))
+            .collect();
+        if decls.is_empty() {
+            println!("No MCP tools configured.");
+        } else {
+            match cli.output_format {
+                Some(crate::cli::OutputFormat::Json) => {
+                    let json: Vec<serde_json::Value> = decls
+                        .iter()
+                        .map(|d| {
+                            serde_json::json!({
+                                "name": d.name,
+                                "description": d.description,
+                                "parameters": d.parameters,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json).unwrap_or_default());
+                }
+                _ => {
+                    for d in &decls {
+                        if d.description.is_empty() {
+                            println!("{}", d.name);
+                        } else {
+                            println!("{} - {}", d.name, d.description);
+                        }
+                    }
+                }
+            }
+        }
         return Ok(());
     }
 

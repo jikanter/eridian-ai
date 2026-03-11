@@ -86,13 +86,13 @@ cargo test test_model_variables_resolve -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_model_variables_resolve ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.03s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
 ```
 
@@ -101,13 +101,13 @@ cargo test test_model_variables_without_model -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.15s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_model_variables_without_model ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
 ```
 
@@ -120,13 +120,13 @@ cargo test test_conditional_if_truthy -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_conditional_if_truthy ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
 ```
 
@@ -135,13 +135,13 @@ cargo test test_conditional_if_falsy -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_conditional_if_falsy ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
 ```
 
@@ -150,14 +150,14 @@ cargo test test_conditional_unless -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 2 tests
 test utils::variables::tests::test_conditional_unless_truthy_hides ... ok
 test utils::variables::tests::test_conditional_unless ... ok
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 50 filtered out; finished in 0.01s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 91 filtered out; finished in 0.01s
 
 ```
 
@@ -170,15 +170,15 @@ cargo test test_numeric_comparison -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 3 tests
 test utils::variables::tests::test_numeric_comparison_fails ... ok
-test utils::variables::tests::test_numeric_comparison_gte ... ok
 test utils::variables::tests::test_numeric_comparison_lt ... ok
+test utils::variables::tests::test_numeric_comparison_gte ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 49 filtered out; finished in 0.01s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.01s
 
 ```
 
@@ -192,20 +192,20 @@ cargo test test_string_equality -- --nocapture 2>&1 && cargo test test_string_in
 
 ```output
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_string_equality ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_string_inequality ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
 ```
 
@@ -214,21 +214,21 @@ cargo test test_mismatched_tags -- --nocapture 2>&1 && cargo test test_unresolve
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_mismatched_tags_pass_through ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_unresolved_var_in_conditional_passes_through ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
 ```
 
@@ -241,29 +241,29 @@ cargo test test_system_vars_still_work -- --nocapture 2>&1 && cargo test test_mi
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_system_vars_still_work ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_mixed_system_and_model_vars ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test utils::variables::tests::test_combined_conditionals_and_vars ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 51 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
 
 ```
 
@@ -277,27 +277,33 @@ cargo test utils::variables -- --nocapture 2>&1
 
 ```output
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-b1ef0eac464604f1)
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
-running 16 tests
-test utils::variables::tests::test_numeric_comparison_fails ... ok
-test utils::variables::tests::test_conditional_unless ... ok
-test utils::variables::tests::test_mismatched_tags_pass_through ... ok
-test utils::variables::tests::test_conditional_if_falsy ... ok
-test utils::variables::tests::test_model_variables_without_model ... ok
-test utils::variables::tests::test_mixed_system_and_model_vars ... ok
-test utils::variables::tests::test_model_variables_resolve ... ok
-test utils::variables::tests::test_conditional_if_truthy ... ok
-test utils::variables::tests::test_combined_conditionals_and_vars ... ok
+running 22 tests
+test utils::variables::tests::test_env_variable_does_not_match_regular_vars ... ok
 test utils::variables::tests::test_conditional_unless_truthy_hides ... ok
-test utils::variables::tests::test_string_equality ... ok
-test utils::variables::tests::test_system_vars_still_work ... ok
+test utils::variables::tests::test_conditional_unless ... ok
+test utils::variables::tests::test_env_variable_substitution ... ok
+test utils::variables::tests::test_conditional_if_falsy ... ok
+test utils::variables::tests::test_env_variable_mixed_with_system_vars ... ok
+test utils::variables::tests::test_env_variable_unset ... ok
+test utils::variables::tests::test_combined_conditionals_and_vars ... ok
+test utils::variables::tests::test_conditional_if_truthy ... ok
+test utils::variables::tests::test_env_variable_ordering ... ok
+test utils::variables::tests::test_env_variable_with_model_vars ... ok
+test utils::variables::tests::test_mixed_system_and_model_vars ... ok
 test utils::variables::tests::test_unresolved_var_in_conditional_passes_through ... ok
+test utils::variables::tests::test_model_variables_without_model ... ok
+test utils::variables::tests::test_model_variables_resolve ... ok
+test utils::variables::tests::test_system_vars_still_work ... ok
+test utils::variables::tests::test_mismatched_tags_pass_through ... ok
+test utils::variables::tests::test_string_equality ... ok
 test utils::variables::tests::test_numeric_comparison_lt ... ok
-test utils::variables::tests::test_string_inequality ... ok
+test utils::variables::tests::test_numeric_comparison_fails ... ok
 test utils::variables::tests::test_numeric_comparison_gte ... ok
+test utils::variables::tests::test_string_inequality ... ok
 
-test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 36 filtered out; finished in 0.02s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 71 filtered out; finished in 0.02s
 
 ```
 

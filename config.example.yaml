@@ -85,6 +85,18 @@ save_shell_history: true                    # Whether to save shell execution co
 # URL to sync model changes from, e.g., https://cdn.jsdelivr.net/gh/sigoden/aichat@main/models.yaml
 sync_models_url: https://raw.githubusercontent.com/sigoden/aichat/refs/heads/main/models.yaml
 
+# ---- mcp servers ----
+# Connect to external MCP servers. Tools are namespaced by server name (e.g., github:create_issue).
+# mcp_servers:
+#   github:
+#     command: npx
+#     args: ["@modelcontextprotocol/server-github"]
+#     env:
+#       GITHUB_TOKEN: "${GITHUB_TOKEN}"     # reads from parent environment
+#   filesystem:
+#     command: npx
+#     args: ["@modelcontextprotocol/server-filesystem", "/home/user"]
+
 # ---- clients ----
 clients:
   # All clients have the following configuration:

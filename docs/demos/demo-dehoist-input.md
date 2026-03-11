@@ -35,10 +35,7 @@ cat ~/Library/Application\ Support/aichat/roles/prompt-designer.md
 ---
 extends: "%create-prompt%"
 ---
-
 Assume the persona of an expert prompt engineer specializing in AI alignment. Your task is to rewrite the provided system instruction to enhance its clarity, precision, and effectiveness. The revised instruction must preserve the original intent and adhere to established AI communication best practices. Your response must consist solely of the refined system instruction, with no additional commentary, analysis, or introductory text.
-
-
 ```
 
 **Before de-hoisting**, the concatenated prompt was: parent instructions, then "My first request is: __INPUT__", then child instructions. The `__INPUT__` token sat in the middle — user input got injected before the child's instructions, putting them out of order.
@@ -54,8 +51,8 @@ cargo test test_dehoist_input_placeholder_auto_tail -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
-     Running unittests src/main.rs (target/debug/deps/aichat-8d101dd73fed19f7)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test config::role::tests::test_dehoist_input_placeholder_auto_tail ... ok
@@ -73,8 +70,8 @@ cargo test test_dehoist_input_placeholder_child_wins -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
-     Running unittests src/main.rs (target/debug/deps/aichat-8d101dd73fed19f7)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 1 test
 test config::role::tests::test_dehoist_input_placeholder_child_wins ... ok
@@ -92,33 +89,33 @@ cargo test config::role::tests -- --nocapture 2>&1
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
-     Running unittests src/main.rs (target/debug/deps/aichat-8d101dd73fed19f7)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
 
 running 25 tests
 test config::role::tests::test_compose_role_content_no_metadata ... ok
-test config::role::tests::test_metadata_merge ... ok
 test config::role::tests::test_cycle_detection ... ok
-test config::role::tests::test_dehoist_input_placeholder_auto_tail ... ok
 test config::role::tests::test_dehoist_input_placeholder_child_wins ... ok
+test config::role::tests::test_dehoist_input_placeholder_auto_tail ... ok
+test config::role::tests::test_metadata_merge ... ok
 test config::role::tests::test_parse_structure_prompt1 ... ok
-test config::role::tests::test_parse_structure_prompt3 ... ok
-test config::role::tests::test_prompt_ordering ... ok
 test config::role::tests::test_parse_structure_prompt2 ... ok
+test config::role::tests::test_prompt_ordering ... ok
+test config::role::tests::test_parse_structure_prompt3 ... ok
 test config::role::tests::test_resolve_builtin_passthrough ... ok
 test config::role::tests::test_parse_raw_frontmatter_no_frontmatter ... ok
 test config::role::tests::test_parse_raw_frontmatter_basic ... ok
-test config::role::tests::test_parse_raw_frontmatter_extends ... ok
-test config::role::tests::test_parse_role_variables_from_frontmatter ... ok
-test config::role::tests::test_validate_schema_not_json ... ok
 test config::role::tests::test_parse_raw_frontmatter_include ... ok
+test config::role::tests::test_parse_raw_frontmatter_extends ... ok
+test config::role::tests::test_validate_schema_not_json ... ok
+test config::role::tests::test_parse_role_variables_from_frontmatter ... ok
+test config::role::tests::test_role_with_schemas ... ok
 test config::role::tests::test_role_variables_empty ... ok
 test config::role::tests::test_role_without_schemas ... ok
 test config::role::tests::test_compose_role_content_with_metadata ... ok
-test config::role::tests::test_role_with_schemas ... ok
+test config::role::tests::test_role_variable_with_default ... ok
 test config::role::tests::test_role_variable_apply ... ok
 test config::role::tests::test_role_variables_coexist_with_system_vars ... ok
-test config::role::tests::test_role_variable_with_default ... ok
 test config::role::tests::test_validate_schema_success ... ok
 test config::role::tests::test_validate_schema_failure ... ok
 
