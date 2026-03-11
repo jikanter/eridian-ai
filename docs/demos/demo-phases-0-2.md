@@ -156,16 +156,16 @@ grep -n "DEFERRED_TOOL_THRESHOLD\|deferred_tools\|tool_search\|tool count" src/c
 ```
 
 ```output
-181:    pub deferred_tools: Option<DeferredToolState>,
-185:/// When more than DEFERRED_TOOL_THRESHOLD tools are selected,
-186:/// we inject a tool_search meta-function instead of all schemas.
-193:const DEFERRED_TOOL_THRESHOLD: usize = 15;
-259:            deferred_tools: None,
-1693:        if let Some(ref deferred) = self.deferred_tools {
-1701:                // Always include tool_search so the model can search for more tools
-1702:                functions.push(FunctionDeclaration::tool_search());
-1821:            // replace with tool_search meta-function
-1822:            if functions.len() > DEFERRED_TOOL_THRESHOLD
+196:    pub deferred_tools: Option<DeferredToolState>,
+200:/// When more than DEFERRED_TOOL_THRESHOLD tools are selected,
+201:/// we inject a tool_search meta-function instead of all schemas.
+208:const DEFERRED_TOOL_THRESHOLD: usize = 15;
+276:            deferred_tools: None,
+1727:        if let Some(ref deferred) = self.deferred_tools {
+1735:                // Always include tool_search so the model can search for more tools
+1736:                functions.push(FunctionDeclaration::tool_search());
+1874:            // replace with tool_search meta-function
+1875:            if functions.len() > DEFERRED_TOOL_THRESHOLD
 ```
 
 The threshold is set at 15 tools. Below that, full schemas are sent as normal. Above it, the model gets a single `tool_search` function (1 schema instead of N). After calling `tool_search`, the matched tools are activated for subsequent turns. This is gated behind model capability — sub-14B parameter models skip deferred loading because the two-step indirection degrades their accuracy by 15-25%.
@@ -254,19 +254,17 @@ grep -n "call_react\|saved_model_id\|Restore model\|has_tools" src/pipe.rs
 When more than 20 tools are selected, a warning is emitted to stderr so the user knows about the token overhead. This catches the `use_tools: all` footgun that silently injects 86K+ characters.
 
 ```bash
-grep -n "tool count\|warn\!\|tools selected" src/config/mod.rs | head -5
+grep -n "tools selected" src/config/mod.rs | head -5
 ```
 
 ```output
-1289:                warn!("Failed to compress the session: {err}");
-1352:                warn!("Failed to autonaming the session: {err}");
-1806:                warn!(
-1807:                    "{} tools selected — this may cause slow responses with local models. \
-1813:                        "Warning: {} tools selected. Consider scoping use_tools to specific tools: use_tools: tool1,tool2",
+1860:                    "{} tools selected — this may cause slow responses with local models. \
+1866:                        "Warning: {} tools selected. Consider scoping use_tools to specific tools: use_tools: tool1,tool2",
+1871:            debug!("select_functions: {} tools selected", functions.len());
 ```
 
 ```bash
-sed -n "1803,1815p" src/config/mod.rs
+sed -n "1856,1870p" src/config/mod.rs
 ```
 
 ```output
@@ -283,6 +281,8 @@ sed -n "1803,1815p" src/config/mod.rs
                         "Warning: {} tools selected. Consider scoping use_tools to specific tools: use_tools: tool1,tool2",
                         functions.len()
                     );
+                }
+            }
 ```
 
 ## Phase 2B: Compact Output Modifier
