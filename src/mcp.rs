@@ -36,11 +36,23 @@ fn build_tools(config: &GlobalConfig) -> Vec<Tool> {
                 Value::Object(map) => map,
                 _ => Map::new(),
             };
-            Some(Tool::new(
-                decl.name.clone(),
-                decl.description.clone(),
-                Arc::new(input_schema),
-            ))
+            let mut description = decl.description.clone();
+            // Append examples if present
+            if let Some(examples) = &decl.examples {
+                if !examples.is_empty() {
+                    description.push_str("\n\nExamples:");
+                    for ex in examples {
+                        description.push_str(&format!("\n- \"{}\"", ex.input));
+                        if let Some(args) = &ex.args {
+                            description.push_str(&format!(
+                                " -> {}",
+                                serde_json::to_string(args).unwrap_or_default()
+                            ));
+                        }
+                    }
+                }
+            }
+            Some(Tool::new(decl.name.clone(), description, Arc::new(input_schema)))
         })
         .collect()
 }

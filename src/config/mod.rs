@@ -6,7 +6,8 @@ mod session;
 pub use self::agent::{complete_agent_variables, list_agents, Agent, AgentVariables};
 pub use self::input::Input;
 pub use self::role::{
-    validate_schema, Role, RoleLike, CODE_ROLE, CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
+    validate_schema, Role, RoleExample, RoleLike, RolePipelineStage, CODE_ROLE, CREATE_TITLE_ROLE,
+    EXPLAIN_SHELL_ROLE, SHELL_ROLE,
 };
 use self::session::Session;
 
@@ -14,7 +15,7 @@ use crate::client::{
     create_client_config, list_client_types, list_models, ClientConfig, MessageContentToolCalls,
     Model, ModelType, ProviderModels, OPENAI_COMPATIBLE_PROVIDERS,
 };
-use crate::function::{FunctionDeclaration, Functions, ToolResult};
+use crate::function::{FunctionDeclaration, Functions, ToolResult, ToolSource};
 use crate::mcp_client::McpConnectionPool;
 use crate::rag::Rag;
 use crate::render::{MarkdownRender, RenderOptions};
@@ -191,7 +192,20 @@ pub struct Config {
     pub agent: Option<Agent>,
     #[serde(skip)]
     pub mcp_pool: Option<Arc<McpConnectionPool>>,
+    #[serde(skip)]
+    pub deferred_tools: Option<DeferredToolState>,
 }
+
+/// State for deferred tool loading (Phase 1C).
+/// When more than DEFERRED_TOOL_THRESHOLD tools are selected,
+/// we inject a tool_search meta-function instead of all schemas.
+#[derive(Debug, Clone)]
+pub struct DeferredToolState {
+    pub all_tools: Vec<FunctionDeclaration>,
+    pub active_tools: Option<Vec<String>>,
+}
+
+const DEFERRED_TOOL_THRESHOLD: usize = 15;
 
 impl Default for Config {
     fn default() -> Self {
@@ -259,6 +273,7 @@ impl Default for Config {
             rag: None,
             agent: None,
             mcp_pool: None,
+            deferred_tools: None,
         }
     }
 }
@@ -1708,6 +1723,25 @@ impl Config {
     }
 
     pub fn select_functions(&self, role: &Role) -> Option<Vec<FunctionDeclaration>> {
+        // Phase 1C: If deferred tools are active and we have selected tools, return those
+        if let Some(ref deferred) = self.deferred_tools {
+            if let Some(ref active_names) = deferred.active_tools {
+                let mut functions: Vec<FunctionDeclaration> = deferred
+                    .all_tools
+                    .iter()
+                    .filter(|f| active_names.contains(&f.name))
+                    .cloned()
+                    .collect();
+                // Always include tool_search so the model can search for more tools
+                functions.push(FunctionDeclaration::tool_search());
+                debug!(
+                    "select_functions: returning {} active deferred tools",
+                    functions.len()
+                );
+                return Some(functions);
+            }
+        }
+
         let mut functions = vec![];
         if self.function_calling {
             if let Some(use_tools) = role.use_tools() {
@@ -1718,6 +1752,7 @@ impl Config {
                     .iter()
                     .map(|v| v.name.to_string())
                     .collect();
+                let mut pipeline_functions: Vec<FunctionDeclaration> = vec![];
                 if use_tools == "all" {
                     tool_names.extend(declaration_names);
                 } else {
@@ -1750,6 +1785,34 @@ impl Config {
                             );
                         } else if declaration_names.contains(item) {
                             tool_names.insert(item.to_string());
+                        } else {
+                            // Phase 2A: Check if it's a pipeline role
+                            if let Ok(pipeline_role) = self.retrieve_role(item) {
+                                if pipeline_role.is_pipeline() {
+                                    let mut properties = IndexMap::new();
+                                    properties.insert(
+                                        "input".to_string(),
+                                        crate::function::JsonSchema {
+                                            type_value: Some("string".to_string()),
+                                            description: Some("Input text for the pipeline".to_string()),
+                                            ..Default::default()
+                                        },
+                                    );
+                                    pipeline_functions.push(FunctionDeclaration {
+                                        name: item.to_string(),
+                                        description: pipeline_role.description_or_derived(),
+                                        parameters: crate::function::JsonSchema {
+                                            type_value: Some("object".to_string()),
+                                            properties: Some(properties),
+                                            required: Some(vec!["input".to_string()]),
+                                            ..Default::default()
+                                        },
+                                        agent: false,
+                                        source: ToolSource::default(),
+                                        examples: pipeline_role.examples().map(|e| e.to_vec()),
+                                    });
+                                }
+                            }
                         }
                     }
                 }
@@ -1765,6 +1828,8 @@ impl Config {
                         }
                     })
                     .collect();
+                // Phase 2A: Merge pipeline role declarations
+                functions.extend(pipeline_functions);
             }
 
             if let Some(agent) = &self.agent {
@@ -1790,8 +1855,104 @@ impl Config {
         if functions.is_empty() {
             None
         } else {
+            if functions.len() > 20 {
+                warn!(
+                    "{} tools selected — this may cause slow responses with local models. \
+                     Consider scoping use_tools to specific tools.",
+                    functions.len()
+                );
+                if *IS_STDOUT_TERMINAL {
+                    eprintln!(
+                        "Warning: {} tools selected. Consider scoping use_tools to specific tools: use_tools: tool1,tool2",
+                        functions.len()
+                    );
+                }
+            }
+            debug!("select_functions: {} tools selected", functions.len());
+
+            // Phase 1C: Deferred tool loading — if too many tools and model supports it,
+            // replace with tool_search meta-function
+            if functions.len() > DEFERRED_TOOL_THRESHOLD
+                && self.current_model().data().supports_function_calling
+                && self.deferred_tools.is_none()
+            {
+                debug!(
+                    "select_functions: deferring {} tools behind tool_search",
+                    functions.len()
+                );
+                // We can't write to self here (read lock), so return a marker.
+                // The caller (prepare_completion_data) will set deferred_tools via write lock.
+                // For now, return the tool_search stub + the full list as a signal.
+                // Actually, we store via a different path — see prepare_completion_data.
+                return Some(vec![FunctionDeclaration::tool_search()]);
+            }
+
             Some(functions)
         }
+    }
+
+    /// Returns the full unfiltered tool list for deferred loading initialization.
+    /// Called by prepare_completion_data when it detects tool_search was returned.
+    pub fn full_tool_list_for_deferred(&self, role: &Role) -> Vec<FunctionDeclaration> {
+        let mut functions = vec![];
+        if let Some(use_tools) = role.use_tools() {
+            let declaration_names: HashSet<String> = self
+                .functions
+                .declarations()
+                .iter()
+                .map(|v| v.name.to_string())
+                .collect();
+            let mut tool_names: HashSet<String> = Default::default();
+            if use_tools == "all" {
+                tool_names.extend(declaration_names);
+            } else {
+                for item in use_tools.split(',') {
+                    let item = item.trim();
+                    if let Some(values) = self.mapping_tools.get(item) {
+                        tool_names.extend(
+                            values
+                                .split(',')
+                                .map(|v| v.to_string())
+                                .filter(|v| declaration_names.contains(v)),
+                        )
+                    } else if declaration_names.contains(item) {
+                        tool_names.insert(item.to_string());
+                    }
+                }
+            }
+            functions = self
+                .functions
+                .declarations()
+                .iter()
+                .filter_map(|v| {
+                    if tool_names.contains(&v.name) {
+                        Some(v.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+        if let Some(agent) = &self.agent {
+            let mut agent_functions = agent.functions().declarations().to_vec();
+            let tool_names: HashSet<String> = agent_functions
+                .iter()
+                .filter_map(|v| {
+                    if v.agent {
+                        None
+                    } else {
+                        Some(v.name.to_string())
+                    }
+                })
+                .collect();
+            agent_functions.extend(
+                functions
+                    .into_iter()
+                    .filter(|v| !tool_names.contains(&v.name)),
+            );
+            functions = agent_functions;
+        }
+        functions
     }
 
     pub fn editor(&self) -> Result<String> {
@@ -2133,6 +2294,9 @@ impl Config {
         output: &str,
         tool_results: &[ToolResult],
     ) -> Result<()> {
+        // Phase 1C: Clean up deferred tool state after completion
+        self.deferred_tools = None;
+
         if !tool_results.is_empty() {
             return Ok(());
         }

@@ -251,6 +251,25 @@ impl Input {
         model.guard_max_input_tokens(&messages)?;
         let (temperature, top_p) = (self.role().temperature(), self.role().top_p());
         let functions = self.config.read().select_functions(self.role());
+
+        // Phase 1C: Initialize deferred tool state when tool_search was returned
+        if let Some(ref fns) = functions {
+            use crate::function::TOOL_SEARCH_NAME;
+            if fns.len() == 1
+                && fns[0].name == TOOL_SEARCH_NAME
+                && self.config.read().deferred_tools.is_none()
+            {
+                let all_tools = self
+                    .config
+                    .read()
+                    .full_tool_list_for_deferred(self.role());
+                self.config.write().deferred_tools = Some(super::DeferredToolState {
+                    all_tools,
+                    active_tools: None,
+                });
+            }
+        }
+
         Ok(ChatCompletionsData {
             messages,
             temperature,

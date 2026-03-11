@@ -121,6 +121,8 @@ pub enum ToolSource {
     },
 }
 
+use crate::config::RoleExample;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionDeclaration {
     pub name: String,
@@ -130,9 +132,11 @@ pub struct FunctionDeclaration {
     pub agent: bool,
     #[serde(skip, default)]
     pub source: ToolSource,
+    #[serde(skip_serializing, default)]
+    pub examples: Option<Vec<RoleExample>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct JsonSchema {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub type_value: Option<String>,
@@ -157,6 +161,38 @@ impl JsonSchema {
         match &self.properties {
             Some(v) => v.is_empty(),
             None => true,
+        }
+    }
+}
+
+pub const TOOL_SEARCH_NAME: &str = "tool_search";
+
+impl FunctionDeclaration {
+    /// Creates the tool_search meta-function for deferred tool loading.
+    pub fn tool_search() -> Self {
+        let mut properties = IndexMap::new();
+        properties.insert(
+            "query".to_string(),
+            JsonSchema {
+                type_value: Some("string".to_string()),
+                description: Some(
+                    "Keyword to search for relevant tools. Use descriptive terms like 'file', 'web', 'database'.".to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+        Self {
+            name: TOOL_SEARCH_NAME.to_string(),
+            description: "Search for available tools by keyword. You MUST call this before using any other tool.".to_string(),
+            parameters: JsonSchema {
+                type_value: Some("object".to_string()),
+                properties: Some(properties),
+                required: Some(vec!["query".to_string()]),
+                ..Default::default()
+            },
+            agent: false,
+            source: ToolSource::default(),
+            examples: None,
         }
     }
 }
@@ -199,6 +235,16 @@ impl ToolCall {
     }
 
     pub fn eval(&self, config: &GlobalConfig) -> Result<Value> {
+        // Phase 1C: Handle tool_search meta-function
+        if self.name == TOOL_SEARCH_NAME {
+            return self.eval_tool_search(config);
+        }
+
+        // Phase 2A: Handle pipeline-role tool calls
+        if let Some(pipeline_stages) = self.check_pipeline_role(config) {
+            return self.eval_pipeline_role(config, &pipeline_stages);
+        }
+
         let (call_name, cmd_name, mut cmd_args, envs) = match &config.read().agent {
             Some(agent) => self.extract_call_config_from_agent(config, agent)?,
             None => self.extract_call_config_from_config(config)?,
@@ -228,6 +274,137 @@ impl ToolCall {
         };
 
         Ok(output)
+    }
+
+    /// Check if this tool call targets a pipeline role.
+    fn check_pipeline_role(
+        &self,
+        config: &GlobalConfig,
+    ) -> Option<Vec<crate::config::RolePipelineStage>> {
+        // Don't check if it's already a known function
+        if config.read().functions.contains(&self.name) {
+            return None;
+        }
+        // Try to resolve as a role with pipeline
+        if let Ok(role) = config.read().retrieve_role(&self.name) {
+            if role.is_pipeline() {
+                return role.pipeline().map(|p| p.to_vec());
+            }
+        }
+        None
+    }
+
+    /// Execute a pipeline role as a tool call.
+    fn eval_pipeline_role(
+        &self,
+        config: &GlobalConfig,
+        stages: &[crate::config::RolePipelineStage],
+    ) -> Result<Value> {
+        let input_text = self
+            .arguments
+            .get("input")
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                // Fallback: use the entire arguments as input if it's a string
+                self.arguments.as_str()
+            })
+            .unwrap_or("")
+            .to_string();
+
+        if *IS_STDOUT_TERMINAL {
+            println!("{}", dimmed_text(&format!("Call pipeline {}", self.name)));
+        }
+
+        // Use block_in_place to run async pipeline from sync context
+        let config = config.clone();
+        let stages = stages.to_vec();
+        let result = tokio::task::block_in_place(move || {
+            tokio::runtime::Handle::current().block_on(async {
+                crate::pipe::run_pipeline_role(&config, &stages, &input_text).await
+            })
+        })?;
+
+        Ok(json!({"output": result}))
+    }
+
+    /// Handles the tool_search meta-function for deferred tool loading.
+    fn eval_tool_search(&self, config: &GlobalConfig) -> Result<Value> {
+        let query = self
+            .arguments
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let deferred = config.read().deferred_tools.clone();
+        let all_tools = match deferred {
+            Some(ref state) => state.all_tools.clone(),
+            None => {
+                // Fallback: read all functions
+                config.read().functions.declarations().to_vec()
+            }
+        };
+
+        // Match tools by keyword against name and description
+        let matched: Vec<&FunctionDeclaration> = all_tools
+            .iter()
+            .filter(|f| {
+                query.is_empty()
+                    || f.name.to_lowercase().contains(&query)
+                    || f.description.to_lowercase().contains(&query)
+            })
+            .collect();
+
+        // Build compact index
+        let mut result = format!("Found {} tools matching \"{}\":\n", matched.len(), query);
+        let mut active_names = Vec::new();
+        for (i, f) in matched.iter().enumerate() {
+            // Include parameter hints
+            let params = f
+                .parameters
+                .properties
+                .as_ref()
+                .map(|props| {
+                    props
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            result.push_str(&format!(
+                "{}. {} - {} ({})\n",
+                i + 1,
+                f.name,
+                f.description.lines().next().unwrap_or(""),
+                params
+            ));
+            active_names.push(f.name.clone());
+        }
+
+        // Also check mapping_tools for group matches
+        let mapping_tools = &config.read().mapping_tools;
+        for (group, tools) in mapping_tools.iter() {
+            if group.to_lowercase().contains(&query) {
+                for tool_name in tools.split(',').map(|s| s.trim()) {
+                    if !active_names.contains(&tool_name.to_string()) {
+                        if let Some(f) = all_tools.iter().find(|f| f.name == tool_name) {
+                            active_names.push(f.name.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        result.push_str("\nCall the tool by name with its parameters.");
+
+        // Set active tools so next select_functions iteration returns them
+        config.write().deferred_tools = Some(crate::config::DeferredToolState {
+            all_tools: all_tools.clone(),
+            active_tools: Some(active_names),
+        });
+
+        Ok(json!({"output": result}))
     }
 
     fn extract_call_config_from_agent(

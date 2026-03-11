@@ -21,7 +21,8 @@ use crate::client::{
 };
 use crate::config::{
     ensure_parent_exists, list_agents, load_env_file, macro_execute, validate_schema, Config,
-    GlobalConfig, Input, WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
+    GlobalConfig, Input, RoleLike, WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
+    TEMP_SESSION_NAME,
 };
 use crate::render::render_error;
 use crate::repl::Repl;
@@ -91,14 +92,44 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
     }
 
     if cli.list_models {
-        for model in list_models(&config.read(), ModelType::Chat) {
-            println!("{}", model.id());
+        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
+            let models: Vec<serde_json::Value> = list_models(&config.read(), ModelType::Chat)
+                .iter()
+                .map(|m| serde_json::json!({ "id": m.id() }))
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&models)?);
+        } else {
+            for model in list_models(&config.read(), ModelType::Chat) {
+                println!("{}", model.id());
+            }
         }
         return Ok(());
     }
     if cli.list_roles {
-        let roles = Config::list_roles(true).join("\n");
-        println!("{roles}");
+        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
+            let roles = Config::all_roles();
+            let json_roles: Vec<serde_json::Value> = roles
+                .iter()
+                .map(|r| {
+                    let tools_str = r.use_tools().unwrap_or_default();
+                    let tools: Vec<&str> = tools_str
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    serde_json::json!({
+                        "name": r.name(),
+                        "description": r.description_or_derived(),
+                        "model": r.model_id().unwrap_or("default"),
+                        "tools": tools,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json_roles)?);
+        } else {
+            let roles = Config::list_roles(true).join("\n");
+            println!("{roles}");
+        }
         return Ok(());
     }
     if cli.list_agents {
@@ -232,8 +263,37 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         config.write().set_save_session_this_time()?;
     }
     if cli.info {
-        let info = config.read().info()?;
-        println!("{info}");
+        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
+            let cfg = config.read();
+            let mut info = serde_json::Map::new();
+            info.insert("model".into(), serde_json::json!(cfg.current_model().id()));
+            if let Some(role) = cfg.role.as_ref() {
+                info.insert("role".into(), serde_json::json!(role.name()));
+                info.insert(
+                    "description".into(),
+                    serde_json::json!(role.description_or_derived()),
+                );
+                if let Some(tools) = role.use_tools() {
+                    info.insert("tools".into(), serde_json::json!(tools));
+                }
+                info.insert(
+                    "prompt_length".into(),
+                    serde_json::json!(role.prompt().len()),
+                );
+            }
+            if let Some(temp) = cfg.temperature {
+                info.insert("temperature".into(), serde_json::json!(temp));
+            }
+            info.insert("stream".into(), serde_json::json!(cfg.stream));
+            drop(cfg);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::Value::Object(info))?
+            );
+        } else {
+            let info = config.read().info()?;
+            println!("{info}");
+        }
         return Ok(());
     }
     if let Some(addr) = cli.serve {

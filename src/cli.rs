@@ -15,6 +15,8 @@ pub enum OutputFormat {
     Csv,
     /// Plain text (default behavior, explicit)
     Text,
+    /// Compact output (minimal tokens, for agent consumption)
+    Compact,
 }
 
 impl OutputFormat {
@@ -33,11 +35,14 @@ impl OutputFormat {
                 "\n\nYou MUST respond with comma-separated values only. No headers, no markdown, no code fences, no explanation. Each row on its own line. Quote fields that contain commas."
             ),
             OutputFormat::Text => None,
+            OutputFormat::Compact => Some(
+                "\n\nRespond with minimal tokens. Use short keys, abbreviations, and omit optional fields. No formatting, no explanations."
+            ),
         }
     }
 
     pub fn is_structured(&self) -> bool {
-        !matches!(self, OutputFormat::Text)
+        !matches!(self, OutputFormat::Text | OutputFormat::Compact)
     }
 
     pub fn clean_output(&self, output: &str) -> Result<String> {
@@ -59,7 +64,9 @@ impl OutputFormat {
                 }
                 Ok(cleaned)
             }
-            OutputFormat::Tsv | OutputFormat::Csv | OutputFormat::Text => Ok(cleaned),
+            OutputFormat::Tsv | OutputFormat::Csv | OutputFormat::Text | OutputFormat::Compact => {
+                Ok(cleaned)
+            }
         }
     }
 }

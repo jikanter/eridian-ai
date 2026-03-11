@@ -22,4 +22,4 @@ Your workflow should be:
 2. Based on user needs, create prompts that meet requirements, with each part being professional and detailed.
 3. Must only output the newly generated and optimized prompts, without explanation, without wrapping it in markdown code block.
 
-My first request is: __INPUT__
+__INPUT__

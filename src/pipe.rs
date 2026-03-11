@@ -1,6 +1,6 @@
 use crate::cli::Cli;
-use crate::client::{call_chat_completions, call_chat_completions_streaming};
-use crate::config::{validate_schema, Config, GlobalConfig, Input};
+use crate::client::{call_chat_completions, call_chat_completions_streaming, call_react};
+use crate::config::{validate_schema, Config, GlobalConfig, Input, RoleLike, RolePipelineStage};
 use crate::utils::*;
 
 use anyhow::{bail, Context, Result};
@@ -56,16 +56,54 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
 
     let abort_signal = create_abort_signal();
 
+    let stage_count = stages.len();
     for (i, stage) in stages.iter().enumerate() {
-        let is_last = i == stages.len() - 1;
-        input_text =
-            run_stage(&config, stage, &input_text, is_last, abort_signal.clone()).await?;
+        let is_last = i == stage_count - 1;
+        input_text = run_stage(
+            &config,
+            stage,
+            i,
+            stage_count,
+            &input_text,
+            is_last,
+            abort_signal.clone(),
+        )
+        .await?;
     }
 
     Ok(())
 }
 
 async fn run_stage(
+    config: &GlobalConfig,
+    stage: &PipelineStage,
+    stage_index: usize,
+    stage_count: usize,
+    input_text: &str,
+    is_last: bool,
+    abort_signal: AbortSignal,
+) -> Result<String> {
+    // Phase 0C: Save model state for restoration after stage
+    let saved_model_id = config.read().current_model().id();
+
+    let result = run_stage_inner(config, stage, input_text, is_last, abort_signal).await;
+
+    // Phase 0C: Restore model state regardless of success/failure
+    if let Err(e) = config.write().set_model(&saved_model_id) {
+        debug!("Failed to restore model after pipeline stage: {e}");
+    }
+
+    result.with_context(|| {
+        format!(
+            "Pipeline stage {}/{} (role '{}') failed",
+            stage_index + 1,
+            stage_count,
+            stage.role_name
+        )
+    })
+}
+
+async fn run_stage_inner(
     config: &GlobalConfig,
     stage: &PipelineStage,
     input_text: &str,
@@ -85,20 +123,27 @@ async fn run_stage(
         validate_schema("input", schema, input_text)?;
     }
 
-    let input = Input::from_str(config, input_text, Some(role.clone()));
+    let has_tools = role.use_tools().is_some();
+    let mut input = Input::from_str(config, input_text, Some(role.clone()));
     let client = input.create_client()?;
 
     config.write().before_chat_completion(&input)?;
 
-    let (output, tool_results) = if input.stream() && is_last {
+    // Phase 0B: Use call_react when the stage role has tools
+    let (output, tool_results) = if has_tools {
+        call_react(&mut input, client.as_ref(), abort_signal).await?
+    } else if input.stream() && is_last {
         call_chat_completions_streaming(&input, client.as_ref(), abort_signal).await?
     } else {
         call_chat_completions(&input, false, false, client.as_ref(), abort_signal).await?
     };
 
-    config
-        .write()
-        .after_chat_completion(&input, &output, &tool_results)?;
+    // Only save to message history for the last stage
+    if is_last {
+        config
+            .write()
+            .after_chat_completion(&input, &output, &tool_results)?;
+    }
 
     if let Some(schema) = role.output_schema() {
         validate_schema("output", schema, &output)?;
@@ -109,10 +154,10 @@ async fn run_stage(
             if fmt.is_structured() {
                 fmt.clean_output(&output)?
             } else {
-                output.clone()
+                output.to_string()
             }
         } else {
-            output.clone()
+            output.to_string()
         };
         print!("{final_output}");
         std::io::Write::flush(&mut std::io::stdout())?;
@@ -121,7 +166,12 @@ async fn run_stage(
         }
     }
 
-    Ok(output)
+    // Strip think tags from intermediate output
+    if !is_last {
+        Ok(strip_think_tag(&output).to_string())
+    } else {
+        Ok(output)
+    }
 }
 
 fn parse_stages(stage_specs: &[String]) -> Result<Vec<PipelineStage>> {
@@ -172,4 +222,44 @@ fn load_pipeline_def(path: &str) -> Result<Vec<PipelineStage>> {
             model_id: s.model,
         })
         .collect())
+}
+
+/// Run a pipeline defined in a role's frontmatter. Called from tool dispatch.
+/// Returns the final output text.
+pub async fn run_pipeline_role(
+    config: &GlobalConfig,
+    stages: &[RolePipelineStage],
+    input_text: &str,
+) -> Result<String> {
+    if stages.is_empty() {
+        bail!("Pipeline role has no stages");
+    }
+
+    let pipeline_stages: Vec<PipelineStage> = stages
+        .iter()
+        .map(|s| PipelineStage {
+            role_name: s.role.clone(),
+            model_id: s.model.clone(),
+        })
+        .collect();
+
+    let abort_signal = create_abort_signal();
+    let stage_count = pipeline_stages.len();
+    let mut current_input = input_text.to_string();
+
+    for (i, stage) in pipeline_stages.iter().enumerate() {
+        current_input = run_stage(
+            config,
+            stage,
+            i,
+            stage_count,
+            &current_input,
+            // For pipeline-as-tool, never print output (it's returned to the caller)
+            false,
+            abort_signal.clone(),
+        )
+        .await?;
+    }
+
+    Ok(current_input)
 }

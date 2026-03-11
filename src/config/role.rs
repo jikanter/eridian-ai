@@ -42,6 +42,8 @@ pub struct Role {
     name: String,
     #[serde(default)]
     prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
     #[serde(
         rename(serialize = "model", deserialize = "model"),
         skip_serializing_if = "Option::is_none"
@@ -57,6 +59,10 @@ pub struct Role {
     input_schema: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    examples: Option<Vec<RoleExample>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pipeline: Option<Vec<RolePipelineStage>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     extends: Option<String>,
@@ -69,6 +75,20 @@ pub struct Role {
     model: Model,
     #[serde(skip)]
     variables: Vec<RoleVariable>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RoleExample {
+    pub input: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RolePipelineStage {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -300,6 +320,35 @@ impl Role {
                             "use_tools" => role.use_tools = value.as_str().map(|v| v.to_string()),
                             "input_schema" => role.input_schema = Some(value.clone()),
                             "output_schema" => role.output_schema = Some(value.clone()),
+                            "description" => {
+                                role.description = value.as_str().map(|v| v.to_string())
+                            }
+                            "examples" => {
+                                if let Some(arr) = value.as_array() {
+                                    role.examples = Some(
+                                        arr.iter()
+                                            .filter_map(|v| {
+                                                serde_json::from_value::<RoleExample>(v.clone())
+                                                    .ok()
+                                            })
+                                            .collect(),
+                                    );
+                                }
+                            }
+                            "pipeline" => {
+                                if let Some(arr) = value.as_array() {
+                                    role.pipeline = Some(
+                                        arr.iter()
+                                            .filter_map(|v| {
+                                                serde_json::from_value::<RolePipelineStage>(
+                                                    v.clone(),
+                                                )
+                                                .ok()
+                                            })
+                                            .collect(),
+                                    );
+                                }
+                            }
                             "extends" => role.extends = value.as_str().map(|v| v.to_string()),
                             "include" => {
                                 if let Some(arr) = value.as_array() {
@@ -353,6 +402,9 @@ impl Role {
 
     pub fn export(&self) -> String {
         let mut meta = serde_json::Map::new();
+        if let Some(desc) = &self.description {
+            meta.insert("description".into(), Value::String(desc.clone()));
+        }
         if let Some(model) = self.model_id() {
             meta.insert("model".into(), Value::String(model.to_string()));
         }
@@ -370,6 +422,12 @@ impl Role {
         }
         if let Some(s) = &self.output_schema {
             meta.insert("output_schema".into(), s.clone());
+        }
+        if let Some(examples) = &self.examples {
+            meta.insert("examples".into(), serde_json::json!(examples));
+        }
+        if let Some(pipeline) = &self.pipeline {
+            meta.insert("pipeline".into(), serde_json::json!(pipeline));
         }
         if let Some(extends) = &self.extends {
             meta.insert("extends".into(), serde_json::json!(extends));
@@ -471,6 +529,43 @@ impl Role {
         self.output_schema.is_some()
     }
 
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
+    pub fn description_or_derived(&self) -> String {
+        if let Some(desc) = &self.description {
+            return desc.clone();
+        }
+        let prompt = self.prompt.trim();
+        if prompt.is_empty() {
+            return String::new();
+        }
+        // Take first sentence (up to first period+space or newline, max 100 chars)
+        let end = prompt
+            .find(". ")
+            .or_else(|| prompt.find('\n'))
+            .unwrap_or(prompt.len())
+            .min(100);
+        let mut desc = prompt[..end].to_string();
+        if desc.len() < prompt.len() && !desc.ends_with('.') {
+            desc.push('.');
+        }
+        desc
+    }
+
+    pub fn examples(&self) -> Option<&[RoleExample]> {
+        self.examples.as_deref()
+    }
+
+    pub fn pipeline(&self) -> Option<&[RolePipelineStage]> {
+        self.pipeline.as_deref()
+    }
+
+    pub fn is_pipeline(&self) -> bool {
+        self.pipeline.as_ref().is_some_and(|p| !p.is_empty())
+    }
+
     pub fn variables(&self) -> &[RoleVariable] {
         &self.variables
     }
@@ -539,6 +634,40 @@ impl Role {
             messages.push(Message::new(MessageRole::User, content));
             messages
         };
+        // Inject tool use examples into the system prompt if present
+        if let Some(examples) = &self.examples {
+            if !examples.is_empty() && self.use_tools.is_some() {
+                let mut example_text = String::from("\n\n## Tool Usage Examples\n");
+                for (i, ex) in examples.iter().enumerate() {
+                    example_text.push_str(&format!("{}. \"{}\"", i + 1, ex.input));
+                    if let Some(args) = &ex.args {
+                        example_text.push_str(&format!(
+                            " -> call with {}",
+                            serde_json::to_string(args).unwrap_or_default()
+                        ));
+                    }
+                    example_text.push('\n');
+                }
+                // Append to system message if one exists, otherwise prepend as system
+                if let Some(msg) = messages
+                    .iter_mut()
+                    .find(|m| matches!(m.role, MessageRole::System))
+                {
+                    if let MessageContent::Text(ref mut t) = msg.content {
+                        t.push_str(&example_text);
+                    }
+                } else {
+                    messages.insert(
+                        0,
+                        Message::new(
+                            MessageRole::System,
+                            MessageContent::Text(example_text.trim_start().to_string()),
+                        ),
+                    );
+                }
+            }
+        }
+
         if let Some(text) = input.continue_output() {
             messages.push(Message::new(
                 MessageRole::Assistant,
