@@ -451,7 +451,23 @@ impl Role {
                                             .filter_map(|v| v.as_str().map(|s| s.to_string()))
                                             .collect();
                                     }
+                                },
+                                // Phase 6B: Lifecycle hooks
+                            "pipe_to" => {
+                                role.pipe_to = value.as_str().map(|v| v.to_string())
+                            }
+                            "save_to" => {
+                                role.save_to = value.as_str().map(|v| v.to_string())
+                            }
+                            // Phase 6C: Unified resource binding
+                            "mcp_servers" => {
+                                if let Some(arr) = value.as_array() {
+                                    role.role_mcp_servers = arr
+                                        .iter()
+                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                        .collect();
                                 }
+                            }
                                 _ => (),
                             }
                         }

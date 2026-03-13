@@ -23,7 +23,7 @@ use crate::client::{
 };
 use crate::config::{
     ensure_parent_exists, list_agents, load_env_file, macro_execute, run_lifecycle_hooks,
-    validate_schema_traced, Config, GlobalConfig, Input, RoleLike, WorkingMode, CODE_ROLE,
+    validate_schema, validate_schema_traced, Config, GlobalConfig, Input, RoleLike, WorkingMode, CODE_ROLE,
     EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
 };
 use crate::render::render_error;

@@ -1,7 +1,7 @@
 # Phase 6: Metadata Framework Enhancements
 
-*2026-03-30T15:36:23Z by Showboat 0.6.1*
-<!-- showboat-id: ce1df082-2886-43cb-b1be-1c0ccc68f4df -->
+*2026-03-13T16:35:08Z by Showboat 0.6.1*
+<!-- showboat-id: 1ee29d4d-0d72-4446-977e-facf08039769 -->
 
 Phase 6 adds three features that make roles self-contained workflow units:
 
@@ -26,11 +26,11 @@ pub enum VariableDefault {
 impl VariableDefault {
 ```
 
-Shell variables execute via `sh -c` at invocation time. CLI `-v` flag overrides shell defaults.
+Shell variables execute via `sh -c` at invocation time. CLI `-v` flag overrides shell defaults. Failed commands warn instead of crashing (Phase 4A pattern).
 
 ## 6B: Lifecycle Hooks
 
-`pipe_to` pipes output to a shell command via stdin. `save_to` writes to a file with `{{timestamp}}` interpolation.
+`pipe_to` pipes output to a shell command via stdin. `save_to` writes to a file with `{{timestamp}}` interpolation. Hooks fire in `start_directive` and pipeline last stage.
 
 ## 6C: Unified Resource Binding
 
@@ -84,6 +84,44 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; fi
 test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in Xs
 ```
 
+## Tests
+
+112 tests pass (19 new Phase 6 tests + 93 existing):
+
+```bash
+cargo test 2>&1 | grep -c "^test .* ok$"
+```
+
+```output
+112
+```
+
+## Combined Example
+
+All three features in one self-contained code review role:
+
+```bash
+cat <<'YAML'
+---
+description: "Self-contained code reviewer"
+variables:
+  - name: diff
+    default: { shell: "git diff --cached" }
+  - name: files
+    default: { shell: "git diff --cached --name-only" }
+pipe_to: "pbcopy"
+save_to: "./reviews/{{timestamp}}.md"
+mcp_servers:
+  - github-server
+---
+Review: {{files}}
+
+{{diff}}
+
+__INPUT__
+YAML
+```
+
 ## Integration Tests
 
 Test shell-injective variable resolution with `--dry-run`:
@@ -114,6 +152,13 @@ Current date: 2026-01-01
 Analyze: check status
 ```
 
+
+```output
+---
+variables:
+---
+__INPUT__
+```
 The shell variables resolved at invocation time, injecting the actual hostname and date into the prompt.
 
 Test CLI `-v` flag overriding shell defaults:
@@ -138,7 +183,6 @@ rm "$ROLES_DIR/test-shell-override.md"
 Context: manual-override
 test
 ```
-
 The `-v context=manual-override` flag took precedence over the shell default, proving the override chain works.
 
 Test lifecycle hooks with a save_to path:
