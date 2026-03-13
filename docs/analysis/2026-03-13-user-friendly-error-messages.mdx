@@ -1,0 +1,898 @@
+# Analysis: User-Friendly Error Messages for llm-functions
+
+**Date:** 2026-03-13
+**Method:** Parallel research team — 5 specialist agents coordinated by a senior enterprise architect
+**Scope:** aichat runtime (Rust), with minor implications for llm-functions tool declarations
+
+## Problem Statement
+
+llm-functions tool errors are deeply opaque. Even with `set -x`, users cannot determine what actually caused a failure. The root cause is architectural: the aichat runtime discards stderr, collapses all tool failures to a single string (`"Tool call exit with {exit_code}"`), and never reports errors back to the LLM.
+
+**The single line that causes most pain** (`src/function.rs:461`):
+```rust
+bail!("Tool call exit with {exit_code}");
+```
+
+This is the equivalent of a compiler saying "error: compilation failed" with no source location, no context, and no suggestion.
+
+---
+
+## Research Team
+
+| Role | Focus Area |
+|------|-----------|
+| UX Designer | Error taxonomy, progressive disclosure, message templates, REPL UX, best-in-class CLI patterns |
+| Linux/Unix DevOps Engineer | Process spawning, stderr capture, `$LLM_OUTPUT` protocol, timeout design, shell instrumentation |
+| Data Architect | Structured error schemas, observability data models, cross-protocol mapping, aggregation |
+| ML Application Architect | LLM error recovery, dual-format messages, multi-tool graceful degradation, token economics |
+| Compiler Engineer | Diagnostic architecture, error provenance, static analysis, error codes, suggestion engine, regression testing |
+
+---
+
+## 1. UX Designer: Error Taxonomy & Progressive Disclosure
+
+### 1.1 Error Taxonomy
+
+16 distinct error categories exist in the llm-functions pipeline. Users currently see useful context for approximately 3 of them.
+
+#### Tool Resolution Errors
+
+**A. Tool Not Found** (`function.rs:422`)
+- Current: `"Unexpected call: {function_name} {arguments}"` — raw JSON arguments dumped after the name, no suggestion of what tools exist.
+- Desired Tier 1: `error: tool 'web_search' not found`
+- Desired Tier 2: Lists available tools with fuzzy-match suggestions ("Did you mean 'web_searcher'?")
+- Desired Tier 3: Full PATH resolution trace showing which bin directories were checked.
+
+**B. Functions Manifest Not Loadable** (`function.rs:81`)
+- Current: `"Failed to load functions at {path}"` with an opaque serde_json parse error.
+- Desired: Specific parse error with line/column: `expected ',' at line 42, column 3`.
+
+**C. No Functions Installed**
+- Current: `"no functions are installed"` — bare statement with no guidance.
+- Desired: `No tool definitions found. Install llm-functions or configure MCP servers.` with searched paths.
+
+#### Tool Execution Errors
+
+**D. Tool Process Crashed (Non-Zero Exit)** — the most common and most opaque error
+- Current: `"Tool call exit with 1"` — a bare exit code with zero context.
+- Root cause: `run_command` uses `Command::new(cmd).status()` (`command.rs:86-91`) which inherits stdout/stderr. stderr goes to the terminal mixed with aichat's own output, or is lost if piped.
+- Desired: `error: tool 'web_search' failed (exit code 1)` with captured stderr, the arguments that were passed, and the command that was executed.
+
+**E. Tool Process Could Not Be Spawned** (`function.rs:459`)
+- Current: `"Unable to run {cmd_name}, {err}"` — does not distinguish between binary not found, permission denied, or interpreter missing.
+- Desired: Specific diagnosis with actionable fix (e.g., `chmod +x {path}`).
+
+**F. Tool Returned Empty Output ($LLM_OUTPUT not written)**
+- Current: `run_llm_function` returns `Ok(None)` → `Value::Null` → `json!("DONE")`. **Silent false success.**
+- Desired: `warning: tool 'web_search' produced no output` — yellow, not red, since it might be intentional.
+
+**G. Tool Returned Invalid JSON**
+- Current: Silent fallback at `function.rs:244-247` — wraps raw string as `{"output": contents}`.
+- Desired: Debug-level note that output was not valid JSON.
+
+**H. Tool Timed Out**
+- Current: No timeout mechanism exists. A tool can hang indefinitely.
+- Desired: `error: tool 'web_search' timed out after 30s` with configuration hint.
+
+#### MCP-Specific Errors
+
+**I–K. MCP server start, init, and tool errors** — these already have partial hints (e.g., `"hint: ensure the server binary is installed"`). Need the same treatment applied to all other error paths.
+
+#### Pipeline, Auth, Network, Schema, and Loop Errors (L–Q)
+
+Each follows the same pattern: current messages are bare statements or raw HTTP status codes. All need the three-part structure: what happened, why, what to do.
+
+### 1.2 Progressive Disclosure Design
+
+#### Tier 1: Default (One-Line Summary)
+
+Format: `{severity}: {what happened}`
+
+Color: red for errors, yellow for warnings, dim gray for debug. Never exceed ~80 characters. Never show raw exit codes without context. Always include the tool name.
+
+```
+error: tool 'web_search' failed.
+error: could not connect to api.openai.com.
+warning: tool 'fetch_page' produced no output.
+```
+
+#### Tier 2: Verbose (`-v` or `AICHAT_LOG=info`)
+
+Format: primary line + 2-4 indented lines of context + cyan `hint:`.
+
+```
+error: tool 'web_search' failed.
+  Command: web_search '{"query":"test"}'
+  Exit code: 127 (command not found)
+  hint: ensure 'web_search' is installed and on PATH. Try: which web_search
+```
+
+```
+error: authentication failed for provider 'openai'.
+  Endpoint: https://api.openai.com/v1/chat/completions
+  Status: 401 Unauthorized
+  hint: check $OPENAI_API_KEY or set it in ~/.config/aichat/config.yaml
+```
+
+```
+warning: tool 'fetch_page' produced no output.
+  Command: fetch_page '{"url":"https://example.com"}'
+  Exit code: 0 (success), but $LLM_OUTPUT was not written.
+  hint: the tool may have crashed silently. Run with -vv to see stderr.
+```
+
+#### Tier 3: Debug (`-vv` or `AICHAT_DEBUG=1`)
+
+Full diagnostic dump below the Tier 2 output, all dimmed:
+
+```
+error: tool 'web_search' failed.
+  Command: web_search '{"query":"rust async tutorial"}'
+  Exit code: 1
+  hint: run the command manually to diagnose. See stderr below.
+
+  --- debug ---
+  binary path: /Users/alice/.config/aichat/functions/bin/web_search
+  working dir: /Users/alice/projects/myapp
+  PATH: /Users/alice/.config/aichat/functions/bin:/usr/local/bin:/usr/bin
+  LLM_OUTPUT: /tmp/aichat-12345-a1b2c3d4-eval-
+  environment:
+    OPENAI_API_KEY=sk-...redacted (set)
+    HTTP_PROXY=(not set)
+  timing: 2.3s
+  stderr capture:
+    curl: (6) Could not resolve host: api.serper.dev
+    Error: search API request failed
+  ---
+```
+
+### 1.3 Error Message Templates
+
+Contextual suggestion logic for `hint:`:
+- stderr contains "not found" or "No such file" → `"a dependency may be missing. Check the tool's requirements."`
+- stderr contains "permission denied" → `"check file permissions on the tool binary."`
+- stderr contains "ECONNREFUSED" or "connection" → `"a network service the tool depends on may be down."`
+- stderr contains "rate limit" or "429" → `"the tool hit a rate limit. Wait and retry."`
+- Exit code 127 → `"the tool binary was not found on PATH."`
+- Exit code 126 → `"the tool binary exists but is not executable."`
+- Default → `"run with -vv for full diagnostics."`
+
+### 1.4 Interactive REPL Error UX
+
+- **Transient errors should offer retry** — after network/auth/timeout errors, show `(r)etry | (s)kip | (d)ebug` prompt.
+- **`.debug` REPL command** — displays Tier 3 dump for the most recent error without cluttering the default view.
+- **Automatic debug log** — REPL always writes Tier 3 to `~/.config/aichat/debug.log`, printed as `Full debug log: ~/.config/aichat/debug.log` after errors.
+- **`.retry` and `.errors` REPL commands** — re-execute last failed request; show session error summary by category.
+
+### 1.5 Machine-Readable Error Output (Extended JSON)
+
+Extends the existing `render_error` JSON format:
+
+```json
+{
+  "error": {
+    "code": 10,
+    "category": "tool",
+    "subcategory": "execution_failed",
+    "message": "tool 'web_search' failed (exit code 1)",
+    "context": {
+      "tool_name": "web_search",
+      "tool_source": "local",
+      "exit_code": 1,
+      "command": "web_search",
+      "arguments": "{\"query\":\"test\"}",
+      "stderr": "curl: (6) Could not resolve host: api.serper.dev",
+      "duration_ms": 2300,
+      "output_file_exists": false
+    },
+    "suggestions": [
+      "Check that the tool's dependencies are installed.",
+      "Run the command manually: web_search '{\"query\":\"test\"}'",
+      "Run with AICHAT_DEBUG=1 for full diagnostics."
+    ],
+    "timestamp": "2026-03-13T14:22:01-07:00",
+    "version": "0.29.0"
+  }
+}
+```
+
+Backward-compatible: `code`, `category`, and `message` remain in the same positions. New fields are additive.
+
+### 1.6 Best-in-Class CLI Patterns
+
+| Pattern | Source | Application in aichat |
+|---------|--------|----------------------|
+| `hint:` with actionable command | rustc, gh | All error types |
+| Error codes linking to docs | rustc | `error[T005]: tool 'x' failed` |
+| "Expected vs. Got" framing | elm | Schema validation, argument errors |
+| Three verbosity tiers | cargo | `-v`, `-vv` / `AICHAT_DEBUG=1` |
+| Machine-readable JSON errors | cargo | `--output json` (already exists, extend) |
+| API status code translation | gh | Auth, rate limit, API errors |
+| Natural language error prose | elm | Default error messages |
+
+---
+
+## 2. DevOps Engineer: Shell Orchestration & Process Capture
+
+### 2.1 Process-Level Error Capture Strategy
+
+**Current state.** `run_llm_function` (`function.rs:427-472`) calls `run_command` (`command.rs:81-91`), which uses `Command::new(cmd).status()`. The `.status()` call inherits the parent's file descriptors. stdout and stderr from the child go directly to the terminal. The only structured output channel is the `$LLM_OUTPUT` temp file.
+
+**Recommendation: Pipe stderr, conditionally pipe stdout.**
+
+- **stderr** → always pipe to a buffer via `Stdio::piped()`. This is the single highest-impact change.
+- **stdout** → inherit by default (tools that print progress see it). When stdout-as-output fallback is active, pipe it.
+- **stdin** → inherit (tools may need interactive input, rare but possible).
+
+The stdlib `.output()` reads eagerly in a background thread, so pipe buffer limits (64KB kernel default) are not a concern. For stderr, cap at 64KB with a `[stderr truncated]` marker. For stdout (when used as output fallback), no cap needed — the `$LLM_OUTPUT` file protocol handles large output.
+
+**Signal handling.** With `.output()`, the child still shares the process group, so Ctrl-C delivers SIGINT to both processes. This is correct. If a child catches SIGINT and doesn't exit, the timeout mechanism (section 2.6) handles it.
+
+### 2.2 stderr Capture and Attribution
+
+After `child.wait_with_output()`, captured stderr should be:
+
+1. **Stored in the error context when exit code != 0.** Replace `bail!("Tool call exit with {exit_code}")` with a typed error carrying stderr.
+2. **Logged at debug level when exit code == 0.** Tool warnings preserved via `debug!("Tool '{tool_name}' stderr: {captured_stderr}")`.
+3. **Displayed in REPL mode with attribution.** `[tool:web_search] WARNING: rate limit approaching` — dimmed, prefixed.
+4. **Included in JSON error output.** Added to `error.stderr` field.
+
+### 2.3 $LLM_OUTPUT Evolution
+
+**Stdout fallback priority chain:**
+1. `$LLM_OUTPUT` file exists and is non-empty → use it (current behavior, unchanged).
+2. `$LLM_OUTPUT` missing/empty AND stdout piped and non-empty → use stdout.
+3. Both empty, exit code 0 → return `None` (legitimate no-output tool).
+4. Both empty, exit code non-zero → this is an error (currently silent).
+
+**Partial write detection:** Since aichat checks exit code before reading the file, skip reading `$LLM_OUTPUT` when exit code is non-zero. For success case, partial writes from exit-0 are a tool bug.
+
+**Temp file cleanup:** Delete temp file after reading on success. Keep on failure for debugging. Log path at debug level.
+
+**Concurrent tool calls:** UUID-based temp file naming (via `temp_file()`) already handles uniqueness. No race conditions exist today, and the pattern is safe for future concurrent execution.
+
+### 2.4 Tool Discovery and PATH Resolution Errors
+
+**Pre-flight checks before spawning:**
+
+1. **Binary existence.** Walk `bin_dirs` + system PATH. If not found: `"Tool '{cmd_name}' not found. Searched: {bin_dirs}. Did you run 'argc build-declarations'?"`
+2. **Interpreter availability.** Read first 2 bytes; if `#!`, parse interpreter path. If interpreter not on PATH: `"Tool '{cmd_name}' requires '{interpreter}' which is not installed."`
+3. **Permission check.** `metadata(path).permissions().mode() & 0o111`. If not executable: `"Tool '{cmd_name}' found at {path} but is not executable. Run: chmod +x {path}"`
+4. **Errno distinction.** `NotFound` → check above. `PermissionDenied` → report directly. Other → pass through OS message.
+
+Cost: stat syscalls (~1μs each). Negligible compared to process spawn or API calls.
+
+### 2.5 argc Integration Points
+
+1. **Pre-validation in Rust.** `functions.json` already contains the JSON Schema for each tool's parameters. Validate arguments against this schema *before spawning the tool process*, avoiding a fork+exec and making the error instant and structured.
+2. **Distinguishing argc parse errors from tool logic errors.** After capturing stderr, heuristic: `stderr.starts_with("error:") || stderr.contains("USAGE:")` → argc parse failure. Better: argc could use exit code 2 (Unix convention for usage error).
+3. **`@env` pre-checks.** Extend `build-declarations` to include `required_env` in functions.json. Then `run_llm_function` checks `std::env::var(name)` before spawning: `"Tool '{name}' requires environment variable {VAR} which is not set."`
+
+### 2.6 Timeout and Resource Limits
+
+**Configuration:** Per-tool `"timeout": 30` in functions.json, global `tool_timeout: 60` in config.yaml. Agent configs can override.
+
+**Implementation:** Switch to `tokio::process::Command` (async infrastructure already present) and wrap in `tokio::time::timeout()`.
+
+**Process cleanup on timeout:**
+1. Send SIGTERM. Use `Command::process_group(0)` (Rust 1.64+) to put child in its own process group.
+2. Wait 2 seconds.
+3. Send SIGKILL via `kill(-pgid, SIGKILL)` to kill entire process tree.
+4. Reap child to avoid zombies.
+
+**Message:** `"Tool 'web_search' timed out after 30s. hint: increase timeout with tool_timeout or per-tool "timeout" in functions.json"`
+
+### 2.7 Shell-Level Instrumentation (Harness Script)
+
+A thin `_tool_harness` wrapper that instruments tool execution without requiring tool authors to change anything:
+
+- Captures stderr to a temp file, replays on failure
+- Records timing (start/end wall clock)
+- Writes structured JSON error report to `$LLM_TOOL_REPORT` on failure
+- `trap _tool_cleanup EXIT` catches SIGTERM (not SIGKILL)
+- Can enable bash stack traces via `BASH_ENV` with `trap 'echo "ERR at ${BASH_SOURCE[0]}:${BASH_LINENO[0]}" >&2' ERR`
+- Implements atomic `$LLM_OUTPUT` writes via write-to-tmp-then-rename
+
+**Performance:** One additional fork+exec (~0.1ms Linux, ~1ms macOS). Negligible vs. tool execution time (100ms–10s). Should be the default with `tool_harness: false` escape hatch.
+
+---
+
+## 3. Data Architect: Structured Error Schemas
+
+### 3.1 Tool Execution Event Schema
+
+A unified schema capturing everything needed for debugging successful and failed tool calls, local and MCP.
+
+```yaml
+ToolExecutionEvent:
+  event_id: UUID
+  timestamp: ISO 8601
+  tool:
+    name: string          # as the LLM sees it
+    resolved_name: string # fully-qualified after resolution
+    source: local | mcp | pipeline_role
+    mcp_server: string?   # only for source=mcp
+    bin_path: PathBuf?    # only for source=local
+    interpreter: string?  # detected (bash, node, python3)
+  invocation:
+    call_id: string       # tool_call ID from LLM response
+    conversation_id: string
+    react_step: integer
+    pipeline_stage: { index, total, role_name, model_id }?
+    arguments: object
+    arguments_raw: string?
+  timing:
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: integer
+    timed_out: boolean
+  outcome: success | error | timeout | skipped
+  process:              # local tools only
+    exit_code: integer
+    signal: string?
+    stdout: string (4 KiB max)
+    stderr: string (4 KiB max)
+    llm_output_path: string
+    llm_output_exists: boolean
+    llm_output_bytes: integer
+  mcp:                  # MCP tools only
+    is_error: boolean
+    content_types: [string]
+    jsonrpc_code: integer?
+  output:
+    value: any
+    is_json: boolean
+    truncated: boolean
+    byte_length: integer
+  error: ToolErrorDetail?
+  environment:          # diagnostic, opt-in
+    path_dirs: [string]
+    relevant_env_vars: object
+    working_directory: string
+```
+
+### 3.2 Error Taxonomy as a Data Model
+
+Extends the current `AichatError` enum into a proper error taxonomy for tool calls, organized by *where in the tool lifecycle* the failure occurs.
+
+```yaml
+ToolErrorDetail:
+  category: resolution | argument | execution | output | dependency | protocol | orchestration
+  subcategory: string   # fine-grained within category
+  message: string       # human-friendly one sentence
+  raw_message: string   # unprocessed error from source
+  exit_code: integer?
+  severity: info | warning | error | fatal
+  retriable: boolean
+  retry_after_ms: integer?
+  suggestion: string    # actionable fix for the user
+  llm_hint: string      # concise hint for the LLM (~50 tokens)
+  related_errors: [ToolErrorDetail]?
+```
+
+**Subcategory reference (partial):**
+
+| Category | Subcategory | Retriable | Current Detection |
+|----------|-------------|-----------|-------------------|
+| resolution | `not_found` | No | `"Unexpected call:"` |
+| resolution | `permission_denied` | No | None |
+| resolution | `interpreter_missing` | No | None (conflated with not_found) |
+| argument | `invalid_json` | Yes | Partial: `"has invalid arguments"` |
+| argument | `schema_mismatch` | Yes | None (not validated pre-spawn) |
+| execution | `nonzero_exit` | Depends | `"Tool call exit with"` |
+| execution | `signal_killed` | No | None |
+| execution | `timeout` | Yes | Not implemented |
+| output | `no_output` | No | Implicit (null → "DONE") |
+| output | `invalid_json_output` | No | Silent fallback |
+| dependency | `missing_env_var` | No | None |
+| dependency | `service_unavailable` | Yes | None |
+| protocol | `mcp_connection_failed` | Yes | `"did not complete initialization"` |
+| orchestration | `pipeline_stage_failed` | No | `PipelineStage` variant |
+| orchestration | `partial_batch` | Depends | None |
+
+### 3.3 Error Context Enrichment Pipeline
+
+```
+Stage 1: Raw Capture
+  exit_code + stdout + stderr + timing + signal + $LLM_OUTPUT state
+    ↓
+Stage 2: Classification
+  Decision tree: exit code → stderr patterns → spawn failure → MCP flags → fallback
+    ↓
+Stage 3: Enrichment
+  + tool metadata, + suggestion, + llm_hint, + retriability, + severity
+    ↓
+Stage 4: Rendering
+  → CLI stderr (human-readable, ANSI color)
+  → JSON output (--output json)
+  → LLM context (token-budgeted tool_result)
+  → Structured log (JSON Lines)
+  → MCP response (JSON-RPC error codes)
+```
+
+### 3.4 Observability Schema
+
+| Level | What to Log |
+|-------|-------------|
+| ERROR | Any `outcome: error` or `outcome: timeout` |
+| WARN | Retriable failures, output truncation, degraded conditions |
+| INFO | One-line summary: `tool={name} outcome={outcome} duration={ms}ms` |
+| DEBUG | Full `ToolExecutionEvent` as JSON |
+| TRACE | MCP transport frames, raw HTTP headers, classification decision path |
+
+Format: JSON Lines to `~/.config/aichat/log`, compatible with `jq`. Correlation via `conversation_id` + `call_id` + `react_step`.
+
+### 3.5 Cross-Protocol Error Mapping
+
+The same `ToolErrorDetail` maps to every output format:
+
+| Format | Mapping |
+|--------|---------|
+| CLI stderr | `"Error: {tool} failed ({category}/{subcategory})\n  {message}\n  Fix: {suggestion}"` |
+| JSON output | `{"error": {"code", "category", "subcategory", "message", "context", "suggestions"}}` |
+| MCP response | `ErrorData { code: -32603, message, data: ToolErrorDetail }` |
+| LLM context | `"Tool {name} failed: {llm_hint}"` (~50 tokens max) |
+| A2A task result | `{ state: "failed", error: { code: "{category}", message } }` (future) |
+
+### 3.6 Error Aggregation for Multi-Tool Calls
+
+```
+Tool results (3/5 succeeded):
+  [ok]  web_search           412ms
+  [ok]  read_file            23ms
+  [ok]  execute_code         1.2s
+  [FAIL] execute_sql         127ms  dependency/service_unavailable
+  [SKIP] format_results      --     skipped: depends on execute_sql
+```
+
+For the LLM (concise, token-conscious):
+```
+Results: 3/5 tools succeeded.
+- execute_sql: FAILED - Database connection refused. Try without SQL.
+- format_results: SKIPPED (depends on execute_sql)
+```
+
+### 3.7 Schema Evolution Strategy
+
+- `schema_version` field in JSON error output
+- Typed errors as fast-path, string matching as fallback for third-party errors
+- Backward-compatible: existing exit codes (0-10) unchanged, new `subcategory` carries finer classification
+- Migration: Phase 1 captures raw data → Phase 2 adds typed variants → Phase 3 enriches → Phase 4 adds observability
+
+---
+
+## 4. ML Application Architect: LLM Error Recovery
+
+### 4.1 Error Recovery Protocol
+
+**Current fatal flow:** Tool error → `bail!()` at `function.rs:461` → propagates via `?` at `function.rs:43` → exits `eval_tool_calls` → exits `call_chat_completions` → exits `call_react`. **The LLM never sees the error.**
+
+**Proposed: Three-bucket classification.**
+
+| Bucket | Routing | Examples |
+|--------|---------|---------|
+| **Recoverable** | Report to LLM as `tool_result` with error payload | Non-zero exit, MCP `is_error`, tool not found, invalid arguments, timeout |
+| **Escalatable** | Report to LLM AND show to human | Auth errors, rate limiting, network errors from tools |
+| **Terminal** | Show to human, break the loop | Infinite loop, ReAct limit, user abort, infrastructure failure |
+
+**Error message structure for the LLM:**
+```
+[TOOL_ERROR] web_search failed (exit 1): SERPAPI_KEY not set.
+Stderr: Error: SERPAPI_KEY environment variable is not set
+Hint: This tool requires an API key. Ask the user to set SERPAPI_KEY.
+```
+
+Plain text, not nested JSON. `[TOOL_ERROR]` prefix lets the system prompt reference it. Target: under 300 tokens (~1,200 characters). Cost at current pricing: < $0.0075 per error on the most expensive models.
+
+**Retry budget:** 2 retries per unique `(tool_name, error_signature)` pair per `call_react` invocation. Third identical failure → escalate. Budget is per-tool, not global. Exhaustion converts "recoverable" to "escalatable", not terminal.
+
+**System prompt injection** (~80 tokens, amortized across session):
+> When a tool returns an error result, analyze the error message and take one of these actions:
+> 1. If the error suggests incorrect arguments, retry with corrected arguments.
+> 2. If the error suggests the tool is unavailable or misconfigured, inform the user and suggest a workaround.
+> 3. If a different tool could accomplish the same goal, try that tool instead.
+> 4. Do not retry a tool call with identical arguments if it already failed.
+
+### 4.2 Dual-Format Error Messages
+
+| Field | LLM sees | Human sees |
+|-------|----------|------------|
+| Tool name | Yes | Yes |
+| Exit code | Yes (numeric) | Yes (with label) |
+| One-line summary | Yes | Yes |
+| Stderr tail (raw, 10 lines) | Yes | No (too noisy) |
+| Stderr summary | No | Yes (parsed into actionable text) |
+| Hint | Yes (machine-directed) | Yes (human-directed, different phrasing) |
+| Fix instructions | No | Yes (with file paths, env var names) |
+| ANSI formatting | Never | Always (when `IS_STDOUT_TERMINAL`) |
+| Stack trace | Never | Only at debug verbosity |
+
+### 4.3 Graceful Degradation for Multi-Tool Calls
+
+**Current:** `eval_tool_calls` at `function.rs:43` uses `?` — first error aborts the entire function. Remaining independent tools are never attempted.
+
+**Proposed:** Replace `?` with match. Each call gets its own outcome. Failed calls become `ToolResult` entries with error payloads. The LLM sees all results:
+
+```
+tool_result for "web_search":  {"results": [...]}
+tool_result for "fetch_url":   [TOOL_ERROR] fetch_url failed (exit 1): Connection refused
+tool_result for "fs_read":     {"content": "...file contents..."}
+```
+
+Two of three succeeded. The LLM has enough context to proceed with partial information.
+
+If ALL tools fail, inject: "All requested tool calls failed. Review the errors below and consider whether to retry individual calls, try different tools, or ask the user for help."
+
+### 4.4 The "DONE" Problem
+
+**Three distinct cases currently collapsed into `Value::Null`:**
+
+1. **Tool ran, no output needed** (e.g., `fs_write`) → `{"status": "ok", "output": null}` — explicit success.
+2. **Tool ran, empty output** ($LLM_OUTPUT exists but empty) → `{"status": "ok", "output": ""}` — distinguishable from case 1.
+3. **Tool crashed silently** (exit 0 but no $LLM_OUTPUT) → `{"status": "warning", "output": null, "message": "Tool completed but produced no output."}` — alerts without hard error.
+
+**The `is_all_null` clearing** at `function.rs:52-54` should be removed entirely. Even if all tools return null, the LLM needs `tool_result` entries to satisfy the protocol. Current behavior causes the LLM to re-issue the same calls, creating a soft loop.
+
+### 4.5 LLM-Assisted Debugging
+
+When a tool returns an error classified as "escalatable", the runtime appends to the tool_result:
+
+```
+The tool "{tool_name}" failed. Below is the error output.
+Analyze this error and:
+1. Explain what went wrong in plain language.
+2. If you can fix it by calling a different tool or with different arguments, do so.
+3. If the issue requires user action, tell them specifically what to do.
+```
+
+This is NOT a separate LLM call — it's appended to the tool_result content. Zero additional API calls, zero additional latency. Cost: ~60 tokens.
+
+Stderr presented with markers: `[STDERR - last 15 lines of 247 total]` — gives the LLM a sense of scale.
+
+### 4.6 Token Cost of Error Context
+
+| Model Tier | Error Budget | Cost per Error |
+|------------|-------------|----------------|
+| Claude Opus / GPT-4o | 500 tokens | $0.0075 |
+| Claude Sonnet / GPT-4o-mini | 500 tokens | $0.0015 |
+| Haiku / small models | 300 tokens | $0.000075 |
+| Local (Ollama) | 200 tokens | $0 |
+
+**Truncation strategy:**
+- Default: last 15 lines of stderr, or 1,500 characters, whichever is less
+- Compilation errors: keep FIRST error + LAST 5 lines
+- Stack traces: keep last frame + exception message
+- Massive stderr (>2,000 chars): store full content in temp file, include reference
+
+### 4.7 Agent Loop Error Handling
+
+**Repeated failure detection.** Track `HashMap<(tool_name, args_hash, error_hash), count>` inside `call_react`.
+
+- Count 2: append "This is the second time this exact call failed. Do not retry with identical arguments."
+- Count 3: convert to terminal — break loop, show to user.
+- Different args = reset counter (legitimate new attempt).
+
+**Decay the step budget.** Instead of flat `MAX_REACT_STEPS = 10`, reduce remaining steps by 2 for each repeated failure. Clean run: 10 steps. One repeat: 8. Two repeats: 6.
+
+**Context enrichment on retry.** Append diff between previous and current arguments: "You are retrying web_search. Previous arguments: `{query: 'rust async'}`. Current arguments: `{query: 'rust async'}`. These are identical."
+
+**Alternative suggestions.** On tool failure, use `fuzzy_filter` (`utils/mod.rs:113`) to find tools with similar descriptions: "Available alternatives: fetch_url (if you have a direct URL)."
+
+### 4.8 Error Feedback to Tool Authors
+
+**Common mistake detection (at runtime):**
+- Wrote to stdout instead of `$LLM_OUTPUT` → "Tool appears to have written its result to stdout instead of $LLM_OUTPUT."
+- Missing shebang → "Tool script is missing a shebang line (#!/usr/bin/env bash)."
+- Non-executable → "Tool script exists but is not executable. Run: chmod +x /path/to/tool"
+- Binary output to `$LLM_OUTPUT` → "Tool wrote non-text content to $LLM_OUTPUT."
+
+**Tool validation mode.** `--validate-tool <name>`: resolve from functions.json, check exists/executable/shebang, dry-run with minimal arguments, verify output is valid JSON/text.
+
+**Local telemetry log.** Per-call: tool name, exit code, output size, duration, stderr size. Companion `aichat --tool-stats` command for failure rate/timing summaries.
+
+---
+
+## 5. Compiler Engineer: Diagnostic Architecture
+
+### 5.1 Diagnostic Struct
+
+Modeled after rustc's `Diagnostic` type and miette's `Report`, adapted for tool invocations:
+
+```
+Diagnostic {
+    severity:    Severity           // Error, Warning, Note, Help
+    code:        DiagnosticCode     // T001, C003, N002 — typed, not stringly
+    message:     String             // Primary human-readable message
+    labels:      Vec<Label>         // "Spans" pointing at relevant artifacts
+    notes:       Vec<String>        // Additional context paragraphs
+    suggestions: Vec<Suggestion>    // Actionable fixes
+    related:     Vec<Diagnostic>    // Causally related diagnostics
+    context:     InvocationContext  // The tool invocation snapshot
+}
+```
+
+### 5.2 Source Spans for Tool Invocations
+
+Compilers have source files with byte offsets. Tool invocations have **artifact references**:
+
+```
+Label {
+    artifact: ArtifactRef    // what we're pointing at
+    message:  String         // annotation
+    style:    LabelStyle     // Primary (^^^) vs Secondary (---)
+}
+
+enum ArtifactRef {
+    ToolBinary { path: PathBuf },
+    ArgumentField { path: String, value: String },  // JSON pointer: "/city"
+    ConfigFile { path: PathBuf, key: Option<String> },
+    EnvVar { name: String, value: Option<String> },
+    Shebang { path: PathBuf, line: String },
+    ToolOutput { path: PathBuf, content_preview: String },
+    StderrOutput { content: String },
+}
+```
+
+**Example rendering:**
+
+```
+error[T003]: tool interpreter not found
+  --> tool: analyze_code
+  |
+  = binary: /home/user/.config/aichat/functions/bin/analyze_code
+  |         #!/usr/bin/env python3
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^ interpreter 'python3' not found in PATH
+  |
+  = arguments: {"file": "/tmp/input.rs", "language": "rust"}
+  |
+  note: the tool was declared in /home/user/.config/aichat/functions.json
+  help: install python3, or update the shebang to point to an available interpreter
+```
+
+### 5.3 Error Provenance and Causal Chain
+
+**Current: information destroyed at every boundary.**
+
+```
+OS ENOENT → io::Error → anyhow context string → classify_error string match → ExitCode
+```
+
+**Proposed: typed wrappers at every boundary.**
+
+```
+ToolInvocationError {
+    context: InvocationContext { tool: "analyze_code", args: {...} },
+    cause: ToolSpawnError {
+        tool_name: "analyze_code",
+        binary_path: "/home/user/.config/aichat/functions/bin/analyze_code",
+        io_error: io::Error(NotFound),
+        probable_cause: InterpreterMissing {
+            shebang: "#!/usr/bin/env python3",
+            interpreter: "python3"
+        },
+    }
+}
+```
+
+Each layer adds context without destroying the inner error. The renderer traverses the chain.
+
+**Compatibility with anyhow:** New typed errors implement `std::error::Error`, are wrapped in `anyhow::Error::new()` at creation, and extracted via `downcast_ref` at rendering. String-matching fallback remains for third-party errors. This is exactly how `AichatError` works today — the pattern extends.
+
+### 5.4 Static Analysis Before Execution
+
+**Pre-flight check framework** (ordered, short-circuiting):
+
+| Order | Check | Cost | Error Code |
+|-------|-------|------|-----------|
+| 1 | Binary exists in PATH | stat syscalls ~1μs | T001 |
+| 2 | Binary is executable | metadata check | T002 |
+| 3 | Shebang interpreter available | read 2 bytes + which | T003 |
+| 4 | Argument schema validation | in-process JSON Schema | T004 |
+| 5 | Required env vars set | env::var check | — |
+| 6 | functions.json freshness | mtime comparison | — |
+
+### 5.5 Error Code System
+
+**Naming: `{Category}{Number}`**
+
+| Code | Meaning | Current Detection |
+|------|---------|-------------------|
+| T001 | Tool binary not found in PATH | `"Unable to run"` → ENOENT |
+| T002 | Tool binary not executable | `"Unable to run"` → EACCES |
+| T003 | Tool interpreter not found | Conflated with T001 |
+| T004 | Tool argument validation failed | Not detected pre-execution |
+| T005 | Tool exited with non-zero code | `"Tool call exit with"` |
+| T006 | Tool execution timeout | Not implemented |
+| T007 | Tool output not valid JSON | Silent fallback |
+| T008 | Tool output schema mismatch | `"Schema output validation"` |
+| T009 | Tool wrote no output | Silent → "DONE" |
+| T010 | Tool declared but binary missing | Not distinguished from T001 |
+| T011 | Infinite tool call loop | `"infinite loop"` |
+| T012 | ReAct loop exceeded | `"ReAct loop exceeded"` |
+| T013 | Tool not found in declarations | `"Unexpected call:"` |
+| T014 | MCP tool returned error | `"MCP tool ... returned error"` |
+| T015 | MCP server connection failed | `"Could not start MCP server"` |
+| T016 | MCP server init failed | `"did not complete initialization"` |
+| T017 | Functions.json load failed | `"Failed to load functions"` |
+
+Each code should have `--explain` text with: what it means, common causes, how to diagnose, how to fix, example of success.
+
+**Key finding:** T001 and T003 are currently indistinguishable. Both produce `ENOENT`. Pre-flight shebang parsing resolves the ambiguity.
+
+### 5.6 Suggestion Engine
+
+```
+Suggestion {
+    message:       String
+    applicability: MachineApplicable | MaybeIncorrect | HasPlaceholders
+    fix:           Option<Fix>
+}
+
+enum Fix {
+    RunCommand(String),          // "chmod +x /path/to/tool"
+    SetEnvVar { name, value },
+    InstallPackage { manager, package },
+}
+```
+
+| Error Code | Suggestion |
+|-----------|-----------|
+| T001 | "Available tools: [list]. Did you mean '{closest}'?" (fuzzy match via existing `fuzzy_filter`) |
+| T002 | "Try: chmod +x {path}" (MachineApplicable) |
+| T003 | "Install '{interpreter}'. Try: {install_cmd}" (python3 → brew install python3) |
+| T005 | Parse stderr for patterns → contextual fix |
+| T013 | Fuzzy-match against declarations |
+
+### 5.7 Error Deduplication
+
+When multiple tools fail with the same root cause (e.g., PATH misconfigured):
+
+- **Same code, same root cause** → show once with count: `"error[T001]: tool binary not found (3 tools affected)"`
+- **Same code, different root cause** → show each, collapsed after first
+- **Different code, same root cause** → show root cause once, list derived errors
+
+### 5.8 The `classify_error` Problem
+
+**Current fragility:**
+- `is_api_error` matches `"(status: 4"` — catches all 4xx. `is_auth_error` matches `"(status: 401)"`. Only works because auth is checked first.
+- `is_network_error` matches `"connection"` — any error incidentally containing "connection" is misclassified.
+- No exhaustiveness guarantee when new `AichatError` variants are added.
+
+**Migration path:**
+1. **Phase 1: Birth typing.** Every `bail!` producing a classifiable error → typed `AichatError` variant. The error carries its classification from creation.
+2. **Phase 2: String matching as fallback only.** Document which third-party errors produce each pattern.
+3. **Phase 3: Compile-time coverage.** Tests verify all typed variants have classification; no `bail!` in core modules produces untyped errors.
+
+### 5.9 Regression Testing for Error Messages
+
+**Snapshot testing** (like rustc's UI tests):
+- `tests/fixtures/error-snapshots/{T001-binary-not-found}/` with `scenario.json` + `expected.stderr` + `expected.json`
+- Content assertion tests: construct typed error, render, assert every field appears in output
+- Chain preservation tests: 3-level error chain renders all levels
+- Full-chain integration tests: broken tool → `run_llm_function` → `classify_error` → `render_error` → assert output
+
+---
+
+## 6. Convergence: All 5 Agents Agree
+
+### 6.1 Capture stderr (single highest-leverage change)
+
+Every agent independently identified `run_command` using `.status()` as the root problem. Without stderr capture, every other error UX improvement is cosmetic.
+
+### 6.2 Stop converting null to "DONE"
+
+`function.rs:46` masks tool crashes as successes. Violates tool_use protocol.
+
+### 6.3 Return tool errors to the LLM instead of bailing
+
+`function.rs:43` terminates the agent loop on first error. The LLM never learns what went wrong.
+
+### 6.4 Replace string-matched errors with typed errors
+
+`classify_error()` is fragile. Errors should carry classification from birth.
+
+### 6.5 Add `hint:` to every error path
+
+MCP errors already have hints. The 6 other major error sites do not.
+
+---
+
+## 7. Implementation Roadmap
+
+### Phase A: Foundation (Low effort, massive impact)
+
+All changes in aichat. ~70 lines of Rust.
+
+| # | Change | Files | Est. Lines |
+|---|--------|-------|-----------|
+| A1 | Capture stderr from tool processes (`.status()` → `.output()` with `Stdio::piped()`) | `command.rs`, `function.rs` | ~20 |
+| A2 | Include stderr + tool name in error message | `function.rs:458-461` | ~15 |
+| A3 | Return tool errors as `ToolResult` instead of bailing | `function.rs:40-51` | ~25 |
+| A4 | Replace `"DONE"` with structured null-result; remove `is_all_null` clearing | `function.rs:45-54` | ~10 |
+
+**Result:** LLM sees tool failures and can recover. Users see stderr. Silent false successes eliminated.
+
+### Phase B: Diagnostics (Medium effort, high impact)
+
+| # | Change | Files |
+|---|--------|-------|
+| B1 | Pre-flight checks: binary/executable/interpreter/schema | `function.rs` (new section) |
+| B2 | Typed error variants: `ToolSpawnError`, `ToolExecutionError`, `ToolOutputError` | `exit_code.rs` |
+| B3 | `hint:` on all error paths with contextual suggestions | ~6 error sites |
+| B4 | Argument schema validation before spawning (using existing jsonschema) | `function.rs` |
+
+### Phase C: Observability (Medium effort)
+
+| # | Change | Files |
+|---|--------|-------|
+| C1 | Per-tool timeout with SIGTERM→SIGKILL escalation | `function.rs`, `command.rs` |
+| C2 | `ToolExecutionEvent` structured logging (JSON Lines) | new module |
+| C3 | 3-tier progressive disclosure (`-v`/`-vv`/`AICHAT_DEBUG`) | `render/mod.rs`, CLI args |
+| C4 | Retry budget + loop detection in `call_react` | `client/common.rs` |
+
+### Phase D: Polish
+
+| # | Change |
+|---|--------|
+| D1 | Error code system (T001–T017) with `--explain` |
+| D2 | Error deduplication for multi-tool failures |
+| D3 | `--validate-tool` dry-run command |
+| D4 | Snapshot tests for error message regression |
+| D5 | Shell harness script for instrumentation |
+| D6 | REPL error UX (`.debug`, `.retry`, `.errors` commands) |
+
+---
+
+## 8. Before & After
+
+**Today:**
+```
+Tool call exit with 1
+```
+
+**After Phase A:**
+```
+error: tool 'web_search' failed (exit code 1)
+  stderr: curl: (6) Could not resolve host: api.serper.dev
+```
+
+**After Phase B:**
+```
+error[T005]: tool 'web_search' failed (exit code 1)
+  Command: web_search '{"query":"rust async"}'
+  stderr: curl: (6) Could not resolve host: api.serper.dev
+  hint: check your internet connection, or verify SERPAPI_KEY is set
+```
+
+**After Phase C** (with `-vv`):
+```
+error[T005]: tool 'web_search' failed (exit code 1)
+  Command: web_search '{"query":"rust async"}'
+  stderr: curl: (6) Could not resolve host: api.serper.dev
+  hint: check your internet connection, or verify SERPAPI_KEY is set
+
+  --- debug ---
+  binary: /Users/admin/.config/aichat/functions/bin/web_search
+  PATH: /Users/admin/.config/aichat/functions/bin:/usr/local/bin:/usr/bin
+  LLM_OUTPUT: /tmp/aichat-12345-abc-eval-  (not written)
+  duration: 2.3s
+  ---
+```
+
+---
+
+## Cost Consciousness Note
+
+Per CLAUDE.md: "this tool should be cost conscious." The ML architect calculated that error context sent to the LLM should be capped at ~300 tokens (~1,200 characters). At current pricing, even 10 tool errors per session cost < $0.08 on the most expensive models. The value of allowing the LLM to self-correct on tool failures far exceeds this cost — a single avoided retry loop saves more tokens than the error messages consume.
+
+---
+
+## Where This Lives
+
+Almost everything (95%+) lives in **aichat** (Rust runtime). The tools themselves are already doing their job — the runtime is the one discarding information.
+
+- **aichat**: Phases A–D (stderr capture, typed errors, diagnostics, observability, rendering)
+- **llm-functions** (minor): Extend `build-declarations` to include `required_env` from argc `@env` annotations
+- **Specification**: The `ToolExecutionEvent` schema is a contract. Starts as Rust structs, extractable later if needed.
+
+The existing architecture analysis (`docs/analysis/2026-03-10-llm-functions-interaction.mdx`) already established: "Tools are Unix. Protocols are runtime." Error handling is protocol — it belongs in the runtime.
