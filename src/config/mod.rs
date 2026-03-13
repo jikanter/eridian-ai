@@ -6,8 +6,8 @@ mod session;
 pub use self::agent::{complete_agent_variables, list_agents, Agent, AgentVariables};
 pub use self::input::Input;
 pub use self::role::{
-    validate_schema, Role, RoleExample, RoleLike, RolePipelineStage, CODE_ROLE, CREATE_TITLE_ROLE,
-    EXPLAIN_SHELL_ROLE, SHELL_ROLE,
+    run_lifecycle_hooks, validate_schema, Role, RoleExample, RoleLike, RolePipelineStage,
+    CODE_ROLE, CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
 };
 use self::session::Session;
 
@@ -976,6 +976,35 @@ impl Config {
             let resolved = self.resolve_role_variables(&role)?;
             role.apply_variables(&resolved);
         }
+
+        // Phase 6C: Auto-bind MCP server tools to the role's use_tools
+        if !role.role_mcp_servers().is_empty() {
+            let mcp_prefixes: Vec<String> = role
+                .role_mcp_servers()
+                .iter()
+                .filter(|s| self.mcp_servers.contains_key(s.as_str()))
+                .map(|s| format!("{s}:*"))
+                .collect();
+            if !mcp_prefixes.is_empty() {
+                let existing = role.use_tools().unwrap_or_default().to_string();
+                let combined = if existing.is_empty() {
+                    mcp_prefixes.join(",")
+                } else {
+                    format!("{},{}", existing, mcp_prefixes.join(","))
+                };
+                role.set_use_tools(Some(combined));
+            }
+            // Warn about unknown MCP server names
+            for s in role.role_mcp_servers() {
+                if !self.mcp_servers.contains_key(s.as_str()) {
+                    warn!(
+                        "Role '{}' references unknown mcp_server '{}' — not in global config",
+                        name, s
+                    );
+                }
+            }
+        }
+
         let current_model = self.current_model().clone();
         match role.model_id() {
             Some(model_id) => {
@@ -1002,12 +1031,22 @@ impl Config {
     fn resolve_role_variables(&self, role: &Role) -> Result<IndexMap<String, String>> {
         let mut output = IndexMap::new();
         for var in role.variables() {
+            // CLI -v flag takes precedence over defaults (including shell defaults)
             let value = self
                 .role_variables
                 .as_ref()
                 .and_then(|vars| vars.get(&var.name))
                 .cloned()
-                .or_else(|| var.default.clone())
+                .or_else(|| {
+                    // Phase 6A: Resolve default, which may be a shell command
+                    var.default.as_ref().and_then(|d| match d.resolve() {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            warn!("Shell variable '{}' failed: {e}", var.name);
+                            None
+                        }
+                    })
+                })
                 .ok_or_else(|| {
                     anyhow!(
                         "Role variable '{}' is required but not provided (use -v {}=VALUE)",

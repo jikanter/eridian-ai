@@ -20,9 +20,9 @@ use crate::client::{
     call_chat_completions, call_chat_completions_streaming, call_react, list_models, ModelType,
 };
 use crate::config::{
-    ensure_parent_exists, list_agents, load_env_file, macro_execute, validate_schema, Config,
-    GlobalConfig, Input, RoleLike, WorkingMode, CODE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
-    TEMP_SESSION_NAME,
+    ensure_parent_exists, list_agents, load_env_file, macro_execute, run_lifecycle_hooks,
+    validate_schema, Config, GlobalConfig, Input, RoleLike, WorkingMode, CODE_ROLE,
+    EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
 };
 use crate::render::render_error;
 use crate::repl::Repl;
@@ -378,6 +378,11 @@ async fn start_directive(
                 println!();
             }
         }
+    }
+
+    // Phase 6B: Run lifecycle hooks (pipe_to, save_to)
+    if !is_dry_run {
+        run_lifecycle_hooks(input.role(), &output)?;
     }
 
     config

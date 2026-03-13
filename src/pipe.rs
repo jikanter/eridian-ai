@@ -1,6 +1,8 @@
 use crate::cli::Cli;
 use crate::client::{call_chat_completions, call_chat_completions_streaming, call_react};
-use crate::config::{validate_schema, Config, GlobalConfig, Input, RoleLike, RolePipelineStage};
+use crate::config::{
+    run_lifecycle_hooks, validate_schema, Config, GlobalConfig, Input, RoleLike, RolePipelineStage,
+};
 use crate::utils::*;
 
 use anyhow::{bail, Context, Result};
@@ -164,6 +166,11 @@ async fn run_stage_inner(
         if !final_output.ends_with('\n') {
             println!();
         }
+    }
+
+    // Phase 6B: Run lifecycle hooks on the last stage
+    if is_last {
+        run_lifecycle_hooks(&role, &output)?;
     }
 
     // Strip think tags from intermediate output
