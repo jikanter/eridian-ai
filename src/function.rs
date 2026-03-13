@@ -4,7 +4,6 @@ use crate::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -127,7 +126,7 @@ use crate::config::RoleExample;
 pub struct FunctionDeclaration {
     pub name: String,
     pub description: String,
-    pub parameters: JsonSchema,
+    pub parameters: Value,
     #[serde(skip_serializing, default)]
     pub agent: bool,
     #[serde(skip, default)]
@@ -136,60 +135,35 @@ pub struct FunctionDeclaration {
     pub examples: Option<Vec<RoleExample>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct JsonSchema {
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
-    pub type_value: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<IndexMap<String, JsonSchema>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<JsonSchema>>,
-    #[serde(rename = "anyOf", skip_serializing_if = "Option::is_none")]
-    pub any_of: Option<Vec<JsonSchema>>,
-    #[serde(rename = "enum", skip_serializing_if = "Option::is_none")]
-    pub enum_value: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub required: Option<Vec<String>>,
-}
-
-impl JsonSchema {
-    pub fn is_empty_properties(&self) -> bool {
-        match &self.properties {
-            Some(v) => v.is_empty(),
+impl FunctionDeclaration {
+    pub fn is_empty_parameters(&self) -> bool {
+        match self.parameters.get("properties") {
+            Some(Value::Object(map)) => map.is_empty(),
+            Some(_) => false,
             None => true,
         }
     }
 }
+
 
 pub const TOOL_SEARCH_NAME: &str = "tool_search";
 
 impl FunctionDeclaration {
     /// Creates the tool_search meta-function for deferred tool loading.
     pub fn tool_search() -> Self {
-        let mut properties = IndexMap::new();
-        properties.insert(
-            "query".to_string(),
-            JsonSchema {
-                type_value: Some("string".to_string()),
-                description: Some(
-                    "Keyword to search for relevant tools. Use descriptive terms like 'file', 'web', 'database'.".to_string(),
-                ),
-                ..Default::default()
-            },
-        );
         Self {
             name: TOOL_SEARCH_NAME.to_string(),
             description: "Search for available tools by keyword. You MUST call this before using any other tool.".to_string(),
-            parameters: JsonSchema {
-                type_value: Some("object".to_string()),
-                properties: Some(properties),
-                required: Some(vec!["query".to_string()]),
-                ..Default::default()
-            },
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Keyword to search for relevant tools. Use descriptive terms like 'file', 'web', 'database'."
+                    }
+                },
+                "required": ["query"]
+            }),
             agent: false,
             source: ToolSource::default(),
             examples: None,
@@ -362,8 +336,8 @@ impl ToolCall {
             // Include parameter hints
             let params = f
                 .parameters
-                .properties
-                .as_ref()
+                .get("properties")
+                .and_then(|v| v.as_object())
                 .map(|props| {
                     props
                         .keys()

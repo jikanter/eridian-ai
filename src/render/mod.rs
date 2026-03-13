@@ -25,6 +25,19 @@ pub async fn render_stream(
     ret.map_err(|err| err.context("Failed to reader stream"))
 }
 
-pub fn render_error(err: anyhow::Error) {
-    eprintln!("{}", error_text(&pretty_error(&err)));
+pub fn render_error(err: anyhow::Error, output_format: Option<crate::cli::OutputFormat>, code: crate::utils::ExitCode) {
+    if matches!(output_format, Some(crate::cli::OutputFormat::Json)) {
+        let mut error_obj = serde_json::json!({
+            "code": code.as_i32(),
+            "category": code.category_name(),
+            "message": err.to_string(),
+        });
+        if let Some(typed) = err.downcast_ref::<crate::utils::AichatError>() {
+            error_obj["context"] = typed.to_json_context();
+        }
+        let payload = serde_json::json!({ "error": error_obj });
+        eprintln!("{}", serde_json::to_string(&payload).unwrap_or_default());
+    } else {
+        eprintln!("{}", error_text(&pretty_error(&err)));
+    }
 }

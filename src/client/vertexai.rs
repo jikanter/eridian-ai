@@ -408,7 +408,7 @@ pub fn gemini_build_chat_completions_body(
         let function_declarations: Vec<_> = functions
             .into_iter()
             .map(|function| {
-                if function.parameters.is_empty_properties() {
+                if function.is_empty_parameters() {
                     json!({
                         "name": function.name,
                         "description": function.description,

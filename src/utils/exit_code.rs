@@ -37,10 +37,156 @@ impl ExitCode {
     pub fn as_i32(self) -> i32 {
         self as i32
     }
+
+    pub fn category_name(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::GeneralError => "general",
+            Self::UsageError => "usage",
+            Self::ConfigError => "config",
+            Self::AuthError => "auth",
+            Self::NetworkError => "network",
+            Self::ApiError => "api",
+            Self::ModelError => "model",
+            Self::SchemaError => "schema_validation",
+            Self::Aborted => "aborted",
+            Self::ToolError => "tool",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Structured error types — used at error boundaries for machine-readable detail
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub enum AichatError {
+    SchemaValidation {
+        direction: String,
+        message: String,
+    },
+    ConfigParse {
+        message: String,
+        field: Option<String>,
+    },
+    ToolNotFound {
+        name: String,
+    },
+    PipelineStage {
+        stage: usize,
+        total: usize,
+        role_name: String,
+        model_id: Option<String>,
+        message: String,
+    },
+    McpError {
+        message: String,
+        server: Option<String>,
+        tool: Option<String>,
+    },
+}
+
+impl std::fmt::Display for AichatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SchemaValidation { direction, message } => {
+                write!(f, "Schema {direction} validation failed: {message}")
+            }
+            Self::ConfigParse { message, field } => match field {
+                Some(field) => write!(f, "Config parse error in '{field}': {message}"),
+                None => write!(f, "Config parse error: {message}"),
+            },
+            Self::ToolNotFound { name } => write!(f, "Tool not found: {name}"),
+            Self::PipelineStage {
+                stage,
+                total,
+                role_name,
+                model_id,
+                message,
+            } => {
+                write!(f, "Pipeline stage {stage}/{total} (role '{role_name}'")?;
+                if let Some(model) = model_id {
+                    write!(f, ", model '{model}'")?;
+                }
+                write!(f, ") failed: {message}")
+            }
+            Self::McpError {
+                message,
+                server,
+                tool,
+            } => {
+                write!(f, "MCP error")?;
+                if let Some(s) = server {
+                    write!(f, " [{s}")?;
+                    if let Some(t) = tool {
+                        write!(f, ":{t}")?;
+                    }
+                    write!(f, "]")?;
+                }
+                write!(f, ": {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AichatError {}
+
+impl AichatError {
+    pub fn exit_code(&self) -> ExitCode {
+        match self {
+            Self::SchemaValidation { .. } => ExitCode::SchemaError,
+            Self::ConfigParse { .. } => ExitCode::ConfigError,
+            Self::ToolNotFound { .. } => ExitCode::ToolError,
+            Self::PipelineStage { .. } => ExitCode::ToolError,
+            Self::McpError { .. } => ExitCode::ToolError,
+        }
+    }
+
+    pub fn to_json_context(&self) -> serde_json::Value {
+        match self {
+            Self::SchemaValidation { direction, message } => {
+                serde_json::json!({ "direction": direction, "detail": message })
+            }
+            Self::ConfigParse { message, field } => {
+                serde_json::json!({ "detail": message, "field": field })
+            }
+            Self::ToolNotFound { name } => {
+                serde_json::json!({ "tool": name })
+            }
+            Self::PipelineStage {
+                stage,
+                total,
+                role_name,
+                model_id,
+                message,
+            } => {
+                serde_json::json!({
+                    "stage": stage,
+                    "total": total,
+                    "role": role_name,
+                    "model": model_id,
+                    "detail": message,
+                })
+            }
+            Self::McpError {
+                message,
+                server,
+                tool,
+            } => {
+                serde_json::json!({ "detail": message, "server": server, "tool": tool })
+            }
+        }
+    }
 }
 
 /// Inspect an `anyhow::Error` chain and return the most specific exit code.
 pub fn classify_error(err: &anyhow::Error) -> ExitCode {
+    // Fast path: check for typed AichatError first
+    if let Some(typed) = err.downcast_ref::<AichatError>() {
+        return typed.exit_code();
+    }
+
     // Walk the entire error chain so context wrappers don't hide the cause.
     for cause in err.chain() {
         let msg = cause.to_string();
@@ -280,5 +426,74 @@ mod tests {
         assert_eq!(ExitCode::SchemaError.as_i32(), 8);
         assert_eq!(ExitCode::Aborted.as_i32(), 9);
         assert_eq!(ExitCode::ToolError.as_i32(), 10);
+    }
+
+    #[test]
+    fn test_category_names() {
+        assert_eq!(ExitCode::SchemaError.category_name(), "schema_validation");
+        assert_eq!(ExitCode::ToolError.category_name(), "tool");
+        assert_eq!(ExitCode::ConfigError.category_name(), "config");
+    }
+
+    #[test]
+    fn test_classify_typed_pipeline_error() {
+        let err = anyhow::Error::new(AichatError::PipelineStage {
+            stage: 2,
+            total: 4,
+            role_name: "review".to_string(),
+            model_id: Some("claude-sonnet-4-6".to_string()),
+            message: "Model returned empty output".to_string(),
+        });
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
+        assert!(err.to_string().contains("Pipeline stage 2/4"));
+        assert!(err.to_string().contains("role 'review'"));
+        assert!(err.to_string().contains("model 'claude-sonnet-4-6'"));
+    }
+
+    #[test]
+    fn test_classify_typed_schema_error() {
+        let err = anyhow::Error::new(AichatError::SchemaValidation {
+            direction: "output".to_string(),
+            message: "missing field `name`".to_string(),
+        });
+        assert_eq!(classify_error(&err), ExitCode::SchemaError);
+    }
+
+    #[test]
+    fn test_classify_typed_tool_not_found() {
+        let err = anyhow::Error::new(AichatError::ToolNotFound {
+            name: "nonexistent_tool".to_string(),
+        });
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
+    }
+
+    #[test]
+    fn test_aichat_error_json_context() {
+        let err = AichatError::PipelineStage {
+            stage: 2,
+            total: 3,
+            role_name: "review".to_string(),
+            model_id: Some("claude".to_string()),
+            message: "timeout".to_string(),
+        };
+        let ctx = err.to_json_context();
+        assert_eq!(ctx["stage"], 2);
+        assert_eq!(ctx["total"], 3);
+        assert_eq!(ctx["role"], "review");
+        assert_eq!(ctx["model"], "claude");
+        assert_eq!(ctx["detail"], "timeout");
+    }
+
+    #[test]
+    fn test_typed_error_takes_priority_over_string_match() {
+        // An AichatError::McpError should classify as ToolError via the fast path,
+        // even though the string might match other patterns.
+        let err = anyhow::Error::new(AichatError::McpError {
+            message: "connection timed out".to_string(), // would match NetworkError via string
+            server: Some("github".to_string()),
+            tool: Some("create-issue".to_string()),
+        });
+        // Fast path: typed error → ToolError (not NetworkError from string match)
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
     }
 }

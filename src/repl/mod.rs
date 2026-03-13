@@ -13,7 +13,8 @@ use crate::config::{
 };
 use crate::render::render_error;
 use crate::utils::{
-    abortable_run_with_spinner, create_abort_signal, dimmed_text, set_text, temp_file, AbortSignal,
+    abortable_run_with_spinner, classify_error, create_abort_signal, dimmed_text, set_text,
+    temp_file, AbortSignal,
 };
 
 use anyhow::{bail, Context, Result};
@@ -240,7 +241,8 @@ Type ".help" for additional help.
                             }
                         }
                         Err(err) => {
-                            render_error(err);
+                            let code = classify_error(&err);
+                            render_error(err, None, code);
                             println!()
                         }
                     }

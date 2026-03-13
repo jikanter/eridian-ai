@@ -93,13 +93,17 @@ async fn run_stage(
         debug!("Failed to restore model after pipeline stage: {e}");
     }
 
-    result.with_context(|| {
-        format!(
-            "Pipeline stage {}/{} (role '{}') failed",
-            stage_index + 1,
-            stage_count,
-            stage.role_name
-        )
+    result.map_err(|e| {
+        let model_id = stage.model_id.clone().unwrap_or_else(|| {
+            config.read().current_model().id()
+        });
+        anyhow::Error::new(AichatError::PipelineStage {
+            stage: stage_index + 1,
+            total: stage_count,
+            role_name: stage.role_name.clone(),
+            model_id: Some(model_id),
+            message: e.to_string(),
+        })
     })
 }
 

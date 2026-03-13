@@ -119,34 +119,45 @@ fn parse_raw_frontmatter(content: &str) -> RawRoleParts {
             let meta_str = metadata_value.as_str().trim();
             prompt = prompt_value.as_str().trim().to_string();
 
-            if let Ok(value) = serde_yaml::from_str::<Value>(meta_str) {
-                if let Some(map) = value.as_object() {
-                    for (key, value) in map {
-                        match key.as_str() {
-                            "extends" => {
-                                extends = value.as_str().map(|v| v.to_string());
-                            }
-                            "include" => {
-                                if let Some(arr) = value.as_array() {
-                                    includes = arr
-                                        .iter()
-                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                        .collect();
+            match serde_yaml::from_str::<Value>(meta_str) {
+                Ok(value) => {
+                    if let Some(map) = value.as_object() {
+                        for (key, value) in map {
+                            match key.as_str() {
+                                "extends" => {
+                                    extends = value.as_str().map(|v| v.to_string());
                                 }
-                            }
-                            "variables" => {
-                                if let Some(arr) = value.as_array() {
-                                    variables = arr
-                                        .iter()
-                                        .filter_map(|v| serde_json::from_value::<RoleVariable>(v.clone()).ok())
-                                        .collect();
+                                "include" => {
+                                    if let Some(arr) = value.as_array() {
+                                        includes = arr
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                            .collect();
+                                    }
                                 }
-                            }
-                            _ => {
-                                metadata.insert(key.clone(), value.clone());
+                                "variables" => {
+                                    if let Some(arr) = value.as_array() {
+                                        variables = arr
+                                            .iter()
+                                            .filter_map(|v| match serde_json::from_value::<RoleVariable>(v.clone()) {
+                                                Ok(var) => Some(var),
+                                                Err(e) => {
+                                                    warn!("Skipping invalid variable in frontmatter: {e}");
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+                                    }
+                                }
+                                _ => {
+                                    metadata.insert(key.clone(), value.clone());
+                                }
                             }
                         }
                     }
+                }
+                Err(e) => {
+                    warn!("Role frontmatter has invalid YAML: {e}");
                 }
             }
         }
@@ -310,67 +321,80 @@ impl Role {
             ..Default::default()
         };
         if !metadata.is_empty() {
-            if let Ok(value) = serde_yaml::from_str::<Value>(metadata) {
-                if let Some(value) = value.as_object() {
-                    for (key, value) in value {
-                        match key.as_str() {
-                            "model" => role.model_id = value.as_str().map(|v| v.to_string()),
-                            "temperature" => role.temperature = value.as_f64(),
-                            "top_p" => role.top_p = value.as_f64(),
-                            "use_tools" => role.use_tools = value.as_str().map(|v| v.to_string()),
-                            "input_schema" => role.input_schema = Some(value.clone()),
-                            "output_schema" => role.output_schema = Some(value.clone()),
-                            "description" => {
-                                role.description = value.as_str().map(|v| v.to_string())
-                            }
-                            "examples" => {
-                                if let Some(arr) = value.as_array() {
-                                    role.examples = Some(
-                                        arr.iter()
-                                            .filter_map(|v| {
-                                                serde_json::from_value::<RoleExample>(v.clone())
-                                                    .ok()
+            match serde_yaml::from_str::<Value>(metadata) {
+                Ok(value) => {
+                    if let Some(value) = value.as_object() {
+                        for (key, value) in value {
+                            match key.as_str() {
+                                "model" => role.model_id = value.as_str().map(|v| v.to_string()),
+                                "temperature" => role.temperature = value.as_f64(),
+                                "top_p" => role.top_p = value.as_f64(),
+                                "use_tools" | "tools" => role.use_tools = value.as_str().map(|v| v.to_string()),
+                                "input_schema" => role.input_schema = Some(value.clone()),
+                                "output_schema" => role.output_schema = Some(value.clone()),
+                                "description" => {
+                                    role.description = value.as_str().map(|v| v.to_string())
+                                }
+                                "examples" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.examples = Some(
+                                            arr.iter()
+                                                .filter_map(|v| match serde_json::from_value::<RoleExample>(v.clone()) {
+                                                    Ok(ex) => Some(ex),
+                                                    Err(e) => {
+                                                        warn!("Skipping invalid example in role '{}': {e}", name);
+                                                        None
+                                                    }
+                                                })
+                                                .collect(),
+                                        );
+                                    }
+                                }
+                                "pipeline" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.pipeline = Some(
+                                            arr.iter()
+                                                .filter_map(|v| match serde_json::from_value::<RolePipelineStage>(v.clone()) {
+                                                    Ok(stage) => Some(stage),
+                                                    Err(e) => {
+                                                        warn!("Skipping invalid pipeline stage in role '{}': {e}", name);
+                                                        None
+                                                    }
+                                                })
+                                                .collect(),
+                                        );
+                                    }
+                                }
+                                "extends" => role.extends = value.as_str().map(|v| v.to_string()),
+                                "include" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.include = arr
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                            .collect();
+                                    }
+                                }
+                                "variables" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.variables = arr
+                                            .iter()
+                                            .filter_map(|v| match serde_json::from_value::<RoleVariable>(v.clone()) {
+                                                Ok(var) => Some(var),
+                                                Err(e) => {
+                                                    warn!("Skipping invalid variable in role '{}': {e}", name);
+                                                    None
+                                                }
                                             })
-                                            .collect(),
-                                    );
+                                            .collect();
+                                    }
                                 }
+                                _ => (),
                             }
-                            "pipeline" => {
-                                if let Some(arr) = value.as_array() {
-                                    role.pipeline = Some(
-                                        arr.iter()
-                                            .filter_map(|v| {
-                                                serde_json::from_value::<RolePipelineStage>(
-                                                    v.clone(),
-                                                )
-                                                .ok()
-                                            })
-                                            .collect(),
-                                    );
-                                }
-                            }
-                            "extends" => role.extends = value.as_str().map(|v| v.to_string()),
-                            "include" => {
-                                if let Some(arr) = value.as_array() {
-                                    role.include = arr
-                                        .iter()
-                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                        .collect();
-                                }
-                            }
-                            "variables" => {
-                                if let Some(arr) = value.as_array() {
-                                    role.variables = arr
-                                        .iter()
-                                        .filter_map(|v| {
-                                            serde_json::from_value::<RoleVariable>(v.clone()).ok()
-                                        })
-                                        .collect();
-                                }
-                            }
-                            _ => (),
                         }
                     }
+                }
+                Err(e) => {
+                    warn!("Role '{}' has invalid YAML metadata: {e}", name);
                 }
             }
         }

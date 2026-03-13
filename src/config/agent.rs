@@ -374,7 +374,7 @@ pub struct AgentConfig {
     pub temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "tools")]
     pub use_tools: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_prelude: Option<String>,

@@ -63,9 +63,10 @@ async fn main() -> Result<()> {
         || cli.list_tools;
     setup_logger(working_mode.is_serve() || working_mode.is_mcp())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
+    let output_format = cli.output_format;
     if let Err(err) = run(config, cli, text).await {
         let code = classify_error(&err);
-        render_error(err);
+        render_error(err, output_format, code);
         std::process::exit(code.as_i32());
     }
     Ok(())
