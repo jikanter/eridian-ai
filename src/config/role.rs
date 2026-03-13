@@ -64,6 +64,20 @@ pub struct Role {
     #[serde(skip_serializing_if = "Option::is_none")]
     pipeline: Option<Vec<RolePipelineStage>>,
 
+    // Phase 6B: Lifecycle hooks
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pipe_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    save_to: Option<String>,
+
+    // Phase 6C: Unified resource binding
+    #[serde(
+        rename(serialize = "mcp_servers", deserialize = "mcp_servers"),
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    role_mcp_servers: Vec<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     extends: Option<String>,
     #[serde(
@@ -91,11 +105,45 @@ pub struct RolePipelineStage {
     pub model: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum VariableDefault {
+    Value(String),
+    Shell { shell: String },
+}
+
+impl VariableDefault {
+    /// Resolve the default to a concrete string value.
+    /// For `Value`, returns the string directly.
+    /// For `Shell`, executes the command and returns stdout (trimmed).
+    pub fn resolve(&self) -> anyhow::Result<String> {
+        match self {
+            VariableDefault::Value(s) => Ok(s.clone()),
+            VariableDefault::Shell { shell } => {
+                let output = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(shell)
+                    .output()
+                    .with_context(|| format!("Failed to execute shell variable: {shell}"))?;
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    bail!(
+                        "Shell variable command failed (exit {}): {}",
+                        output.status,
+                        stderr.trim()
+                    );
+                }
+                Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct RoleVariable {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub default: Option<String>,
+    pub default: Option<VariableDefault>,
 }
 
 #[derive(Debug)]
@@ -388,6 +436,22 @@ impl Role {
                                             .collect();
                                     }
                                 }
+                                // Phase 6B: Lifecycle hooks
+                                "pipe_to" => {
+                                    role.pipe_to = value.as_str().map(|v| v.to_string())
+                                }
+                                "save_to" => {
+                                    role.save_to = value.as_str().map(|v| v.to_string())
+                                }
+                                // Phase 6C: Unified resource binding
+                                "mcp_servers" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.role_mcp_servers = arr
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                            .collect();
+                                    }
+                                }
                                 _ => (),
                             }
                         }
@@ -452,6 +516,18 @@ impl Role {
         }
         if let Some(pipeline) = &self.pipeline {
             meta.insert("pipeline".into(), serde_json::json!(pipeline));
+        }
+        if let Some(pipe_to) = &self.pipe_to {
+            meta.insert("pipe_to".into(), Value::String(pipe_to.clone()));
+        }
+        if let Some(save_to) = &self.save_to {
+            meta.insert("save_to".into(), Value::String(save_to.clone()));
+        }
+        if !self.role_mcp_servers.is_empty() {
+            meta.insert(
+                "mcp_servers".into(),
+                serde_json::json!(self.role_mcp_servers),
+            );
         }
         if let Some(extends) = &self.extends {
             meta.insert("extends".into(), serde_json::json!(extends));
@@ -588,6 +664,18 @@ impl Role {
 
     pub fn is_pipeline(&self) -> bool {
         self.pipeline.as_ref().is_some_and(|p| !p.is_empty())
+    }
+
+    pub fn pipe_to(&self) -> Option<&str> {
+        self.pipe_to.as_deref()
+    }
+
+    pub fn save_to(&self) -> Option<&str> {
+        self.save_to.as_deref()
+    }
+
+    pub fn role_mcp_servers(&self) -> &[String] {
+        &self.role_mcp_servers
     }
 
     pub fn variables(&self) -> &[RoleVariable] {
@@ -756,6 +844,52 @@ pub fn validate_schema(context: &str, schema: &Value, text: &str) -> Result<()> 
     if !errors.is_empty() {
         bail!("Schema {context} validation failed:\n{}", errors.join("\n"));
     }
+    Ok(())
+}
+
+/// Phase 6B: Execute lifecycle hooks after LLM output is generated.
+pub fn run_lifecycle_hooks(role: &Role, output: &str) -> Result<()> {
+    if let Some(pipe_to) = role.pipe_to() {
+        pipe_output_to_command(pipe_to, output)?;
+    }
+    if let Some(save_to) = role.save_to() {
+        save_output_to_path(save_to, output)?;
+    }
+    Ok(())
+}
+
+fn pipe_output_to_command(cmd: &str, output: &str) -> Result<()> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to spawn pipe_to command: {cmd}"))?;
+    if let Some(ref mut stdin) = child.stdin {
+        stdin
+            .write_all(output.as_bytes())
+            .with_context(|| format!("Failed to write to pipe_to command: {cmd}"))?;
+    }
+    let status = child
+        .wait()
+        .with_context(|| format!("Failed to wait for pipe_to command: {cmd}"))?;
+    if !status.success() {
+        warn!("pipe_to command '{cmd}' exited with {status}");
+    }
+    Ok(())
+}
+
+fn save_output_to_path(template: &str, output: &str) -> Result<()> {
+    let path = template.replace("{{timestamp}}", &now());
+    let path = std::path::Path::new(&path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory for save_to: {}", parent.display()))?;
+    }
+    std::fs::write(path, output)
+        .with_context(|| format!("Failed to write save_to: {}", path.display()))?;
+    debug!("save_to: wrote {} bytes to {}", output.len(), path.display());
     Ok(())
 }
 
@@ -1108,7 +1242,10 @@ Translate to {{language}} in a {{tone}} tone."#;
         assert_eq!(parts.variables[0].name, "language");
         assert!(parts.variables[0].default.is_none());
         assert_eq!(parts.variables[1].name, "tone");
-        assert_eq!(parts.variables[1].default, Some("formal".to_string()));
+        assert!(matches!(
+            &parts.variables[1].default,
+            Some(VariableDefault::Value(s)) if s == "formal"
+        ));
         // variables should NOT be in metadata
         assert!(parts.metadata.get("variables").is_none());
     }
@@ -1123,7 +1260,10 @@ variables:
 Respond in {{lang}}."#;
         let role = Role::new("test-default", content);
         assert_eq!(role.variables().len(), 1);
-        assert_eq!(role.variables()[0].default, Some("english".to_string()));
+        assert!(matches!(
+            &role.variables()[0].default,
+            Some(VariableDefault::Value(s)) if s == "english"
+        ));
     }
 
     #[test]
@@ -1228,5 +1368,246 @@ OS is {{__os__}}, translate to {{lang}}."#;
         assert!(combined.contains("Rewrite this: __INPUT__"));
         // Parent's "My request is:" should NOT have __INPUT__
         assert!(!combined.contains("My request is: __INPUT__"));
+    }
+
+    // ---- Phase 6A: Shell-injective variables ----
+
+    #[test]
+    fn test_shell_variable_default_parsing() {
+        let content = r#"---
+variables:
+  - name: git_diff
+    default:
+      shell: "echo hello_world"
+  - name: language
+    default: english
+---
+Review {{git_diff}} in {{language}}."#;
+        let parts = parse_raw_frontmatter(content);
+        assert_eq!(parts.variables.len(), 2);
+        assert!(matches!(
+            &parts.variables[0].default,
+            Some(VariableDefault::Shell { shell }) if shell == "echo hello_world"
+        ));
+        assert!(matches!(
+            &parts.variables[1].default,
+            Some(VariableDefault::Value(s)) if s == "english"
+        ));
+    }
+
+    #[test]
+    fn test_shell_variable_resolve_success() {
+        let default = VariableDefault::Shell {
+            shell: "echo hello_shell".to_string(),
+        };
+        let result = default.resolve();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "hello_shell");
+    }
+
+    #[test]
+    fn test_shell_variable_resolve_trims_whitespace() {
+        let default = VariableDefault::Shell {
+            shell: "echo '  padded  '".to_string(),
+        };
+        let result = default.resolve();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "padded");
+    }
+
+    #[test]
+    fn test_shell_variable_resolve_failure() {
+        let default = VariableDefault::Shell {
+            shell: "exit 1".to_string(),
+        };
+        let result = default.resolve();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_shell_variable_multiline_output() {
+        let default = VariableDefault::Shell {
+            shell: "echo 'line1\nline2\nline3'".to_string(),
+        };
+        let result = default.resolve().unwrap();
+        assert!(result.contains("line1"));
+        assert!(result.contains("line3"));
+    }
+
+    #[test]
+    fn test_value_variable_resolve() {
+        let default = VariableDefault::Value("plain_value".to_string());
+        let result = default.resolve();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "plain_value");
+    }
+
+    #[test]
+    fn test_shell_variable_in_role_new() {
+        let content = r#"---
+variables:
+  - name: context
+    default:
+      shell: "echo injected_context"
+---
+The context is: {{context}}."#;
+        let role = Role::new("test-shell-var", content);
+        assert_eq!(role.variables().len(), 1);
+        assert!(matches!(
+            &role.variables()[0].default,
+            Some(VariableDefault::Shell { shell }) if shell == "echo injected_context"
+        ));
+    }
+
+    // ---- Phase 6B: Lifecycle hooks ----
+
+    #[test]
+    fn test_pipe_to_parsing() {
+        let content = r#"---
+pipe_to: pbcopy
+---
+Summarize this."#;
+        let role = Role::new("test-pipe-to", content);
+        assert_eq!(role.pipe_to(), Some("pbcopy"));
+    }
+
+    #[test]
+    fn test_save_to_parsing() {
+        let content = r#"---
+save_to: "./logs/{{timestamp}}.md"
+---
+Summarize this."#;
+        let role = Role::new("test-save-to", content);
+        assert!(role.save_to().unwrap().contains("{{timestamp}}"));
+    }
+
+    #[test]
+    fn test_both_hooks_parsing() {
+        let content = r#"---
+pipe_to: "pbcopy"
+save_to: "./output.md"
+---
+Do work."#;
+        let role = Role::new("test-both-hooks", content);
+        assert_eq!(role.pipe_to(), Some("pbcopy"));
+        assert_eq!(role.save_to(), Some("./output.md"));
+    }
+
+    #[test]
+    fn test_no_hooks_by_default() {
+        let content = "---\nmodel: gpt-4\n---\nYou are helpful.";
+        let role = Role::new("no-hooks", content);
+        assert!(role.pipe_to().is_none());
+        assert!(role.save_to().is_none());
+    }
+
+    #[test]
+    fn test_pipe_output_to_command() {
+        // pipe_to "cat" should succeed (eats stdin)
+        let result = pipe_output_to_command("cat > /dev/null", "hello world");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_save_output_to_path() {
+        let dir = std::env::temp_dir().join("aichat_test_save_to");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("output.md");
+        let result = save_output_to_path(path.to_str().unwrap(), "test content");
+        assert!(result.is_ok());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "test content");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_save_to_timestamp_interpolation() {
+        let dir = std::env::temp_dir().join("aichat_test_save_ts");
+        let _ = std::fs::remove_dir_all(&dir);
+        let template = format!("{}/{{{{timestamp}}}}.md", dir.display());
+        let result = save_output_to_path(&template, "timestamped");
+        assert!(result.is_ok());
+        // The file should exist with a timestamp-based name (not literally "{{timestamp}}")
+        let entries: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+        let filename = entries[0].as_ref().unwrap().file_name();
+        let filename = filename.to_str().unwrap();
+        assert!(!filename.contains("{{timestamp}}"));
+        assert!(filename.ends_with(".md"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hooks_in_export() {
+        let content = r#"---
+pipe_to: pbcopy
+save_to: "./logs/out.md"
+---
+Test prompt."#;
+        let role = Role::new("test-hooks-export", content);
+        let exported = role.export();
+        assert!(exported.contains("pipe_to"));
+        assert!(exported.contains("pbcopy"));
+        assert!(exported.contains("save_to"));
+        assert!(exported.contains("./logs/out.md"));
+    }
+
+    // ---- Phase 6C: Unified resource binding ----
+
+    #[test]
+    fn test_mcp_servers_parsing() {
+        let content = r#"---
+mcp_servers:
+  - sqlite-server
+  - github-server
+---
+You have database access."#;
+        let role = Role::new("test-mcp-bind", content);
+        assert_eq!(role.role_mcp_servers(), &["sqlite-server", "github-server"]);
+    }
+
+    #[test]
+    fn test_mcp_servers_empty_by_default() {
+        let content = "---\nmodel: gpt-4\n---\nYou are helpful.";
+        let role = Role::new("no-mcp", content);
+        assert!(role.role_mcp_servers().is_empty());
+    }
+
+    #[test]
+    fn test_mcp_servers_in_export() {
+        let content = r#"---
+mcp_servers:
+  - my-server
+---
+Test."#;
+        let role = Role::new("test-mcp-export", content);
+        let exported = role.export();
+        assert!(exported.contains("mcp_servers"));
+        assert!(exported.contains("my-server"));
+    }
+
+    #[test]
+    fn test_all_phase6_fields_coexist() {
+        let content = r#"---
+model: gpt-4
+pipe_to: "pbcopy"
+save_to: "./out.md"
+mcp_servers:
+  - my-db
+variables:
+  - name: ctx
+    default:
+      shell: "echo hello"
+---
+Context: {{ctx}}."#;
+        let role = Role::new("test-all-p6", content);
+        assert_eq!(role.pipe_to(), Some("pbcopy"));
+        assert_eq!(role.save_to(), Some("./out.md"));
+        assert_eq!(role.role_mcp_servers(), &["my-db"]);
+        assert_eq!(role.variables().len(), 1);
+        assert!(matches!(
+            &role.variables()[0].default,
+            Some(VariableDefault::Shell { shell }) if shell == "echo hello"
+        ));
     }
 }

@@ -1,7 +1,7 @@
 # AIChat Roadmap
 
 **Last updated:** 2026-03-13
-**117 tests passing, 0 failures**
+**112 unit tests passing, 0 failures**
 
 ---
 
@@ -126,25 +126,31 @@ Phase 4 enables cheap error recovery for agents consuming aichat. The [tool anal
 | aichat `discover_roles` + on-demand expansion | ~67 + ~121/used tool | ~1,940 (for 5 unique tools) |
 | aichat `--list-roles` + on-demand `--describe` | ~67 + ~180/used role | ~1,940 (for 5 unique roles) |
 
----
-
-## Future Phases
-
----
-
 ### Phase 6: Metadata Framework Enhancements
 
-**Status:** Design only. See [Junie metadata plan](./analysis/2026-03-10-junie-plan.md).
-
-| Item | Scope | Description |
+| Item | Status | Notes |
 |---|---|---|
-| 6A. Shell-injective variables | `role.rs`, `variables.rs` | `{ shell: "git diff --cached" }` in variable defaults. Context gathered at invocation time, not authoring time. Eliminates manual piping (`git diff \| aichat -r reviewer`). |
-| 6B. Lifecycle hooks | Main execution loop | `pipe_to: "pbcopy"` and `save_to: "./logs/{{timestamp}}.md"` directives for output routing. |
-| 6C. Unified resource binding | Role frontmatter | `rag:` and `mcp_servers:` fields per-role, so selecting a role configures its entire tool/data environment. |
+| 6A. Shell-injective variables | Done | `VariableDefault` union type: `Value(String)` or `Shell { shell }`. Executed via `sh -c` at invocation time. Failures warn instead of crashing (Phase 4A pattern). |
+| 6B. Lifecycle hooks | Done | `pipe_to:` pipes output to shell command via stdin. `save_to:` writes to file with `{{timestamp}}` interpolation. Fires in `start_directive` and pipeline last stage. |
+| 6C. Unified resource binding | Done | `mcp_servers:` field per-role (list of server names from global config). Auto-expands `use_tools` with `server:*` wildcards. Warns on unknown server names. |
 
-Phase 6A is the most immediately useful — it turns roles into self-contained context-gathering units that leverage existing CLI tools (`git`, `grep`, `find`) as context providers.
+Phase 6A turns roles into self-contained context-gathering units that leverage existing CLI tools (`git`, `grep`, `find`) as context providers. Phase 6B enables zero-friction output routing. Phase 6C means selecting a role configures its entire tool environment. See [Junie metadata plan](./2026-03-10-junie-plan.md).
 
-**Error handling dependency:** Phase 6A requires Phase 4A (done) — role parsing now warns on malformed entries instead of silently dropping them. Shell command failures in variable defaults must follow the same pattern.
+**YAML examples:**
+```yaml
+# 6A: Shell-injective variable
+variables:
+  - name: git_diff
+    default: { shell: "git diff --cached" }
+
+# 6B: Lifecycle hooks
+pipe_to: "pbcopy"
+save_to: "./logs/{{timestamp}}.md"
+
+# 6C: Per-role MCP server binding
+mcp_servers:
+  - sqlite-server
+```
 
 ---
 
