@@ -1,6 +1,6 @@
 use crate::cli::{Cli, OutputFormat};
 use crate::config::{GlobalConfig, McpServerConfig};
-use crate::function::{FunctionDeclaration, JsonSchema, ToolSource};
+use crate::function::{FunctionDeclaration, ToolSource};
 
 use anyhow::{anyhow, bail, Context, Result};
 use indexmap::IndexMap;
@@ -14,6 +14,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::sync::RwLock;
+
+mod streamable_http;
 
 // ---------------------------------------------------------------------------
 // McpConnection — a single live connection to one MCP server
@@ -63,6 +65,27 @@ impl McpConnection {
 
         let tools = client.list_all_tools().await.map_err(|e| {
             anyhow!("Failed to list tools from MCP server \"{command}\": {e}")
+        })?;
+
+        Ok(Self { client, tools })
+    }
+
+    /// Connect to a remote MCP server over HTTP/SSE (Streamable HTTP transport).
+    pub async fn connect_remote(
+        endpoint: &str,
+        headers: HashMap<String, String>,
+    ) -> Result<Self> {
+        let transport = streamable_http::build_transport(endpoint, &headers)?;
+
+        let client = ().serve(transport).await.map_err(|e| {
+            anyhow!(
+                "Remote MCP server \"{endpoint}\" did not complete initialization: {e}\n\
+                 hint: check the endpoint URL and authentication"
+            )
+        })?;
+
+        let tools = client.list_all_tools().await.map_err(|e| {
+            anyhow!("Failed to list tools from remote MCP server \"{endpoint}\": {e}")
         })?;
 
         Ok(Self { client, tools })
@@ -135,9 +158,12 @@ impl McpConnectionPool {
             .get(name)
             .ok_or_else(|| anyhow!("No MCP server configured with name '{name}'"))?;
 
-        let envs = resolve_env_vars(&server_config.env);
-        let conn =
-            McpConnection::connect(&server_config.command, &server_config.args, envs).await?;
+        let conn = if let Some(ref endpoint) = server_config.endpoint {
+            McpConnection::connect_remote(endpoint, server_config.headers.clone()).await?
+        } else {
+            let envs = resolve_env_vars(&server_config.env);
+            McpConnection::connect(&server_config.command, &server_config.args, envs).await?
+        };
 
         let mut conns = self.connections.write().await;
         conns.insert(name.to_string(), conn);
@@ -209,24 +235,11 @@ impl McpConnectionPool {
 // ---------------------------------------------------------------------------
 
 /// Convert an rmcp Tool to our FunctionDeclaration, namespaced by server name.
+/// Preserves the full JSON Schema from the MCP tool without lossy conversion.
 pub fn mcp_tool_to_declaration(tool: &Tool, server_name: &str) -> FunctionDeclaration {
     let name = format!("{}:{}", server_name, tool.name);
     let description = tool.description.clone().unwrap_or_default().to_string();
-
-    // Convert the tool's input_schema (JsonObject) to our JsonSchema via serde round-trip.
-    let parameters = {
-        let schema_value = Value::Object(tool.input_schema.as_ref().clone());
-        serde_json::from_value::<JsonSchema>(schema_value).unwrap_or_else(|_| JsonSchema {
-            type_value: Some("object".into()),
-            description: None,
-            properties: None,
-            items: None,
-            any_of: None,
-            enum_value: None,
-            default: None,
-            required: None,
-        })
-    };
+    let parameters = Value::Object(tool.input_schema.as_ref().clone());
 
     FunctionDeclaration {
         name,
@@ -355,6 +368,19 @@ pub async fn run_mcp_client_command(cli: &Cli, server_cmd: &str) -> Result<()> {
     );
 }
 
+/// Detect whether a --mcp-server argument is a remote HTTP endpoint or a local command.
+fn is_remote_endpoint(server_cmd: &str) -> bool {
+    server_cmd.starts_with("http://") || server_cmd.starts_with("https://")
+}
+
+async fn connect_for_cli(server_cmd: &str) -> Result<McpConnection> {
+    if is_remote_endpoint(server_cmd) {
+        McpConnection::connect_remote(server_cmd, Default::default()).await
+    } else {
+        McpConnection::connect(server_cmd, &[], Default::default()).await
+    }
+}
+
 async fn cmd_list_tools(cli: &Cli, server_cmd: &str) -> Result<()> {
     // Check cache first
     if let Some(cached) = read_cache(server_cmd) {
@@ -363,7 +389,7 @@ async fn cmd_list_tools(cli: &Cli, server_cmd: &str) -> Result<()> {
         return Ok(());
     }
 
-    let conn = McpConnection::connect(server_cmd, &[], Default::default()).await?;
+    let conn = connect_for_cli(server_cmd).await?;
     let tools_json = tools_to_json(conn.tools());
 
     // Cache the result
@@ -402,7 +428,7 @@ fn format_tools_output(tools_json: &Value, output_format: Option<OutputFormat>) 
 }
 
 async fn cmd_tool_info(server_cmd: &str, tool_name: &str) -> Result<()> {
-    let conn = McpConnection::connect(server_cmd, &[], Default::default()).await?;
+    let conn = connect_for_cli(server_cmd).await?;
     let tool = conn
         .tools()
         .iter()
@@ -419,7 +445,7 @@ async fn cmd_tool_info(server_cmd: &str, tool_name: &str) -> Result<()> {
 async fn cmd_call_tool(cli: &Cli, server_cmd: &str, tool_name: &str) -> Result<()> {
     let arguments = parse_call_arguments(cli)?;
 
-    let conn = McpConnection::connect(server_cmd, &[], Default::default()).await?;
+    let conn = connect_for_cli(server_cmd).await?;
     let result = conn.call_tool(tool_name, arguments).await?;
 
     if result.is_error.unwrap_or(false) {

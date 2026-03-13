@@ -100,11 +100,20 @@ static EDITOR: OnceLock<Option<String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct McpServerConfig {
+    /// Local stdio-based server command. Mutually exclusive with `endpoint`.
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Remote HTTP/SSE endpoint URL. When set, `command` is ignored.
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    /// HTTP headers for remote connections (e.g. `Authorization: Bearer <token>`).
+    /// Values starting with `${VAR}` are resolved from the environment.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -697,7 +706,7 @@ impl Config {
                 let value = parse_value(value)?;
                 config.write().set_top_p(value);
             }
-            "use_tools" => {
+            "use_tools" | "tools" => {
                 let value = parse_value(value)?;
                 config.write().set_use_tools(value);
             }
@@ -1789,24 +1798,19 @@ impl Config {
                             // Phase 2A: Check if it's a pipeline role
                             if let Ok(pipeline_role) = self.retrieve_role(item) {
                                 if pipeline_role.is_pipeline() {
-                                    let mut properties = IndexMap::new();
-                                    properties.insert(
-                                        "input".to_string(),
-                                        crate::function::JsonSchema {
-                                            type_value: Some("string".to_string()),
-                                            description: Some("Input text for the pipeline".to_string()),
-                                            ..Default::default()
-                                        },
-                                    );
                                     pipeline_functions.push(FunctionDeclaration {
                                         name: item.to_string(),
                                         description: pipeline_role.description_or_derived(),
-                                        parameters: crate::function::JsonSchema {
-                                            type_value: Some("object".to_string()),
-                                            properties: Some(properties),
-                                            required: Some(vec!["input".to_string()]),
-                                            ..Default::default()
-                                        },
+                                        parameters: serde_json::json!({
+                                            "type": "object",
+                                            "properties": {
+                                                "input": {
+                                                    "type": "string",
+                                                    "description": "Input text for the pipeline"
+                                                }
+                                            },
+                                            "required": ["input"]
+                                        }),
                                         agent: false,
                                         source: ToolSource::default(),
                                         examples: pipeline_role.examples().map(|e| e.to_vec()),
@@ -2049,7 +2053,7 @@ impl Config {
                 "stream" => complete_bool(self.stream),
                 "save" => complete_bool(self.save),
                 "function_calling" => complete_bool(self.function_calling),
-                "use_tools" => {
+                "use_tools" | "tools" => {
                     let mut prefix = String::new();
                     let mut ignores = HashSet::new();
                     if let Some((v, _)) = args[1].rsplit_once(',') {

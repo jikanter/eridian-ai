@@ -3,6 +3,8 @@
 /.env
 *.log
 
+.junie/*
+
 # Claude Code
 # Worktrees are full repo clones used by background agents - always ignore
 .claude/worktrees/

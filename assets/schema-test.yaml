@@ -1,0 +1,15 @@
+name: schema-test
+prompt: |
+  You are a JSON generator. 
+  Generate a JSON object with "name" (string) and "age" (number) fields.
+output_schema:
+  type: object
+  properties:
+    name:
+      type: string
+    age:
+      type: number
+      minimum: 0
+  required:
+    - name
+    - age
