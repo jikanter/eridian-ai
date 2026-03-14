@@ -263,6 +263,44 @@ mcp_servers:
   - sqlite-server
 ```
 
+---
+
+## Future Phases
+
+---
+
+### Phase 7: User-Friendly Error Messages for llm-functions
+
+**Status:** Analysis complete. See [error messages analysis](./analysis/2026-03-13-user-friendly-error-messages.mdx).
+
+llm-functions tool errors are deeply opaque — `"Tool call exit with 1"` is all users see. The root cause is that aichat's runtime discards stderr, never reports errors to the LLM, and silently masks tool crashes as successes. Phase 7 fixes this in four sub-phases.
+
+| Sub-phase | Items | Effort | Impact |
+|-----------|-------|--------|--------|
+| **7A. Foundation** | Capture stderr (`.status()` → `.output()`); include stderr + tool name in errors; return tool errors as `ToolResult` to LLM instead of bailing; replace `"DONE"` with structured null-result | Low (~70 lines) | LLM can recover from failures; users see why tools fail |
+| **7B. Diagnostics** | Pre-flight checks (binary/interpreter/schema); typed error variants (`ToolSpawnError`, `ToolExecutionError`); `hint:` on all error paths; argument schema validation before spawn | Medium | Actionable errors with suggestions; fragile string-matching replaced |
+| **7C. Observability** | Per-tool timeout with SIGTERM→SIGKILL; `ToolExecutionEvent` structured logging; 3-tier progressive disclosure (`-v`/`-vv`); retry budget + loop detection in `call_react` | Medium | No more hangs; debug without reproducing |
+| **7D. Polish** | Error code system (T001–T017) with `--explain`; error deduplication; `--validate-tool` dry-run; snapshot tests; REPL `.debug`/`.retry` commands | Medium | Compiler-quality diagnostics |
+
+**Key files:** `src/utils/command.rs` (stderr capture), `src/function.rs` (error-as-result, null handling, pre-flight), `src/utils/exit_code.rs` (typed variants), `src/render/mod.rs` (progressive disclosure), `src/client/common.rs` (retry budget).
+
+**Dependency:** Extends Phase 4's `AichatError` enum and `classify_error()` infrastructure. Phase 7A is the foundation — everything else depends on it.
+
+**Before/After:**
+```
+# Today
+Tool call exit with 1
+
+# After 7A
+error: tool 'web_search' failed (exit code 1)
+  stderr: curl: (6) Could not resolve host: api.serper.dev
+
+# After 7B
+error[T005]: tool 'web_search' failed (exit code 1)
+  Command: web_search '{"query":"rust async"}'
+  stderr: curl: (6) Could not resolve host: api.serper.dev
+  hint: check your internet connection, or verify SERPAPI_KEY is set
+```
 
 ---
 
@@ -285,3 +323,19 @@ mcp_servers:
 | 19A | ReactPolicy trait | -- |
 | 19B | Agent memory (JSONL) | -- |
 | 19C | Macro output chaining | -- |
+
+## Reference
+
+| Document | Location |
+|---|---|
+| Initial phased roadmap | [`docs/roadmap/initial-phased-roadmap.md`](./roadmap/initial-phased-roadmap.md) |
+| Phase 3 MCP design doc | [`docs/roadmap/phase-3-mcp-consumption.md`](./roadmap/phase-3-mcp-consumption.md) |
+| Tool efficiency analysis | [`docs/analysis/2026-03-10-tool-analysis.md`](./analysis/2026-03-10-tool-analysis.md) |
+| `use_tools: all` performance | [`docs/analysis/2026-03-10-use-tools-all-performance.md`](./analysis/2026-03-10-use-tools-all-performance.md) |
+| Output format analysis | [`docs/analysis/2026-03-06-output-format.md`](./analysis/2026-03-06-output-format.md) |
+| Strategic landscape analysis | [`docs/analysis/2026-03-02-analysis.md`](./analysis/2026-03-02-analysis.md) |
+| Meta-analysis critique | [`docs/analysis/2026-03-02-meta-analysis.md`](./analysis/2026-03-02-meta-analysis.md) |
+| Junie metadata plan | [`docs/analysis/2026-03-10-junie-plan.md`](./analysis/2026-03-10-junie-plan.md) |
+| Error messages analysis | [`docs/analysis/2026-03-13-user-friendly-error-messages.mdx`](./analysis/2026-03-13-user-friendly-error-messages.mdx) |
+| Macro documentation | [`docs/macros.md`](./macros.md) |
+| Role parameters | [`docs/analysis/2026-03-02-role-parameters.md`](./analysis/2026-03-02-role-parameters.md) |
