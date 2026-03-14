@@ -263,44 +263,83 @@ mcp_servers:
   - sqlite-server
 ```
 
+### Phase 7: User-Friendly Error Messages for llm-functions
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| 7A. Capture stderr from tool processes | Done | `run_command_with_stderr` pipes stderr while inheriting stdout. 64KB cap with `[stderr truncated]` marker. |
+| 7A. Include stderr + tool name in errors | Done | `AichatError::ToolExecutionError` carries `tool_name`, `exit_code`, `stderr`, `hint`. |
+| 7A. Return tool errors as ToolResult to LLM | Done | `eval_tool_calls` catches errors per-tool, converts to `[TOOL_ERROR]`-prefixed ToolResult. LLM sees failures and can recover. |
+| 7A. Replace "DONE" with structured null-result | Done | `json!({"status": "ok", "output": null})`. Removed `is_all_null` clearing that violated tool_use protocol. |
+| 7B. Pre-flight checks | Done | Binary existence check (bin_dirs + system PATH), executable permission check (Unix `mode & 0o111`). |
+| 7B. Typed error variants | Done | `ToolSpawnError { tool_name, message, hint }` and `ToolExecutionError { tool_name, exit_code, stderr, hint }` in `AichatError`. |
+| 7B. Contextual hints on all error paths | Done | `generate_tool_hint()` maps exit codes (126/127) and stderr patterns (not found, permission denied, ECONNREFUSED, rate limit) to actionable suggestions. |
+| 7C. Retry budget + loop detection | Done | `call_react` tracks `(tool_name, error_hash)` counts. 2nd identical failure → warning. 3rd → escalation notice. Step budget decays by 2 per repeat (floor: 2). |
+
+Phase 7 transforms tool errors from `"Tool call exit with 1"` into structured, actionable diagnostics that both humans and LLMs can act on. The single highest-leverage change was switching `run_command` from `.status()` (which discards stderr) to `.output()` with `Stdio::piped()` for stderr capture.
+
+**Key architectural changes:**
+
+- **Error recovery, not error propagation.** `eval_tool_calls` no longer bails on first tool failure — each tool gets its own outcome. The LLM sees all results (successes and failures) and can retry, use alternatives, or ask the user for help.
+- **Dual-format errors.** Humans see colored stderr warnings. LLMs see `[TOOL_ERROR]` prefixed plain text in tool_result with stderr tail and hint.
+- **Typed errors at birth.** `ToolSpawnError` and `ToolExecutionError` carry classification from creation — no fragile string matching needed for new error paths.
+- **Protocol-correct null handling.** Every tool call always gets a `ToolResult` response, preventing the LLM from re-issuing calls in a soft loop.
+
+**Before/After:**
+
+```text
+# Before
+Tool call exit with 1
+
+# After
+error: tool 'web_search' failed (exit code 1)
+  stderr: curl: (6) Could not resolve host: api.serper.dev
+  hint: a network service the tool depends on may be down.
+```
+
+**Key files:** `src/utils/command.rs` (`run_command_with_stderr`, `run_command_with_stderr_timeout`), `src/function.rs` (error-as-result, null handling, pre-flight, hints, async eval), `src/utils/exit_code.rs` (`ToolSpawnError`, `ToolExecutionError`, `ToolTimeout`), `src/client/common.rs` (retry budget in `call_react`).
+
+### Phase 7+ : Tool Timeout & Concurrent Execution
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| 7C1. Per-tool timeout | Done | `run_command_with_stderr_timeout` uses `tokio::process::Command` + `tokio::time::timeout`. Kills child on timeout. `tool_timeout` config field (default 0 = disabled). Per-tool override via `timeout` in functions.json. |
+| 7C1. ToolTimeout error variant | Done | `AichatError::ToolTimeout { tool_name, timeout_secs }` with Display, JSON context, and LLM error format. |
+| 7D1. Async tool execution | Done | `run_llm_function` and `ToolCall::eval` converted from sync to async. Pipeline roles no longer need `block_in_place`. |
+| 7D2. Concurrent tool execution | Done | `eval_tool_calls` runs independent calls via `futures_util::future::join_all`. Each call is independent — errors are per-tool (Phase 7 pattern). |
+
+**Key architectural changes:**
+
+- **No more hangs.** `tool_timeout: 30` in config.yaml (or per-tool `"timeout": 30` in functions.json) kills runaway tools after the deadline. Default is 0 (disabled) for backward compatibility.
+- **Concurrent tool execution.** When an LLM requests multiple tool calls, they now run concurrently via `join_all`. This can dramatically reduce latency for multi-tool workflows (e.g., 3 API calls that each take 2s → 2s total instead of 6s).
+- **Fully async tool chain.** `eval → run_llm_function → run_command_with_stderr_timeout` is now end-to-end async. Pipeline roles no longer need the `block_in_place` sync→async bridge.
+
+**Config:**
+
+```yaml
+# Global timeout (seconds). 0 = disabled.
+tool_timeout: 0
+```
+Per-tool override in functions.json
+```json
+{"name": "slow_api", "timeout": 60, ...}
+```
+
 ---
 
 ## Future Phases
 
----
+### Phase 8: RAG-mode with non-interactive and hybrid context grounding
 
-### Phase 7: User-Friendly Error Messages for llm-functions
+- Fix RAG in non-interactive mode
 
-**Status:** Analysis complete. See [error messages analysis](./analysis/2026-03-13-user-friendly-error-messages.mdx).
+### Phase 9: Observability & Cost Accounting
 
-llm-functions tool errors are deeply opaque — `"Tool call exit with 1"` is all users see. The root cause is that aichat's runtime discards stderr, never reports errors to the LLM, and silently masks tool crashes as successes. Phase 7 fixes this in four sub-phases.
+- Call records
+- JSONL log
+- `--cost` flag
 
-| Sub-phase | Items | Effort | Impact |
-|-----------|-------|--------|--------|
-| **7A. Foundation** | Capture stderr (`.status()` → `.output()`); include stderr + tool name in errors; return tool errors as `ToolResult` to LLM instead of bailing; replace `"DONE"` with structured null-result | Low (~70 lines) | LLM can recover from failures; users see why tools fail |
-| **7B. Diagnostics** | Pre-flight checks (binary/interpreter/schema); typed error variants (`ToolSpawnError`, `ToolExecutionError`); `hint:` on all error paths; argument schema validation before spawn | Medium | Actionable errors with suggestions; fragile string-matching replaced |
-| **7C. Observability** | Per-tool timeout with SIGTERM→SIGKILL; `ToolExecutionEvent` structured logging; 3-tier progressive disclosure (`-v`/`-vv`); retry budget + loop detection in `call_react` | Medium | No more hangs; debug without reproducing |
-| **7D. Polish** | Error code system (T001–T017) with `--explain`; error deduplication; `--validate-tool` dry-run; snapshot tests; REPL `.debug`/`.retry` commands | Medium | Compiler-quality diagnostics |
-
-**Key files:** `src/utils/command.rs` (stderr capture), `src/function.rs` (error-as-result, null handling, pre-flight), `src/utils/exit_code.rs` (typed variants), `src/render/mod.rs` (progressive disclosure), `src/client/common.rs` (retry budget).
-
-**Dependency:** Extends Phase 4's `AichatError` enum and `classify_error()` infrastructure. Phase 7A is the foundation — everything else depends on it.
-
-**Before/After:**
-```
-# Today
-Tool call exit with 1
-
-# After 7A
-error: tool 'web_search' failed (exit code 1)
-  stderr: curl: (6) Could not resolve host: api.serper.dev
-
-# After 7B
-error[T005]: tool 'web_search' failed (exit code 1)
-  Command: web_search '{"query":"rust async"}'
-  stderr: curl: (6) Could not resolve host: api.serper.dev
-  hint: check your internet connection, or verify SERPAPI_KEY is set
-```
+### Phase 10: Batch & Records as First-Class Citizens
 
 ---
 
