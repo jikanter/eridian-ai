@@ -405,6 +405,12 @@ pub async fn create_openai_compatible_client_config(
 
 const MAX_REACT_STEPS: usize = 10;
 
+/// Maximum retries for the same (tool, error_signature) pair before escalating.
+const MAX_TOOL_RETRIES: usize = 2;
+
+/// Penalty applied to remaining steps for each repeated tool failure.
+const STEP_PENALTY_PER_REPEAT: usize = 2;
+
 pub async fn call_react(
     input: &mut Input,
     client: &dyn Client,
@@ -412,9 +418,16 @@ pub async fn call_react(
 ) -> Result<(String, Vec<ToolResult>)> {
     let mut total_text = String::new();
     let mut step = 0;
+    let mut max_steps = MAX_REACT_STEPS;
     let has_structured_output = input.role().has_output_schema()
         || input.has_structured_output_format();
     let print_output = !has_structured_output;
+
+    // Phase 7C: Track repeated tool failures for retry budget.
+    // Key: (tool_name, error_signature_hash), Value: retry count
+    let mut failure_counts: std::collections::HashMap<(String, u64), usize> =
+        std::collections::HashMap::new();
+
     loop {
         let (text, tool_results) = if input.stream() {
             call_chat_completions_streaming(input, client, abort_signal.clone()).await?
@@ -428,12 +441,76 @@ pub async fn call_react(
         if tool_results.is_empty() {
             return Ok((total_text, vec![]));
         }
+
+        // Phase 7C: Check for repeated failures and annotate tool results
+        let tool_results = annotate_repeated_failures(
+            tool_results,
+            &mut failure_counts,
+            &mut max_steps,
+        );
+
         step += 1;
-        if step >= MAX_REACT_STEPS {
-            bail!("ReAct loop exceeded maximum steps ({MAX_REACT_STEPS})");
+        if step >= max_steps {
+            bail!("ReAct loop exceeded maximum steps ({max_steps})");
         }
         *input = input.clone().merge_tool_results(text, tool_results);
     }
+}
+
+/// Check tool results for repeated failures. Annotate results with retry warnings
+/// and decay the step budget for repeated errors.
+fn annotate_repeated_failures(
+    mut results: Vec<ToolResult>,
+    failure_counts: &mut std::collections::HashMap<(String, u64), usize>,
+    max_steps: &mut usize,
+) -> Vec<ToolResult> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    for result in results.iter_mut() {
+        let output_str = result.output.to_string();
+        if !output_str.contains("[TOOL_ERROR]") {
+            continue;
+        }
+
+        // Hash the error signature (tool name + error content)
+        let mut hasher = DefaultHasher::new();
+        output_str.hash(&mut hasher);
+        let error_hash = hasher.finish();
+        let key = (result.call.name.clone(), error_hash);
+
+        let count = failure_counts.entry(key).or_insert(0);
+        *count += 1;
+
+        if *count >= MAX_TOOL_RETRIES + 1 {
+            // Third identical failure — append escalation notice
+            let escalation = format!(
+                "\n\n[TOOL_ERROR] This is attempt #{} with identical arguments and error. \
+                 Do NOT retry this tool with the same arguments. \
+                 Either use different arguments, try a different tool, or ask the user for help.",
+                count
+            );
+            result.output =
+                json!(format!("{}{}", output_str.trim_matches('"'), escalation));
+        } else if *count == MAX_TOOL_RETRIES {
+            // Second identical failure — append warning
+            let warning = format!(
+                "\n\nThis is the second time this exact call failed. \
+                 Do not retry with identical arguments."
+            );
+            result.output =
+                json!(format!("{}{}", output_str.trim_matches('"'), warning));
+        }
+
+        // Decay step budget for each repeated failure
+        if *count > 1 {
+            *max_steps = max_steps.saturating_sub(STEP_PENALTY_PER_REPEAT);
+            if *max_steps < 2 {
+                *max_steps = 2; // Always allow at least 2 steps
+            }
+        }
+    }
+    results
 }
 
 pub async fn call_chat_completions(

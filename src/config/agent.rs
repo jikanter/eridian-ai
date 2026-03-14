@@ -312,11 +312,14 @@ impl Agent {
     }
 
     fn run_instructions_fn(&self) -> Result<String> {
-        let value = run_llm_function(
-            self.name().to_string(),
-            vec!["_instructions".into(), "{}".into()],
-            self.variable_envs(),
-        )?;
+        // run_llm_function is async; bridge from sync context via block_in_place
+        let name = self.name().to_string();
+        let envs = self.variable_envs();
+        let value = tokio::task::block_in_place(move || {
+            tokio::runtime::Handle::current().block_on(async {
+                run_llm_function(name, vec!["_instructions".into(), "{}".into()], envs, 0).await
+            })
+        })?;
         match value {
             Some(v) => Ok(v),
             _ => bail!("No return value from '_instructions' function"),

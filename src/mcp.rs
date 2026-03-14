@@ -188,17 +188,12 @@ impl ServerHandler for AichatMcpServer {
 
             let call = ToolCall::new(tool_name.clone(), arguments, None);
 
-            let result = tokio::task::spawn_blocking(move || call.eval(&config))
-                .await
-                .map_err(|e| {
-                    ErrorData::internal_error(format!("Task join error: {e}"), None)
-                })?
-                .map_err(|e| {
-                    ErrorData::internal_error(
-                        format!("Tool '{tool_name}' failed: {e}"),
-                        None,
-                    )
-                })?;
+            let result = call.eval(&config).await.map_err(|e| {
+                ErrorData::internal_error(
+                    format!("Tool '{tool_name}' failed: {e}"),
+                    None,
+                )
+            })?;
 
             let text = match result {
                 Value::Null => "DONE".to_string(),

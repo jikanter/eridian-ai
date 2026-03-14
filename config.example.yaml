@@ -28,6 +28,8 @@ agent_prelude: null              # Set a session to use when starting a agent (e
 save_session: null
 # Compress session when token count reaches or exceeds this threshold
 compress_threshold: 4000
+# Timeout in seconds for tool/function execution. 0 = no timeout (default). Per-tool overrides via "timeout" in functions.json.
+tool_timeout: 0
 # Text prompt used for creating a concise summary of session message
 summarize_prompt: 'Summarize the discussion briefly in 200 words or less to use as a prompt for future context.'
 # Text prompt used for including the summary of the entire session

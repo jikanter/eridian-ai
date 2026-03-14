@@ -143,6 +143,7 @@ pub struct Config {
 
     pub save_session: Option<bool>,
     pub compress_threshold: usize,
+    pub tool_timeout: u64,
     pub summarize_prompt: Option<String>,
     pub summary_prompt: Option<String>,
 
@@ -241,6 +242,7 @@ impl Default for Config {
 
             save_session: None,
             compress_threshold: 4000,
+            tool_timeout: 0,
             summarize_prompt: None,
             summary_prompt: None,
 
@@ -656,6 +658,7 @@ impl Config {
             ),
             ("save_session", format_option_value(&self.save_session)),
             ("compress_threshold", self.compress_threshold.to_string()),
+            ("tool_timeout", self.tool_timeout.to_string()),
             (
                 "rag_reranker_model",
                 format_option_value(&rag_reranker_model),
@@ -721,6 +724,10 @@ impl Config {
             "compress_threshold" => {
                 let value = parse_value(value)?;
                 config.write().set_compress_threshold(value);
+            }
+            "tool_timeout" => {
+                let value: Option<u64> = parse_value(value)?;
+                config.write().tool_timeout = value.unwrap_or(0);
             }
             "rag_reranker_model" => {
                 let value = parse_value(value)?;
@@ -1853,6 +1860,7 @@ impl Config {
                                         agent: false,
                                         source: ToolSource::default(),
                                         examples: pipeline_role.examples().map(|e| e.to_vec()),
+                                        timeout: None,
                                     });
                                 }
                             }
@@ -2062,6 +2070,7 @@ impl Config {
                         "use_tools",
                         "save_session",
                         "compress_threshold",
+                        "tool_timeout",
                         "rag_reranker_model",
                         "rag_top_k",
                         "max_output_tokens",
@@ -2590,6 +2599,9 @@ impl Config {
         }
         if let Some(Some(v)) = read_env_value::<usize>(&get_env_name("compress_threshold")) {
             self.compress_threshold = v;
+        }
+        if let Some(Some(v)) = read_env_value::<u64>(&get_env_name("tool_timeout")) {
+            self.tool_timeout = v;
         }
         if let Some(v) = read_env_value::<String>(&get_env_name("summarize_prompt")) {
             self.summarize_prompt = v;

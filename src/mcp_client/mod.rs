@@ -250,6 +250,7 @@ pub fn mcp_tool_to_declaration(tool: &Tool, server_name: &str) -> FunctionDeclar
             server: server_name.to_string(),
         },
         examples: None,
+        timeout: None,
     }
 }
 

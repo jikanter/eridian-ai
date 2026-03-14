@@ -73,6 +73,21 @@ pub enum AichatError {
     ToolNotFound {
         name: String,
     },
+    ToolSpawnError {
+        tool_name: String,
+        message: String,
+        hint: Option<String>,
+    },
+    ToolExecutionError {
+        tool_name: String,
+        exit_code: i32,
+        stderr: Option<String>,
+        hint: Option<String>,
+    },
+    ToolTimeout {
+        tool_name: String,
+        timeout_secs: u64,
+    },
     PipelineStage {
         stage: usize,
         total: usize,
@@ -98,6 +113,44 @@ impl std::fmt::Display for AichatError {
                 None => write!(f, "Config parse error: {message}"),
             },
             Self::ToolNotFound { name } => write!(f, "Tool not found: {name}"),
+            Self::ToolSpawnError {
+                tool_name,
+                message,
+                hint,
+            } => {
+                write!(f, "error: tool '{tool_name}' could not be started: {message}")?;
+                if let Some(hint) = hint {
+                    write!(f, "\n  hint: {hint}")?;
+                }
+                Ok(())
+            }
+            Self::ToolExecutionError {
+                tool_name,
+                exit_code,
+                stderr,
+                hint,
+            } => {
+                write!(f, "error: tool '{tool_name}' failed (exit code {exit_code})")?;
+                if let Some(stderr) = stderr {
+                    if !stderr.is_empty() {
+                        write!(f, "\n  stderr: {stderr}")?;
+                    }
+                }
+                if let Some(hint) = hint {
+                    write!(f, "\n  hint: {hint}")?;
+                }
+                Ok(())
+            }
+            Self::ToolTimeout {
+                tool_name,
+                timeout_secs,
+            } => {
+                write!(
+                    f,
+                    "error: tool '{tool_name}' timed out after {timeout_secs}s\n  \
+                     hint: increase timeout with tool_timeout in config or per-tool \"timeout\" in functions.json"
+                )
+            }
             Self::PipelineStage {
                 stage,
                 total,
@@ -138,6 +191,9 @@ impl AichatError {
             Self::SchemaValidation { .. } => ExitCode::SchemaError,
             Self::ConfigParse { .. } => ExitCode::ConfigError,
             Self::ToolNotFound { .. } => ExitCode::ToolError,
+            Self::ToolSpawnError { .. } => ExitCode::ToolError,
+            Self::ToolExecutionError { .. } => ExitCode::ToolError,
+            Self::ToolTimeout { .. } => ExitCode::ToolError,
             Self::PipelineStage { .. } => ExitCode::ToolError,
             Self::McpError { .. } => ExitCode::ToolError,
         }
@@ -153,6 +209,39 @@ impl AichatError {
             }
             Self::ToolNotFound { name } => {
                 serde_json::json!({ "tool": name })
+            }
+            Self::ToolSpawnError {
+                tool_name,
+                message,
+                hint,
+            } => {
+                serde_json::json!({
+                    "tool": tool_name,
+                    "detail": message,
+                    "hint": hint,
+                })
+            }
+            Self::ToolExecutionError {
+                tool_name,
+                exit_code,
+                stderr,
+                hint,
+            } => {
+                serde_json::json!({
+                    "tool": tool_name,
+                    "exit_code": exit_code,
+                    "stderr": stderr,
+                    "hint": hint,
+                })
+            }
+            Self::ToolTimeout {
+                tool_name,
+                timeout_secs,
+            } => {
+                serde_json::json!({
+                    "tool": tool_name,
+                    "timeout_secs": timeout_secs,
+                })
             }
             Self::PipelineStage {
                 stage,
@@ -264,6 +353,12 @@ fn is_tool_error(msg: &str) -> bool {
         || msg.contains("ReAct loop exceeded")
         || msg.contains("Failed to load functions")
         || msg.contains("no functions are installed")
+        // Phase 7: new error message formats
+        || msg.contains("tool '") && msg.contains("' failed")
+        || msg.contains("could not be started")
+        || msg.contains("binary not found")
+        || msg.contains("binary is not executable")
+        || msg.contains("timed out after") && msg.contains("tool '")
 }
 
 fn is_network_error(msg: &str) -> bool {
@@ -494,6 +589,122 @@ mod tests {
             tool: Some("create-issue".to_string()),
         });
         // Fast path: typed error → ToolError (not NetworkError from string match)
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
+    }
+
+    // --- Phase 7 tests ---
+
+    #[test]
+    fn test_classify_typed_tool_execution_error() {
+        let err = anyhow::Error::new(AichatError::ToolExecutionError {
+            tool_name: "web_search".to_string(),
+            exit_code: 1,
+            stderr: Some("curl: (6) Could not resolve host".to_string()),
+            hint: Some("check your internet connection".to_string()),
+        });
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
+        assert!(err.to_string().contains("tool 'web_search' failed"));
+        assert!(err.to_string().contains("exit code 1"));
+        assert!(err.to_string().contains("stderr:"));
+        assert!(err.to_string().contains("hint:"));
+    }
+
+    #[test]
+    fn test_classify_typed_tool_spawn_error() {
+        let err = anyhow::Error::new(AichatError::ToolSpawnError {
+            tool_name: "analyze_code".to_string(),
+            message: "binary not found".to_string(),
+            hint: Some("ensure the tool is installed".to_string()),
+        });
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
+        assert!(err.to_string().contains("tool 'analyze_code'"));
+        assert!(err.to_string().contains("could not be started"));
+        assert!(err.to_string().contains("hint:"));
+    }
+
+    #[test]
+    fn test_tool_execution_error_json_context() {
+        let err = AichatError::ToolExecutionError {
+            tool_name: "web_search".to_string(),
+            exit_code: 1,
+            stderr: Some("connection refused".to_string()),
+            hint: Some("check network".to_string()),
+        };
+        let ctx = err.to_json_context();
+        assert_eq!(ctx["tool"], "web_search");
+        assert_eq!(ctx["exit_code"], 1);
+        assert_eq!(ctx["stderr"], "connection refused");
+        assert_eq!(ctx["hint"], "check network");
+    }
+
+    #[test]
+    fn test_tool_spawn_error_json_context() {
+        let err = AichatError::ToolSpawnError {
+            tool_name: "my_tool".to_string(),
+            message: "binary not found".to_string(),
+            hint: Some("install it".to_string()),
+        };
+        let ctx = err.to_json_context();
+        assert_eq!(ctx["tool"], "my_tool");
+        assert_eq!(ctx["detail"], "binary not found");
+        assert_eq!(ctx["hint"], "install it");
+    }
+
+    #[test]
+    fn test_tool_execution_error_no_stderr() {
+        let err = AichatError::ToolExecutionError {
+            tool_name: "silent_tool".to_string(),
+            exit_code: 2,
+            stderr: None,
+            hint: None,
+        };
+        let display = err.to_string();
+        assert!(display.contains("tool 'silent_tool' failed (exit code 2)"));
+        assert!(!display.contains("stderr:"));
+        assert!(!display.contains("hint:"));
+    }
+
+    #[test]
+    fn test_classify_new_tool_error_strings() {
+        // Test that the string-matching fallback catches new error formats
+        let err = anyhow!("error: tool 'web_search' failed (exit code 1)");
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
+
+        let err = anyhow!("tool 'my_tool' could not be started: binary not found");
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
+
+        let err = anyhow!("binary is not executable");
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
+    }
+
+    // --- Phase 8 tests ---
+
+    #[test]
+    fn test_classify_typed_tool_timeout() {
+        let err = anyhow::Error::new(AichatError::ToolTimeout {
+            tool_name: "slow_tool".to_string(),
+            timeout_secs: 30,
+        });
+        assert_eq!(classify_error(&err), ExitCode::ToolError);
+        assert!(err.to_string().contains("tool 'slow_tool'"));
+        assert!(err.to_string().contains("timed out after 30s"));
+        assert!(err.to_string().contains("hint:"));
+    }
+
+    #[test]
+    fn test_tool_timeout_json_context() {
+        let err = AichatError::ToolTimeout {
+            tool_name: "slow_tool".to_string(),
+            timeout_secs: 60,
+        };
+        let ctx = err.to_json_context();
+        assert_eq!(ctx["tool"], "slow_tool");
+        assert_eq!(ctx["timeout_secs"], 60);
+    }
+
+    #[test]
+    fn test_classify_timeout_string_fallback() {
+        let err = anyhow!("error: tool 'slow_tool' timed out after 30s");
         assert_eq!(classify_error(&err), ExitCode::ToolError);
     }
 }

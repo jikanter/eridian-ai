@@ -7,7 +7,7 @@ use std::{
     fs::OpenOptions,
     io::{self, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -88,6 +88,97 @@ pub fn run_command<T: AsRef<OsStr>>(
         .envs(envs.unwrap_or_default())
         .status()?;
     Ok(status.code().unwrap_or_default())
+}
+
+/// Run a command inheriting stdout (for tool progress output) but capturing stderr.
+/// Returns (exit_code, captured_stderr).
+pub fn run_command_with_stderr<T: AsRef<OsStr>>(
+    cmd: &str,
+    args: &[T],
+    envs: Option<HashMap<String, String>>,
+) -> Result<(i32, String)> {
+    let child = Command::new(cmd)
+        .args(args.iter())
+        .envs(envs.unwrap_or_default())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let output = child.wait_with_output()?;
+    let exit_code = output.status.code().unwrap_or_default();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Cap stderr at 64KB to prevent memory issues
+    let stderr = if stderr.len() > 65536 {
+        format!("{}...[stderr truncated]", &stderr[..65536])
+    } else {
+        stderr.to_string()
+    };
+    Ok((exit_code, stderr))
+}
+
+/// Async version of `run_command_with_stderr` with optional timeout.
+/// Uses `tokio::process::Command` for non-blocking execution.
+/// When `timeout_secs > 0`, kills the process on timeout.
+/// Returns (exit_code, captured_stderr).
+pub async fn run_command_with_stderr_timeout(
+    cmd: &str,
+    args: &[String],
+    envs: HashMap<String, String>,
+    timeout_secs: u64,
+) -> Result<(i32, String)> {
+    use tokio::io::AsyncReadExt;
+
+    let mut child = tokio::process::Command::new(cmd)
+        .args(args)
+        .envs(envs)
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    // Take stderr handle before waiting so we can read it concurrently
+    let stderr_handle = child.stderr.take();
+    let stderr_task = tokio::spawn(async move {
+        if let Some(mut pipe) = stderr_handle {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf).await;
+            let s = String::from_utf8_lossy(&buf);
+            if s.len() > 65536 {
+                format!("{}...[stderr truncated]", &s[..65536])
+            } else {
+                s.to_string()
+            }
+        } else {
+            String::new()
+        }
+    });
+
+    if timeout_secs > 0 {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            child.wait(),
+        )
+        .await
+        {
+            Ok(Ok(status)) => {
+                let stderr = stderr_task.await.unwrap_or_default();
+                Ok((status.code().unwrap_or_default(), stderr))
+            }
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => {
+                // Timeout — kill the child process
+                let _ = child.kill().await;
+                let _ = stderr_task.abort();
+                Err(anyhow::Error::new(
+                    crate::utils::exit_code::AichatError::ToolTimeout {
+                        tool_name: cmd.to_string(),
+                        timeout_secs,
+                    },
+                ))
+            }
+        }
+    } else {
+        // No timeout — just wait
+        let status = child.wait().await?;
+        let stderr = stderr_task.await.unwrap_or_default();
+        Ok((status.code().unwrap_or_default(), stderr))
+    }
 }
 
 pub fn run_command_with_output<T: AsRef<OsStr>>(

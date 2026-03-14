@@ -18,41 +18,132 @@ const PATH_SEP: &str = ";";
 const PATH_SEP: &str = ":";
 
 pub async fn eval_tool_calls(config: &GlobalConfig, mut calls: Vec<ToolCall>) -> Result<Vec<ToolResult>> {
-    let mut output = vec![];
     if calls.is_empty() {
-        return Ok(output);
+        return Ok(vec![]);
     }
     calls = ToolCall::dedup(calls);
     if calls.is_empty() {
         bail!("The request was aborted because an infinite loop of function calls was detected.")
     }
-    let mut is_all_null = true;
-    for call in calls {
-        let is_mcp = call.name.contains(':') && {
-            let cfg = config.read();
-            cfg.mcp_pool.is_some()
-                && cfg
-                    .functions
-                    .find(&call.name)
-                    .map(|d| matches!(d.source, ToolSource::Mcp { .. }))
-                    .unwrap_or(false)
-        };
-        let mut result = if is_mcp {
-            crate::mcp_client::eval_mcp_tool(config, &call.name, call.arguments.clone()).await?
-        } else {
-            call.eval(config)?
-        };
-        if result.is_null() {
-            result = json!("DONE");
-        } else {
-            is_all_null = false;
-        }
-        output.push(ToolResult::new(call, result));
-    }
-    if is_all_null {
-        output = vec![];
-    }
+
+    // Phase 8B: Determine MCP status for each call before concurrent execution
+    let call_infos: Vec<(ToolCall, bool)> = calls
+        .into_iter()
+        .map(|call| {
+            let is_mcp = call.name.contains(':') && {
+                let cfg = config.read();
+                cfg.mcp_pool.is_some()
+                    && cfg
+                        .functions
+                        .find(&call.name)
+                        .map(|d| matches!(d.source, ToolSource::Mcp { .. }))
+                        .unwrap_or(false)
+            };
+            (call, is_mcp)
+        })
+        .collect();
+
+    // Phase 8B: Run all tool calls concurrently using join_all.
+    // Each call is independent — errors are per-tool (Phase 7 pattern).
+    let futures: Vec<_> = call_infos
+        .into_iter()
+        .map(|(call, is_mcp)| {
+            let config = config.clone();
+            async move {
+                let result = eval_single_tool(&config, &call, is_mcp).await;
+                // Phase 7A: Null → structured null-result
+                let result = if result.is_null() {
+                    json!({"status": "ok", "output": null})
+                } else {
+                    result
+                };
+                ToolResult::new(call, result)
+            }
+        })
+        .collect();
+
+    let output = futures_util::future::join_all(futures).await;
     Ok(output)
+}
+
+/// Evaluate a single tool call, catching errors as ToolResult values.
+async fn eval_single_tool(config: &GlobalConfig, call: &ToolCall, is_mcp: bool) -> Value {
+    if is_mcp {
+        match crate::mcp_client::eval_mcp_tool(config, &call.name, call.arguments.clone()).await {
+            Ok(v) => v,
+            Err(e) => {
+                let error_msg = format_tool_error_for_llm(&call.name, &e);
+                if *IS_STDOUT_TERMINAL {
+                    eprintln!("{}", warning_text(&format!("tool '{}' failed: {}", call.name, e)));
+                }
+                json!(error_msg)
+            }
+        }
+    } else {
+        match call.eval(config).await {
+            Ok(v) => v,
+            Err(e) => {
+                let error_msg = format_tool_error_for_llm(&call.name, &e);
+                if *IS_STDOUT_TERMINAL {
+                    eprintln!("{}", warning_text(&format!("tool '{}' failed: {}", call.name, e)));
+                }
+                json!(error_msg)
+            }
+        }
+    }
+}
+
+/// Format a tool error into a concise message for the LLM.
+/// Plain text with [TOOL_ERROR] prefix so system prompts can reference it.
+/// Target: under 300 tokens.
+fn format_tool_error_for_llm(tool_name: &str, err: &anyhow::Error) -> String {
+    if let Some(exec_err) =
+        err.downcast_ref::<crate::utils::exit_code::AichatError>()
+    {
+        match exec_err {
+            crate::utils::exit_code::AichatError::ToolExecutionError {
+                exit_code,
+                stderr,
+                hint,
+                ..
+            } => {
+                let mut msg =
+                    format!("[TOOL_ERROR] {tool_name} failed (exit {exit_code}).");
+                if let Some(stderr) = stderr {
+                    if !stderr.is_empty() {
+                        msg.push_str(&format!("\nStderr: {stderr}"));
+                    }
+                }
+                if let Some(hint) = hint {
+                    msg.push_str(&format!("\nHint: {hint}"));
+                }
+                msg
+            }
+            crate::utils::exit_code::AichatError::ToolSpawnError {
+                message, hint, ..
+            } => {
+                let mut msg =
+                    format!("[TOOL_ERROR] {tool_name} could not be started: {message}.");
+                if let Some(hint) = hint {
+                    msg.push_str(&format!("\nHint: {hint}"));
+                }
+                msg
+            }
+            crate::utils::exit_code::AichatError::ToolTimeout {
+                timeout_secs, ..
+            } => {
+                format!(
+                    "[TOOL_ERROR] {tool_name} timed out after {timeout_secs}s.\n\
+                     Hint: increase timeout with tool_timeout in config or per-tool \"timeout\" in functions.json."
+                )
+            }
+            other => {
+                format!("[TOOL_ERROR] {tool_name} failed: {other}")
+            }
+        }
+    } else {
+        format!("[TOOL_ERROR] {tool_name} failed: {err}")
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -133,6 +224,9 @@ pub struct FunctionDeclaration {
     pub source: ToolSource,
     #[serde(skip_serializing, default)]
     pub examples: Option<Vec<RoleExample>>,
+    /// Per-tool timeout in seconds. Overrides global `tool_timeout`. 0 = use global.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub timeout: Option<u64>,
 }
 
 impl FunctionDeclaration {
@@ -167,6 +261,7 @@ impl FunctionDeclaration {
             agent: false,
             source: ToolSource::default(),
             examples: None,
+            timeout: None,
         }
     }
 }
@@ -208,7 +303,7 @@ impl ToolCall {
         }
     }
 
-    pub fn eval(&self, config: &GlobalConfig) -> Result<Value> {
+    pub async fn eval(&self, config: &GlobalConfig) -> Result<Value> {
         // Phase 1C: Handle tool_search meta-function
         if self.name == TOOL_SEARCH_NAME {
             return self.eval_tool_search(config);
@@ -216,7 +311,7 @@ impl ToolCall {
 
         // Phase 2A: Handle pipeline-role tool calls
         if let Some(pipeline_stages) = self.check_pipeline_role(config) {
-            return self.eval_pipeline_role(config, &pipeline_stages);
+            return self.eval_pipeline_role(config, &pipeline_stages).await;
         }
 
         let (call_name, cmd_name, mut cmd_args, envs) = match &config.read().agent {
@@ -240,7 +335,10 @@ impl ToolCall {
 
         cmd_args.push(json_data.to_string());
 
-        let output = match run_llm_function(cmd_name, cmd_args, envs)? {
+        // Phase 8A: Resolve timeout — per-tool overrides global
+        let timeout_secs = resolve_tool_timeout(config, &call_name);
+
+        let output = match run_llm_function(cmd_name, cmd_args, envs, timeout_secs).await? {
             Some(contents) => serde_json::from_str(&contents)
                 .ok()
                 .unwrap_or_else(|| json!({"output": contents})),
@@ -269,7 +367,7 @@ impl ToolCall {
     }
 
     /// Execute a pipeline role as a tool call.
-    fn eval_pipeline_role(
+    async fn eval_pipeline_role(
         &self,
         config: &GlobalConfig,
         stages: &[crate::config::RolePipelineStage],
@@ -289,14 +387,8 @@ impl ToolCall {
             println!("{}", dimmed_text(&format!("Call pipeline {}", self.name)));
         }
 
-        // Use block_in_place to run async pipeline from sync context
-        let config = config.clone();
-        let stages = stages.to_vec();
-        let result = tokio::task::block_in_place(move || {
-            tokio::runtime::Handle::current().block_on(async {
-                crate::pipe::run_pipeline_role(&config, &stages, &input_text).await
-            })
-        })?;
+        let result =
+            crate::pipe::run_pipeline_role(config, stages, &input_text).await?;
 
         Ok(json!({"output": result}))
     }
@@ -424,10 +516,11 @@ impl ToolCall {
     }
 }
 
-pub fn run_llm_function(
+pub async fn run_llm_function(
     cmd_name: String,
     cmd_args: Vec<String>,
     mut envs: HashMap<String, String>,
+    timeout_secs: u64,
 ) -> Result<Option<String>> {
     let prompt = format!("Call {cmd_name} {}", cmd_args.join(" "));
 
@@ -452,23 +545,184 @@ pub fn run_llm_function(
 
     #[cfg(windows)]
     let cmd_name = polyfill_cmd_name(&cmd_name, &bin_dirs);
+
+    // Phase 7B: Pre-flight checks before spawning
+    preflight_check(&cmd_name, &bin_dirs)?;
+
     if *IS_STDOUT_TERMINAL {
         println!("{}", dimmed_text(&prompt));
     }
-    let exit_code = run_command(&cmd_name, &cmd_args, Some(envs))
-        .map_err(|err| anyhow!("Unable to run {cmd_name}, {err}"))?;
-    if exit_code != 0 {
-        bail!("Tool call exit with {exit_code}");
+
+    // Phase 8A: Async execution with timeout support
+    let (exit_code, stderr) =
+        run_command_with_stderr_timeout(&cmd_name, &cmd_args, envs, timeout_secs)
+            .await
+            .map_err(|err| {
+                // Check if it's already a typed error (e.g., ToolTimeout)
+                if err.downcast_ref::<crate::utils::exit_code::AichatError>().is_some() {
+                    return err;
+                }
+                let hint = spawn_error_hint(&err);
+                anyhow::Error::new(crate::utils::exit_code::AichatError::ToolSpawnError {
+                    tool_name: cmd_name.clone(),
+                    message: err.to_string(),
+                    hint,
+                })
+            })?;
+
+    // Log stderr at debug level even on success (tool warnings)
+    if !stderr.is_empty() && exit_code == 0 {
+        debug!("Tool '{cmd_name}' stderr: {stderr}");
     }
+
+    if exit_code != 0 {
+        let stderr_display = truncate_stderr(&stderr, 15);
+        let hint = generate_tool_hint(exit_code, &stderr);
+        return Err(anyhow::Error::new(
+            crate::utils::exit_code::AichatError::ToolExecutionError {
+                tool_name: cmd_name,
+                exit_code,
+                stderr: if stderr_display.is_empty() {
+                    None
+                } else {
+                    Some(stderr_display)
+                },
+                hint: Some(hint),
+            },
+        ));
+    }
+
     let mut output = None;
     if temp_file.exists() {
         let contents =
-            fs::read_to_string(temp_file).context("Failed to retrieve tool call output")?;
+            fs::read_to_string(&temp_file).context("Failed to retrieve tool call output")?;
         if !contents.is_empty() {
             output = Some(contents);
         }
+        // Clean up temp file on success
+        let _ = fs::remove_file(&temp_file);
     };
     Ok(output)
+}
+
+/// Resolve the effective timeout for a tool call.
+/// Per-tool timeout overrides global. 0 = disabled.
+fn resolve_tool_timeout(config: &GlobalConfig, tool_name: &str) -> u64 {
+    let cfg = config.read();
+    // Check per-tool timeout first
+    if let Some(decl) = cfg.functions.find(tool_name) {
+        if let Some(timeout) = decl.timeout {
+            if timeout > 0 {
+                return timeout;
+            }
+        }
+    }
+    // Fall back to global config
+    cfg.tool_timeout
+}
+
+/// Truncate stderr to the last N lines for display.
+fn truncate_stderr(stderr: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = stderr.lines().collect();
+    if lines.len() <= max_lines {
+        stderr.trim().to_string()
+    } else {
+        let total = lines.len();
+        let tail = &lines[total - max_lines..];
+        format!(
+            "[{} lines total, showing last {}]\n{}",
+            total,
+            max_lines,
+            tail.join("\n")
+        )
+    }
+}
+
+/// Generate contextual hint based on exit code and stderr content.
+fn generate_tool_hint(exit_code: i32, stderr: &str) -> String {
+    let stderr_lower = stderr.to_lowercase();
+    if exit_code == 127 {
+        "the tool binary was not found on PATH.".to_string()
+    } else if exit_code == 126 {
+        "the tool binary exists but is not executable. Try: chmod +x <path>".to_string()
+    } else if stderr_lower.contains("not found") || stderr_lower.contains("no such file") {
+        "a dependency may be missing. Check the tool's requirements.".to_string()
+    } else if stderr_lower.contains("permission denied") {
+        "check file permissions on the tool binary.".to_string()
+    } else if stderr_lower.contains("econnrefused") || stderr_lower.contains("connection refused")
+    {
+        "a network service the tool depends on may be down.".to_string()
+    } else if stderr_lower.contains("rate limit") || stderr_lower.contains("429") {
+        "the tool hit a rate limit. Wait and retry.".to_string()
+    } else {
+        "run the command manually to diagnose.".to_string()
+    }
+}
+
+/// Generate hint for spawn failures.
+fn spawn_error_hint(err: &anyhow::Error) -> Option<String> {
+    let msg = err.to_string().to_lowercase();
+    if msg.contains("not found") || msg.contains("no such file") {
+        Some("ensure the tool binary is installed and on PATH.".to_string())
+    } else if msg.contains("permission denied") {
+        Some("check file permissions. Try: chmod +x <path>".to_string())
+    } else {
+        None
+    }
+}
+
+/// Pre-flight checks before spawning a tool process.
+fn preflight_check(cmd_name: &str, bin_dirs: &[PathBuf]) -> Result<()> {
+    // Check if the binary can be found in bin_dirs or system PATH
+    let found_in_bin_dirs = bin_dirs.iter().any(|dir| dir.join(cmd_name).exists());
+    if !found_in_bin_dirs {
+        // Check system PATH via which/where
+        let in_system_path = std::process::Command::new("which")
+            .arg(cmd_name)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !in_system_path {
+            let searched: Vec<_> = bin_dirs.iter().map(|d| d.display().to_string()).collect();
+            return Err(anyhow::Error::new(
+                crate::utils::exit_code::AichatError::ToolSpawnError {
+                    tool_name: cmd_name.to_string(),
+                    message: format!("binary not found"),
+                    hint: Some(format!(
+                        "searched: {}. Ensure the tool is installed.",
+                        searched.join(", ")
+                    )),
+                },
+            ));
+        }
+    } else {
+        // Binary found in bin_dirs — check if executable (Unix only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for dir in bin_dirs {
+                let path = dir.join(cmd_name);
+                if path.exists() {
+                    if let Ok(meta) = std::fs::metadata(&path) {
+                        if meta.permissions().mode() & 0o111 == 0 {
+                            return Err(anyhow::Error::new(
+                                crate::utils::exit_code::AichatError::ToolSpawnError {
+                                    tool_name: cmd_name.to_string(),
+                                    message: "binary is not executable".to_string(),
+                                    hint: Some(format!("run: chmod +x {}", path.display())),
+                                },
+                            ));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(windows)]

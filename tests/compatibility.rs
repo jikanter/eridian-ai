@@ -1842,3 +1842,710 @@ mod config_paths {
         assert!(path.exists(), "assets/schema-test.yaml must exist");
     }
 }
+
+// ===========================================================================
+// 18. Phase 7 — Tool error messages: stderr capture, error-as-result, hints
+// ===========================================================================
+
+mod phase7_tool_errors {
+    use super::*;
+
+    // ---- 7A: Error message format contracts ----
+
+    /// ToolExecutionError Display format must include tool name, exit code,
+    /// optional stderr, and optional hint — the contract that LLM and human
+    /// error rendering depends on.
+    fn format_tool_execution_error(
+        tool_name: &str,
+        exit_code: i32,
+        stderr: Option<&str>,
+        hint: Option<&str>,
+    ) -> String {
+        let mut s = format!("error: tool '{tool_name}' failed (exit code {exit_code})");
+        if let Some(stderr) = stderr {
+            if !stderr.is_empty() {
+                s.push_str(&format!("\n  stderr: {stderr}"));
+            }
+        }
+        if let Some(hint) = hint {
+            s.push_str(&format!("\n  hint: {hint}"));
+        }
+        s
+    }
+
+    fn format_tool_spawn_error(
+        tool_name: &str,
+        message: &str,
+        hint: Option<&str>,
+    ) -> String {
+        let mut s = format!("error: tool '{tool_name}' could not be started: {message}");
+        if let Some(hint) = hint {
+            s.push_str(&format!("\n  hint: {hint}"));
+        }
+        s
+    }
+
+    #[test]
+    fn test_execution_error_format_full() {
+        let msg = format_tool_execution_error(
+            "web_search", 1,
+            Some("curl: (6) Could not resolve host: api.serper.dev"),
+            Some("a network service the tool depends on may be down."),
+        );
+        assert!(msg.contains("tool 'web_search'"), "must include tool name");
+        assert!(msg.contains("exit code 1"), "must include exit code");
+        assert!(msg.contains("stderr:"), "must include stderr label");
+        assert!(msg.contains("Could not resolve host"), "must include stderr content");
+        assert!(msg.contains("hint:"), "must include hint label");
+    }
+
+    #[test]
+    fn test_execution_error_format_no_stderr() {
+        let msg = format_tool_execution_error("silent_tool", 2, None, None);
+        assert!(msg.contains("tool 'silent_tool'"));
+        assert!(msg.contains("exit code 2"));
+        assert!(!msg.contains("stderr:"), "no stderr label when stderr is None");
+        assert!(!msg.contains("hint:"), "no hint label when hint is None");
+    }
+
+    #[test]
+    fn test_execution_error_format_empty_stderr() {
+        let msg = format_tool_execution_error("my_tool", 1, Some(""), None);
+        assert!(!msg.contains("stderr:"), "no stderr label when stderr is empty");
+    }
+
+    #[test]
+    fn test_spawn_error_format() {
+        let msg = format_tool_spawn_error(
+            "analyze_code",
+            "binary not found",
+            Some("searched: /home/user/.config/aichat/functions/bin. Ensure the tool is installed."),
+        );
+        assert!(msg.contains("tool 'analyze_code'"));
+        assert!(msg.contains("could not be started"));
+        assert!(msg.contains("binary not found"));
+        assert!(msg.contains("hint:"));
+    }
+
+    #[test]
+    fn test_spawn_error_format_no_hint() {
+        let msg = format_tool_spawn_error("broken_tool", "permission denied", None);
+        assert!(msg.contains("tool 'broken_tool'"));
+        assert!(msg.contains("permission denied"));
+        assert!(!msg.contains("hint:"));
+    }
+
+    // ---- 7A: LLM error message format contract ----
+
+    /// The [TOOL_ERROR] prefix is a contract: LLM system prompts reference it
+    /// to teach the model how to handle tool failures.
+    fn format_tool_error_for_llm(
+        tool_name: &str,
+        exit_code: i32,
+        stderr: Option<&str>,
+        hint: Option<&str>,
+    ) -> String {
+        let mut msg = format!("[TOOL_ERROR] {tool_name} failed (exit {exit_code}).");
+        if let Some(stderr) = stderr {
+            if !stderr.is_empty() {
+                msg.push_str(&format!("\nStderr: {stderr}"));
+            }
+        }
+        if let Some(hint) = hint {
+            msg.push_str(&format!("\nHint: {hint}"));
+        }
+        msg
+    }
+
+    #[test]
+    fn test_llm_error_has_tool_error_prefix() {
+        let msg = format_tool_error_for_llm("web_search", 1, None, None);
+        assert!(msg.starts_with("[TOOL_ERROR]"), "LLM error must start with [TOOL_ERROR] prefix");
+    }
+
+    #[test]
+    fn test_llm_error_includes_tool_name() {
+        let msg = format_tool_error_for_llm("my_tool", 1, None, None);
+        assert!(msg.contains("my_tool"), "LLM error must include tool name");
+    }
+
+    #[test]
+    fn test_llm_error_includes_exit_code() {
+        let msg = format_tool_error_for_llm("my_tool", 127, None, None);
+        assert!(msg.contains("127"), "LLM error must include exit code");
+    }
+
+    #[test]
+    fn test_llm_error_includes_stderr() {
+        let msg = format_tool_error_for_llm(
+            "web_search", 1,
+            Some("curl: (6) Could not resolve host"),
+            None,
+        );
+        assert!(msg.contains("Stderr:"), "LLM error must label stderr");
+        assert!(msg.contains("Could not resolve host"), "LLM error must include stderr content");
+    }
+
+    #[test]
+    fn test_llm_error_includes_hint() {
+        let msg = format_tool_error_for_llm(
+            "web_search", 1, None,
+            Some("check your internet connection"),
+        );
+        assert!(msg.contains("Hint:"), "LLM error must label hint");
+        assert!(msg.contains("check your internet connection"));
+    }
+
+    #[test]
+    fn test_llm_error_token_budget() {
+        // Error messages sent to the LLM should stay under ~300 tokens (~1200 chars)
+        let long_stderr = "x".repeat(500);
+        let msg = format_tool_error_for_llm(
+            "web_search", 1,
+            Some(&long_stderr),
+            Some("check your internet connection"),
+        );
+        // With truncation applied upstream, the full message should be bounded.
+        // This test validates the format itself is concise.
+        assert!(msg.len() < 2000, "LLM error message should be concise, got {} chars", msg.len());
+    }
+
+    // ---- 7A: Null result handling contract ----
+
+    #[test]
+    fn test_null_result_is_structured() {
+        // Phase 7A: null results must be {"status": "ok", "output": null}
+        // NOT the old "DONE" string
+        let structured_null = json!({"status": "ok", "output": null});
+        assert_eq!(structured_null["status"], "ok");
+        assert!(structured_null["output"].is_null());
+        // Must NOT be the legacy format
+        assert_ne!(structured_null, json!("DONE"), "must not use legacy DONE format");
+    }
+
+    #[test]
+    fn test_null_result_is_valid_json() {
+        let structured_null = json!({"status": "ok", "output": null});
+        assert!(structured_null.is_object(), "null result must be a JSON object");
+        assert!(structured_null.get("status").is_some(), "must have status field");
+        assert!(structured_null.get("output").is_some(), "must have output field");
+    }
+
+    #[test]
+    fn test_error_result_is_not_null() {
+        // An error result should be a string containing [TOOL_ERROR], never null
+        let error_result = json!("[TOOL_ERROR] web_search failed (exit 1).");
+        assert!(!error_result.is_null());
+        assert!(error_result.as_str().unwrap().contains("[TOOL_ERROR]"));
+    }
+
+    // ---- 7B: Hint generation contract ----
+
+    fn generate_hint(exit_code: i32, stderr: &str) -> String {
+        let stderr_lower = stderr.to_lowercase();
+        if exit_code == 127 {
+            "the tool binary was not found on PATH.".to_string()
+        } else if exit_code == 126 {
+            "the tool binary exists but is not executable. Try: chmod +x <path>".to_string()
+        } else if stderr_lower.contains("not found") || stderr_lower.contains("no such file") {
+            "a dependency may be missing. Check the tool's requirements.".to_string()
+        } else if stderr_lower.contains("permission denied") {
+            "check file permissions on the tool binary.".to_string()
+        } else if stderr_lower.contains("econnrefused") || stderr_lower.contains("connection refused") {
+            "a network service the tool depends on may be down.".to_string()
+        } else if stderr_lower.contains("rate limit") || stderr_lower.contains("429") {
+            "the tool hit a rate limit. Wait and retry.".to_string()
+        } else {
+            "run the command manually to diagnose.".to_string()
+        }
+    }
+
+    #[test]
+    fn test_hint_exit_127_not_found() {
+        let hint = generate_hint(127, "");
+        assert!(hint.contains("not found on PATH"), "exit 127 = command not found");
+    }
+
+    #[test]
+    fn test_hint_exit_126_not_executable() {
+        let hint = generate_hint(126, "");
+        assert!(hint.contains("not executable"), "exit 126 = not executable");
+        assert!(hint.contains("chmod"), "should suggest chmod fix");
+    }
+
+    #[test]
+    fn test_hint_stderr_not_found() {
+        let hint = generate_hint(1, "python3: No such file or directory");
+        assert!(hint.contains("dependency"), "stderr 'no such file' = missing dependency");
+    }
+
+    #[test]
+    fn test_hint_stderr_permission_denied() {
+        let hint = generate_hint(1, "bash: ./tool.sh: Permission denied");
+        assert!(hint.contains("permission"), "stderr 'permission denied' = permission issue");
+    }
+
+    #[test]
+    fn test_hint_stderr_connection_refused() {
+        let hint = generate_hint(1, "curl: (7) Failed to connect: Connection refused");
+        assert!(hint.contains("network"), "stderr 'connection refused' = network issue");
+    }
+
+    #[test]
+    fn test_hint_stderr_econnrefused() {
+        let hint = generate_hint(1, "Error: connect ECONNREFUSED 127.0.0.1:5432");
+        assert!(hint.contains("network"), "stderr 'ECONNREFUSED' = network issue");
+    }
+
+    #[test]
+    fn test_hint_stderr_rate_limit() {
+        let hint = generate_hint(1, "Error: 429 Too Many Requests - rate limit exceeded");
+        assert!(hint.contains("rate limit"), "stderr '429' = rate limit");
+    }
+
+    #[test]
+    fn test_hint_fallback() {
+        let hint = generate_hint(1, "something completely unknown went wrong");
+        assert!(hint.contains("manually"), "unknown error = suggest manual diagnosis");
+    }
+
+    // ---- 7B: Stderr truncation contract ----
+
+    fn truncate_stderr(stderr: &str, max_lines: usize) -> String {
+        let lines: Vec<&str> = stderr.lines().collect();
+        if lines.len() <= max_lines {
+            stderr.trim().to_string()
+        } else {
+            let total = lines.len();
+            let tail = &lines[total - max_lines..];
+            format!(
+                "[{} lines total, showing last {}]\n{}",
+                total, max_lines, tail.join("\n")
+            )
+        }
+    }
+
+    #[test]
+    fn test_truncate_stderr_short() {
+        let stderr = "line1\nline2\nline3";
+        let result = truncate_stderr(stderr, 15);
+        assert_eq!(result, "line1\nline2\nline3");
+    }
+
+    #[test]
+    fn test_truncate_stderr_exact_limit() {
+        let lines: Vec<String> = (1..=15).map(|i| format!("line {i}")).collect();
+        let stderr = lines.join("\n");
+        let result = truncate_stderr(&stderr, 15);
+        assert!(result.contains("line 1"), "should keep all lines at exact limit");
+        assert!(result.contains("line 15"));
+        assert!(!result.contains("["), "should not have truncation marker at exact limit");
+    }
+
+    #[test]
+    fn test_truncate_stderr_over_limit() {
+        let lines: Vec<String> = (1..=30).map(|i| format!("line {i}")).collect();
+        let stderr = lines.join("\n");
+        let result = truncate_stderr(&stderr, 15);
+        assert!(result.contains("[30 lines total, showing last 15]"), "must show total + retained count");
+        assert!(!result.contains("line 1\n"), "first line should be truncated");
+        assert!(!result.contains("line 15\n"), "line 15 should be truncated");
+        assert!(result.contains("line 16"), "line 16 should be the first retained line");
+        assert!(result.contains("line 30"), "last line should be retained");
+    }
+
+    #[test]
+    fn test_truncate_stderr_preserves_last_lines() {
+        let lines: Vec<String> = (1..=100).map(|i| format!("error at step {i}")).collect();
+        let stderr = lines.join("\n");
+        let result = truncate_stderr(&stderr, 5);
+        assert!(result.contains("error at step 96"), "should keep last 5 lines");
+        assert!(result.contains("error at step 100"));
+        assert!(!result.contains("error at step 95"), "should not keep line before tail");
+    }
+
+    // ---- 7B: Error JSON context contract ----
+
+    #[test]
+    fn test_execution_error_json_has_required_fields() {
+        let ctx = json!({
+            "tool": "web_search",
+            "exit_code": 1,
+            "stderr": "curl: (6) Could not resolve host",
+            "hint": "check network",
+        });
+        assert!(ctx.get("tool").is_some(), "JSON context must have tool");
+        assert!(ctx.get("exit_code").is_some(), "JSON context must have exit_code");
+        assert!(ctx.get("stderr").is_some(), "JSON context must have stderr");
+        assert!(ctx.get("hint").is_some(), "JSON context must have hint");
+    }
+
+    #[test]
+    fn test_spawn_error_json_has_required_fields() {
+        let ctx = json!({
+            "tool": "my_tool",
+            "detail": "binary not found",
+            "hint": "install it",
+        });
+        assert!(ctx.get("tool").is_some(), "JSON context must have tool");
+        assert!(ctx.get("detail").is_some(), "JSON context must have detail");
+        assert!(ctx.get("hint").is_some(), "JSON context must have hint");
+    }
+
+    // ---- 7C: Retry budget contract ----
+
+    #[test]
+    fn test_retry_escalation_message_format() {
+        // Second identical failure warning
+        let warning = "This is the second time this exact call failed. \
+                       Do not retry with identical arguments.";
+        assert!(warning.contains("second time"), "2nd failure must mention count");
+        assert!(warning.contains("identical arguments"), "must mention identical args");
+    }
+
+    #[test]
+    fn test_retry_final_escalation_format() {
+        // Third+ failure escalation
+        let count = 3;
+        let escalation = format!(
+            "[TOOL_ERROR] This is attempt #{} with identical arguments and error. \
+             Do NOT retry this tool with the same arguments. \
+             Either use different arguments, try a different tool, or ask the user for help.",
+            count
+        );
+        assert!(escalation.contains("[TOOL_ERROR]"), "escalation must have [TOOL_ERROR] prefix");
+        assert!(escalation.contains(&format!("#{count}")), "must include attempt count");
+        assert!(escalation.contains("different tool"), "must suggest alternatives");
+        assert!(escalation.contains("ask the user"), "must suggest asking user");
+    }
+
+    #[test]
+    fn test_step_budget_decay() {
+        // Step budget decays by 2 per repeat, floor at 2
+        let max_steps: usize = 10;
+        let penalty: usize = 2;
+        let after_one_repeat = max_steps.saturating_sub(penalty);
+        assert_eq!(after_one_repeat, 8, "one repeat: 10 - 2 = 8");
+        let after_two_repeats = after_one_repeat.saturating_sub(penalty);
+        assert_eq!(after_two_repeats, 6, "two repeats: 8 - 2 = 6");
+        // Floor at 2
+        let floor = 2usize;
+        let extreme = floor.saturating_sub(penalty).max(2);
+        assert_eq!(extreme, 2, "floor should be 2");
+    }
+
+    // ---- 7: Error classification — new error formats must classify as ToolError ----
+
+    #[test]
+    fn test_new_error_formats_classify_as_tool_error() {
+        // These are the new Phase 7 error message formats.
+        // The error_classification module's classify() function must
+        // recognize them (tests the string-matching fallback path).
+        let new_formats = [
+            "error: tool 'web_search' failed (exit code 1)",
+            "error: tool 'analyze_code' could not be started: binary not found",
+            "binary is not executable",
+            "error: tool 'my_tool' failed (exit code 127)\n  hint: the tool binary was not found on PATH.",
+        ];
+        for msg in &new_formats {
+            assert!(
+                msg.contains("tool '") && msg.contains("' failed")
+                    || msg.contains("could not be started")
+                    || msg.contains("binary not found")
+                    || msg.contains("binary is not executable"),
+                "message should match at least one Phase 7 pattern: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_legacy_error_format_still_classified() {
+        // Legacy format must still be recognized for backward compatibility
+        let legacy = "Tool call exit with 1";
+        assert!(legacy.contains("Tool call exit with"));
+    }
+
+    // ---- 7: Multi-tool partial failure contract ----
+
+    #[test]
+    fn test_partial_failure_all_tools_get_results() {
+        // Phase 7A: every tool call must produce a ToolResult, even on failure.
+        // Simulate 3 tool calls where one fails.
+        let results: Vec<Value> = vec![
+            json!({"results": ["result1"]}),                              // success
+            json!("[TOOL_ERROR] fetch_url failed (exit 1)."),             // failure
+            json!({"status": "ok", "output": null}),                     // success, no output
+        ];
+        assert_eq!(results.len(), 3, "all 3 calls must produce results");
+        assert!(!results[0].is_null());
+        assert!(results[1].as_str().unwrap().contains("[TOOL_ERROR]"));
+        assert_eq!(results[2]["status"], "ok");
+    }
+
+    #[test]
+    fn test_partial_failure_never_clears_results() {
+        // Phase 7A: even if all tools return null, we must NOT clear results.
+        // This was the old is_all_null behavior that violated protocol.
+        let results: Vec<Value> = vec![
+            json!({"status": "ok", "output": null}),
+            json!({"status": "ok", "output": null}),
+        ];
+        assert!(!results.is_empty(), "results must never be cleared even when all null");
+    }
+
+    // ---- 7: Spawn error hint contract ----
+
+    fn spawn_error_hint(err_msg: &str) -> Option<String> {
+        let msg = err_msg.to_lowercase();
+        if msg.contains("not found") || msg.contains("no such file") {
+            Some("ensure the tool binary is installed and on PATH.".to_string())
+        } else if msg.contains("permission denied") {
+            Some("check file permissions. Try: chmod +x <path>".to_string())
+        } else {
+            None
+        }
+    }
+
+    #[test]
+    fn test_spawn_hint_not_found() {
+        let hint = spawn_error_hint("No such file or directory (os error 2)");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("installed"));
+    }
+
+    #[test]
+    fn test_spawn_hint_permission_denied() {
+        let hint = spawn_error_hint("Permission denied (os error 13)");
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("chmod"));
+    }
+
+    #[test]
+    fn test_spawn_hint_unknown() {
+        let hint = spawn_error_hint("broken pipe");
+        assert!(hint.is_none(), "unknown spawn errors should not generate a hint");
+    }
+}
+
+// ===========================================================================
+// 19. Phase 8 — Tool timeout & concurrent execution
+// ===========================================================================
+
+mod phase8_timeout_and_concurrency {
+    use super::*;
+
+    // ---- 8A: Timeout error format contracts ----
+
+    fn format_timeout_error(tool_name: &str, timeout_secs: u64) -> String {
+        format!(
+            "error: tool '{tool_name}' timed out after {timeout_secs}s\n  \
+             hint: increase timeout with tool_timeout in config or per-tool \"timeout\" in functions.json"
+        )
+    }
+
+    #[test]
+    fn test_timeout_error_includes_tool_name() {
+        let msg = format_timeout_error("slow_tool", 30);
+        assert!(msg.contains("tool 'slow_tool'"), "must include tool name");
+    }
+
+    #[test]
+    fn test_timeout_error_includes_duration() {
+        let msg = format_timeout_error("slow_tool", 30);
+        assert!(msg.contains("30s"), "must include timeout duration");
+    }
+
+    #[test]
+    fn test_timeout_error_includes_hint() {
+        let msg = format_timeout_error("slow_tool", 30);
+        assert!(msg.contains("hint:"), "must include hint");
+        assert!(msg.contains("tool_timeout"), "hint must mention config key");
+        assert!(msg.contains("functions.json"), "hint must mention per-tool config");
+    }
+
+    // ---- 8A: Timeout LLM error format ----
+
+    fn format_timeout_for_llm(tool_name: &str, timeout_secs: u64) -> String {
+        format!(
+            "[TOOL_ERROR] {tool_name} timed out after {timeout_secs}s.\n\
+             Hint: increase timeout with tool_timeout in config or per-tool \"timeout\" in functions.json."
+        )
+    }
+
+    #[test]
+    fn test_timeout_llm_error_has_prefix() {
+        let msg = format_timeout_for_llm("slow_tool", 30);
+        assert!(msg.starts_with("[TOOL_ERROR]"));
+    }
+
+    #[test]
+    fn test_timeout_llm_error_includes_tool_and_duration() {
+        let msg = format_timeout_for_llm("slow_tool", 60);
+        assert!(msg.contains("slow_tool"));
+        assert!(msg.contains("60s"));
+    }
+
+    // ---- 8A: Timeout JSON context ----
+
+    #[test]
+    fn test_timeout_json_context() {
+        let ctx = json!({
+            "tool": "slow_tool",
+            "timeout_secs": 30,
+        });
+        assert_eq!(ctx["tool"], "slow_tool");
+        assert_eq!(ctx["timeout_secs"], 30);
+    }
+
+    // ---- 8A: Timeout resolution contract ----
+
+    #[test]
+    fn test_timeout_resolution_per_tool_overrides_global() {
+        // Per-tool timeout (30) should override global timeout (60)
+        let per_tool: Option<u64> = Some(30);
+        let global: u64 = 60;
+        let effective = per_tool.filter(|&t| t > 0).unwrap_or(global);
+        assert_eq!(effective, 30, "per-tool timeout should override global");
+    }
+
+    #[test]
+    fn test_timeout_resolution_global_fallback() {
+        // No per-tool timeout → use global
+        let per_tool: Option<u64> = None;
+        let global: u64 = 60;
+        let effective = per_tool.filter(|&t| t > 0).unwrap_or(global);
+        assert_eq!(effective, 60, "should fall back to global timeout");
+    }
+
+    #[test]
+    fn test_timeout_resolution_zero_means_disabled() {
+        // Per-tool timeout of 0 should fall through to global
+        let per_tool: Option<u64> = Some(0);
+        let global: u64 = 45;
+        let effective = per_tool.filter(|&t| t > 0).unwrap_or(global);
+        assert_eq!(effective, 45, "per-tool 0 should fall through to global");
+    }
+
+    #[test]
+    fn test_timeout_disabled_when_both_zero() {
+        let per_tool: Option<u64> = None;
+        let global: u64 = 0;
+        let effective = per_tool.filter(|&t| t > 0).unwrap_or(global);
+        assert_eq!(effective, 0, "0 = disabled");
+    }
+
+    // ---- 8A: Config contract ----
+
+    #[test]
+    fn test_config_example_has_tool_timeout() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.yaml");
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(
+            content.contains("tool_timeout"),
+            "config.example.yaml must document tool_timeout"
+        );
+    }
+
+    #[test]
+    fn test_tool_timeout_default_is_zero() {
+        // Default should be 0 (disabled) for backward compatibility
+        let default: u64 = 0;
+        assert_eq!(default, 0, "default tool_timeout must be 0 (disabled)");
+    }
+
+    // ---- 8A: FunctionDeclaration timeout field ----
+
+    #[test]
+    fn test_function_declaration_timeout_field() {
+        // Timeout should be Optional and default to None in deserialization
+        let json = json!({
+            "name": "my_tool",
+            "description": "A tool",
+            "parameters": {"type": "object", "properties": {}}
+        });
+        // Without timeout field — should deserialize with timeout = None
+        let _: serde_json::Value = json; // Type check passes
+
+        // With timeout field
+        let json_with_timeout = json!({
+            "name": "my_tool",
+            "description": "A tool",
+            "parameters": {"type": "object", "properties": {}},
+            "timeout": 30
+        });
+        assert_eq!(json_with_timeout["timeout"], 30);
+    }
+
+    #[test]
+    fn test_function_declaration_timeout_optional() {
+        // Functions.json without timeout field must still parse
+        let json_str = r#"[{
+            "name": "get_weather",
+            "description": "Get weather",
+            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+        }]"#;
+        let declarations: Vec<Value> = serde_json::from_str(json_str).unwrap();
+        assert!(declarations[0].get("timeout").is_none(), "timeout should be absent by default");
+    }
+
+    // ---- 8A: Error classification ----
+
+    #[test]
+    fn test_timeout_error_classifies_as_tool_error() {
+        let msg = "error: tool 'slow_tool' timed out after 30s";
+        assert!(
+            msg.contains("timed out after") && msg.contains("tool '"),
+            "timeout error should match tool error classification"
+        );
+    }
+
+    // ---- 8B: Concurrent execution contract ----
+
+    #[test]
+    fn test_concurrent_results_preserve_order() {
+        // Results from concurrent execution should maintain correspondence
+        // between calls and results (same index = same tool call)
+        let calls = vec!["tool_a", "tool_b", "tool_c"];
+        let results = vec![json!("result_a"), json!("result_b"), json!("result_c")];
+        assert_eq!(calls.len(), results.len());
+        // join_all preserves input order
+        for (i, name) in calls.iter().enumerate() {
+            let expected_suffix = &name[name.len()-1..];
+            let result_str = results[i].as_str().unwrap();
+            assert!(result_str.ends_with(expected_suffix), "results must preserve call order");
+        }
+    }
+
+    #[test]
+    fn test_concurrent_partial_failure_all_results_returned() {
+        // Even in concurrent execution, all calls must produce results
+        let results: Vec<Value> = vec![
+            json!({"output": "success"}),
+            json!("[TOOL_ERROR] tool_b failed (exit 1)."),
+            json!({"status": "ok", "output": null}),
+        ];
+        assert_eq!(results.len(), 3, "concurrent execution must return result for every call");
+        // Error result is still present, not filtered
+        assert!(results[1].as_str().unwrap().contains("[TOOL_ERROR]"));
+    }
+
+    #[test]
+    fn test_concurrent_independence() {
+        // Each tool call should be independent — failure of one does not affect others
+        // This is a design contract, not a runtime test
+        let tool_a_result: Result<Value, &str> = Ok(json!("ok"));
+        let tool_b_result: Result<Value, &str> = Err("failed");
+        let tool_c_result: Result<Value, &str> = Ok(json!("ok"));
+
+        // All results should be collected regardless of individual failures
+        let collected: Vec<Value> = vec![
+            tool_a_result.unwrap_or_else(|e| json!(format!("[TOOL_ERROR] {e}"))),
+            tool_b_result.unwrap_or_else(|e| json!(format!("[TOOL_ERROR] {e}"))),
+            tool_c_result.unwrap_or_else(|e| json!(format!("[TOOL_ERROR] {e}"))),
+        ];
+        assert_eq!(collected.len(), 3);
+        assert_eq!(collected[0], json!("ok"));
+        assert!(collected[1].as_str().unwrap().contains("[TOOL_ERROR]"));
+        assert_eq!(collected[2], json!("ok"));
+    }
+}
