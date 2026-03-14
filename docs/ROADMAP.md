@@ -217,19 +217,97 @@ tool_timeout: 0
 
 ---
 
-## Future Phases
+## Next Phases
 
-### Phase 8: RAG-mode with non-interactive and hybrid context grounding
+### Phase 8: Data Processing & Observability
 
-- Fix RAG in non-interactive mode
+| Item | Status | Notes |
+|---|---|---|
+| 8A. Run log & cost accounting | — | JSONL ledger from existing `ModelData.{input,output}_price` × `ChatCompletionsOutput.{input,output}_tokens`. Config: `run_log:` path. CLI: `--cost` displays per-invocation cost on stderr. |
+| 8B. Pipeline trace metadata | — | `-o json` wraps pipeline output in envelope with per-stage `{role, model, input_tokens, output_tokens, cost_usd, latency_ms}` and totals. Text mode unaffected. |
+| 8C. Batch record processing (`--each`) | — | `--each` reads stdin line-by-line, invokes once per record. `--parallel N` for concurrent execution. Works with `-r` (roles), `-a` (agents), and `--macro` (macros). Per-record errors on stderr, successes on stdout. |
+| 8D. Record field templating (`{{.field}}`) | — | Dot-prefixed interpolation extracts JSON fields from the current input record. Available in role prompts, agent instructions, and macro steps. `{{.}}` is the full record. Non-JSON lines: `{{.}}` is the raw line, named fields resolve empty. |
+| 8E. Headless RAG | — | Remove `IS_STDOUT_TERMINAL` gate from `Rag::init`. Non-interactive mode falls back to config defaults (`rag_embedding_model`, `rag_chunk_size`, `rag_chunk_overlap`). Unblocks RAG in pipelines and agent automation. |
 
-### Phase 9: Observability & Cost Accounting
+**8A/8B — Cost wiring.** The infrastructure exists but is disconnected. `ModelData` carries `input_price`/`output_price` (loaded from `models.yaml`). Every API response populates `input_tokens`/`output_tokens` in `ChatCompletionsOutput`. The multiplication never happens — prices only appear in `--list-models`, token counts only in `serve.rs`. Phase 8A connects them into a ledger; 8B extends the `-o json` pipeline envelope with per-stage accounting.
 
-- Call records
-- JSONL log
-- `--cost` flag
+Run log record:
+```jsonl
+{"ts":"2026-03-14T10:23:01Z","run_id":"a1b2c3","model":"claude:claude-sonnet-4-6","role":"classify","input_tokens":1847,"output_tokens":423,"cost_usd":0.012,"exit_code":0,"latency_ms":2340}
+```
 
-### Phase 10: Batch & Records as First-Class Citizens
+Pipeline trace envelope (`-o json`):
+```json
+{
+  "output": "...",
+  "trace": {
+    "stages": [
+      {"role": "extract", "model": "deepseek:deepseek-chat", "input_tokens": 892, "output_tokens": 341, "cost_usd": 0.0003, "latency_ms": 1100},
+      {"role": "review", "model": "claude:claude-sonnet-4-6", "input_tokens": 341, "output_tokens": 423, "cost_usd": 0.012, "latency_ms": 2340}
+    ],
+    "total_cost_usd": 0.0123,
+    "total_latency_ms": 3440
+  }
+}
+```
+
+**8C/8D — Record processing.** `--each` is the minimal batch primitive. Everything else — schema validation (`input_schema`/`output_schema`), lifecycle hooks (`pipe_to`/`save_to`), output formatting (`-o jsonl`) — already works per-invocation. `--each` adds only the iteration loop. `{{.field}}` adds only field extraction. Together they compose with the full feature set of whichever entity type is invoked.
+
+**8C/8D work uniformly across all entity types because they are input-level features, resolved before entity dispatch:**
+
+| Entity | `--each` | `{{.field}}` in... | Mechanism |
+|---|---|---|---|
+| Role (`-r`) | Yes | Prompt template | Fields interpolated alongside `{{var}}` and `{{$VAR}}` |
+| Agent (`-a`) | Yes | `instructions` template | Fields interpolated via same path as `{{__tools__}}` |
+| Macro (`--macro`) | Yes | Step interpolation | Fields available alongside positional `{{var}}` in each step |
+| Prompt (bare) | Yes | Prompt text | Fields interpolated before sending |
+
+**Template interpolation namespaces (cumulative with existing):**
+```
+{{var}}       Role/agent declared variable (-v key=value, --agent-variable)
+{{$VAR}}      Environment variable
+{{.field}}    Record field from current --each input line (Phase 8D)
+{{.}}         Full record (entire input line)
+{{timestamp}} Built-in (lifecycle hooks only)
+```
+
+**Example — JSONL dataset with a role:**
+```bash
+# classify.md has output_schema enforcing {"label": "string", "confidence": "number"}
+cat emails.jsonl | aichat -r classify -o jsonl --each --parallel 4
+```
+Role prompt uses `{{.subject}}` and `{{.body}}`. `output_schema` validates each response. Output: one JSONL line per input.
+
+**Example — JSONL dataset with an agent:**
+```bash
+cat tickets.jsonl | aichat -a triage-agent --each --parallel 2
+```
+Agent `instructions` uses `{{.title}}` and `{{.description}}`. Agent tools and RAG available per-invocation (8E required for RAG).
+
+**Example — JSONL dataset with a macro:**
+```yaml
+# macros/enrich.yaml
+variables:
+  - name: model
+    default: "openai:gpt-4o-mini"
+steps:
+  - ".role enricher -m {{model}}"
+  - "Enrich: {{.}}"
+```
+```bash
+cat records.jsonl | aichat --macro enrich --each
+```
+
+**8E — Headless RAG.** `Rag::init` currently calls `bail!("Failed to init rag in non-interactive mode")` when `!IS_STDOUT_TERMINAL`. This blocks any pipeline or automation use of agent RAG. The config defaults (`rag_embedding_model`, `rag_chunk_size`, `rag_chunk_overlap`) already exist — the fix is to use them instead of prompting interactively. Prerequisite for 8C to work with RAG-enabled agents.
+
+**What to kill:**
+| Proposal | Reason |
+|---|---|
+| `--resume` / checkpoint in `--each` | Unix composition: `tail -n +N` the input and re-run. Stateless batch is simpler. |
+| Windowing / aggregation / streaming | `--each` processes one line at a time. Aggregation belongs downstream (`jq`, `duckdb`). |
+| Per-record retry logic | Failed records emit structured errors (Phase 4C) on stderr. Filter and re-process. |
+| Cost dashboard / visualization | JSONL run log is the interface. Pipe to `jq`, `duckdb`, Grafana. |
+| `{{.field.nested}}` deep access | Premature. If needed, the role prompt can instruct the model to extract nested fields. |
 
 ---
 
@@ -262,6 +340,41 @@ Global Config (config.yaml)
 ```
 
 Fallback order: Session > Agent > Role > Global defaults.
+
+### Entity Types
+
+aichat has four entity types. Three form a capability hierarchy (**Prompt < Role < Agent**); the fourth (**Macro**) is orthogonal.
+
+**Prompt** — Anonymous, ephemeral. Raw text used as a system prompt. Under the hood, creates a temporary Role named `%%` (`TEMP_ROLE_NAME`). No file, no metadata, no persistence. Invoked via `aichat "text"` or `aichat --prompt "text"`.
+
+**Role** — The core configuration unit. A markdown file (`<config>/roles/name.md`) with YAML frontmatter. Carries all metadata: model, temperature, top_p, use_tools, input_schema, output_schema, variables (including shell-injective defaults), pipe_to, save_to, mcp_servers, extends/include, pipeline, examples, description. Roles are the only entity supporting schema validation, pipelines, lifecycle hooks, inheritance, and MCP binding. Invoked via `aichat -r name`.
+
+**Agent** — Directory-based (`<functions_dir>/agents/name/`). Implements `RoleLike` trait — wraps a Role via `to_role()`. Adds: own tool functions (`functions.json`), RAG (documents), dynamic instructions (`_instructions` shell function), interactive variable prompting, session management, env-var bridging (`LLM_AGENT_VAR_*`). Defined in llm-functions, not in aichat's config directory. Does NOT support: input_schema, output_schema, pipe_to, save_to, mcp_servers, extends/include, pipeline. Invoked via `aichat -a name`.
+
+**Macro** — A YAML file (`<config>/macros/name.yaml`) with positional variables and a list of REPL command steps. Runs in an isolated config clone (session/agent/rag/role cleared). Can reference roles and agents in its steps but is not itself a role. Cannot perform `.edit` operations. Invoked via `aichat --macro name` or REPL `.macro name`.
+
+**Feature matrix (verified against source):**
+
+| Capability | Prompt | Role | Agent | Macro |
+|---|---|---|---|---|
+| System prompt | Raw text | Frontmatter + body | `instructions` + dynamic | N/A (REPL commands) |
+| Model pinning | No | `model:` field | `model_id:` field | No (inherits current) |
+| `input_schema` validation | No | **Yes** (`jsonschema` before LLM) | No | No |
+| `output_schema` validation | No | **Yes** (`jsonschema` after LLM) | No | No |
+| Variables (plain) | No | **Yes** (`-v key=value`) | **Yes** (`--agent-variable`) | **Yes** (positional args) |
+| Variables (shell-injective) | No | **Yes** (`{shell: "cmd"}`) | No | No |
+| `pipe_to` / `save_to` | No | **Yes** | No | No |
+| `mcp_servers` binding | No | **Yes** (auto-expands `use_tools`) | No | No |
+| `extends` / `include` | No | **Yes** | No | No |
+| `pipeline` stages | No | **Yes** (multi-model chaining) | No | No |
+| Own tool functions | No | Via `use_tools` | **Yes** (`functions.json`) | No |
+| RAG (documents) | No | No | **Yes** (built-in) | No |
+| Dynamic instructions | No | No | **Yes** (`_instructions`) | No |
+| Session management | No | No | **Yes** (session vars, lifecycle) | No (clears session) |
+| Callable as tool | No | **Yes** (if has `pipeline:`) | No | No |
+| `-o` output format | Yes | Yes | Yes | N/A |
+| `--each` batch (Phase 8C) | Yes | Yes | Yes | Yes |
+| `{{.field}}` templating (Phase 8D) | Yes | Yes | Yes | Yes |
 
 ### Tool Dispatch
 
