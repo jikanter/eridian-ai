@@ -3239,7 +3239,7 @@ mod tool_execution {
 mod serve_prompts {
     use super::*;
     use std::fs;
-    
+
         fn fake_all_prompts(dir: &std::path::Path) -> Vec<Value> {
             let mut prompts = vec![];
             if let Ok(rd) = fs::read_dir(dir) {
