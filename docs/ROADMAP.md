@@ -1,6 +1,6 @@
 # AIChat Roadmap
 
-**Last updated:** 2026-03-14
+**Last updated:** 2026-03-15
 **300 tests passing (127 unit + 173 compatibility), 0 failures**
 
 ---
@@ -103,7 +103,7 @@ Phase 4 enables cheap error recovery for agents consuming aichat. The [tool anal
 
 | Item | Status | Commit | Notes |
 |---|---|---|---|
-| 5A. Remote MCP servers (HTTP/SSE) | Done | — | `endpoint:` + `headers:` fields on `McpServerConfig`. Streamable HTTP transport via `ReqwestClient` adapter (avoids reqwest version conflict). CLI auto-detects `http://`/`https://` URLs. |
+| 5A. Remote MCP servers (HTTP/SSE) | Done | — | `endpoint:` + `headers:` fields on `McpServerConfig`. Streamable HTTP transport via `ReqwestClient` adapter (avoids request version conflict). CLI auto-detects `http://`/`https://` URLs. |
 | 5B. Lazy role discovery via MCP | Done | — | `discover_roles` meta-tool advertised when ≥8 tools. Full schemas injected on first use with `notifications/tools/list_changed`. Falls back to eager loading for small tool sets. |
 
 **5A implementation notes:**
@@ -218,6 +218,112 @@ tool_timeout: 0
 ---
 
 ## Next Phases
+
+### Phase 7.5: Macro & Agent Config Override (`.set` Expansion)
+
+| Item | Status | Notes |
+|---|---|---|
+| 7.5A. Extend `.set` with role-level fields | — | Add `model`, `output_schema`, `input_schema`, `pipe_to`, `save_to` to `.set` dispatch in `Config::set()`. Schema fields accept inline JSON or `@file` path. |
+| 7.5B. Macro frontmatter assembly | — | Macros can now use `.set` to dress up a `.prompt` or override fields on a `.role` before prompting. This turns macros into role factories without collapsing the declarative/imperative boundary. |
+| 7.5C. Agent `.set` parity | — | Agents gain the same `.set` overrides through the `RoleLike` trait. `AgentConfig` adds optional `output_schema`, `input_schema`, `pipe_to`, `save_to`. `Agent::to_role()` propagates them via `role.sync()`. |
+| 7.5D. Guard rails | — | `.set output_schema` and `.set input_schema` validate the schema itself (meta-validation via `jsonschema::is_valid`) before accepting. `.set pipe_to` validates the target exists. Errors use Phase 4 structured format. |
+
+**Why this phase exists.** Today's entity hierarchy has an awkward gap:
+
+```
+                Declarative power    Control flow
+  Role          Full frontmatter     None (fixed DAG)
+  Prompt        Zero (text only)     None
+  Agent         model/temp/tools     None
+  Macro         Zero                 Imperative (REPL steps)
+```
+
+Roles carry all the metadata but can't branch. Macros can branch but can't shape metadata. Prompts are roles without clothes. Agents implement `RoleLike` but only expose `model`, `temperature`, `top_p`, and `use_tools` — missing the entire schema/lifecycle/pipeline surface that makes roles powerful.
+
+Phase 7.5 closes this by extending `.set` to cover the fields that currently only exist in role frontmatter. This doesn't make macros into roles — it lets macros *configure* roles at runtime.
+
+**`.set` field additions:**
+
+| Field | Value format | Applies to | Notes |
+|---|---|---|---|
+| `model` | Model ID string | Config global | Already handled by `.model` command; adding to `.set` for consistency |
+| `output_schema` | Inline JSON or `@path` | Active role | Parsed and meta-validated before acceptance |
+| `input_schema` | Inline JSON or `@path` | Active role | Same as above |
+| `pipe_to` | Shell command string | Active role | Validates non-empty; execution handled by existing Phase 6B hooks |
+| `save_to` | File path (supports `{{timestamp}}`) | Active role | Same as above |
+
+**Macro example — dynamic schema selection:**
+```yaml
+# macros/discover.yaml
+variables:
+  - name: schema
+    default: "default"
+  - name: query
+    rest: true
+steps:
+  - ".role data-discovery"
+  - ".set output_schema @schemas/{{schema}}.json"
+  - "{{query}}"
+```
+```bash
+aichat --macro discover ruby ruby programming
+# Loads data-discovery role, overrides output_schema from schemas/ruby.json, prompts
+```
+
+**Macro example — inline prompt assembly:**
+```yaml
+# macros/quick-json.yaml
+variables:
+  - name: query
+    rest: true
+steps:
+  - ".prompt You extract structured data from natural language."
+  - ".set output_schema {\"type\": \"object\"}"
+  - "{{query}}"
+```
+
+**Agent evaluation — is this worthwhile?**
+
+Yes, but with a narrower scope than roles. The case for extending agents:
+
+1. **`output_schema`** — Highest value. Agents have their own tools (`functions.json`) and RAG, but no way to enforce structured output. An agent that can guarantee JSON conformance becomes composable in pipelines. Today an agent's output is always unvalidated text.
+
+2. **`input_schema`** — Medium value. Agents already have interactive variable prompting (`AgentVariable`), which is a runtime form of input validation. `input_schema` adds machine-checkable validation for non-interactive (pipeline/batch) use. Relevant when agents are invoked via `--each` (Phase 8C).
+
+3. **`pipe_to` / `save_to`** — Lower value. Agent sessions already manage output persistence. But for headless agent invocations (`aichat -a agent "prompt"` without session), lifecycle hooks add the same zero-friction routing that roles get. Becomes more valuable with `--each`.
+
+**Implementation path for agents:** Extend `AgentConfig` (not `AgentDefinition`) so overrides are per-invocation, not baked into the agent's definition in llm-functions. The `RoleLike` trait doesn't need new methods — `to_role()` already calls `role.sync(self)`, which copies all role fields. The change is making `AgentConfig` carry the additional fields so `sync` has something to copy.
+
+```rust
+// agent.rs — AgentConfig additions
+pub struct AgentConfig {
+    pub model_id: Option<String>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub use_tools: Option<String>,
+    // Phase 7.5C additions:
+    pub output_schema: Option<serde_json::Value>,
+    pub input_schema: Option<serde_json::Value>,
+    pub pipe_to: Option<String>,
+    pub save_to: Option<String>,
+    // existing fields...
+}
+```
+
+**What NOT to give agents:**
+- `extends` / `include` — Agent identity is directory-based (`functions.json`, `_instructions`). Role inheritance doesn't map.
+- `pipeline` — Agents already have tool-calling loops via `call_react`. Giving them declarative pipelines creates two orchestration models in one entity.
+- `mcp_servers` — Agents use tools from `functions.json`. MCP binding is a role concern. If an agent needs MCP tools, wrap it in a role with `mcp_servers`.
+
+**What to kill:**
+
+| Proposal | Reason |
+|---|---|
+| `.set` for `extends` / `include` | These are compile-time composition — applying them at runtime after the role is resolved would require re-resolution, creating confusing ordering semantics. |
+| `.set` for `pipeline` | Pipelines are structural, not parametric. Dynamic pipeline construction belongs in macros via multiple `.role` steps, not in mutating a role's pipeline field. |
+| Macro-level frontmatter (macros with their own schema) | Macros are orchestrators, not LLM-facing entities. They don't have prompts, so they don't need schemas. They configure other entities that do. |
+
+**Key files:** `src/config/mod.rs` (`Config::set()` at ~L700), `src/config/agent.rs` (`AgentConfig`, `RoleLike` impl), `src/config/role.rs` (`Role::sync()`), `src/repl/mod.rs` (`.set` REPL dispatch).
 
 ### Phase 8: Data Processing & Observability
 
@@ -349,7 +455,7 @@ aichat has four entity types. Three form a capability hierarchy (**Prompt < Role
 
 **Role** — The core configuration unit. A markdown file (`<config>/roles/name.md`) with YAML frontmatter. Carries all metadata: model, temperature, top_p, use_tools, input_schema, output_schema, variables (including shell-injective defaults), pipe_to, save_to, mcp_servers, extends/include, pipeline, examples, description. Roles are the only entity supporting schema validation, pipelines, lifecycle hooks, inheritance, and MCP binding. Invoked via `aichat -r name`.
 
-**Agent** — Directory-based (`<functions_dir>/agents/name/`). Implements `RoleLike` trait — wraps a Role via `to_role()`. Adds: own tool functions (`functions.json`), RAG (documents), dynamic instructions (`_instructions` shell function), interactive variable prompting, session management, env-var bridging (`LLM_AGENT_VAR_*`). Defined in llm-functions, not in aichat's config directory. Does NOT support: input_schema, output_schema, pipe_to, save_to, mcp_servers, extends/include, pipeline. Invoked via `aichat -a name`.
+**Agent** — Directory-based (`<functions_dir>/agents/name/`). Implements `RoleLike` trait — wraps a Role via `to_role()`. Adds: own tool functions (`functions.json`), RAG (documents), dynamic instructions (`_instructions` shell function), interactive variable prompting, session management, env-var bridging (`LLM_AGENT_VAR_*`). Defined in llm-functions, not in aichat's config directory. Does NOT support: input_schema, output_schema, pipe_to, save_to, mcp_servers, extends/include, pipeline. Phase 7.5C proposes adding `output_schema`, `input_schema`, `pipe_to`, `save_to` to `AgentConfig` (per-invocation overrides, not baked into definition). Invoked via `aichat -a name`.
 
 **Macro** — A YAML file (`<config>/macros/name.yaml`) with positional variables and a list of REPL command steps. Runs in an isolated config clone (session/agent/rag/role cleared). Can reference roles and agents in its steps but is not itself a role. Cannot perform `.edit` operations. Invoked via `aichat --macro name` or REPL `.macro name`.
 
@@ -359,11 +465,11 @@ aichat has four entity types. Three form a capability hierarchy (**Prompt < Role
 |---|---|---|---|---|
 | System prompt | Raw text | Frontmatter + body | `instructions` + dynamic | N/A (REPL commands) |
 | Model pinning | No | `model:` field | `model_id:` field | No (inherits current) |
-| `input_schema` validation | No | **Yes** (`jsonschema` before LLM) | No | No |
-| `output_schema` validation | No | **Yes** (`jsonschema` after LLM) | No | No |
+| `input_schema` validation | No | **Yes** (`jsonschema` before LLM) | No (Phase 7.5C) | No |
+| `output_schema` validation | No | **Yes** (`jsonschema` after LLM) | No (Phase 7.5C) | No |
 | Variables (plain) | No | **Yes** (`-v key=value`) | **Yes** (`--agent-variable`) | **Yes** (positional args) |
 | Variables (shell-injective) | No | **Yes** (`{shell: "cmd"}`) | No | No |
-| `pipe_to` / `save_to` | No | **Yes** | No | No |
+| `pipe_to` / `save_to` | No | **Yes** | No (Phase 7.5C) | No |
 | `mcp_servers` binding | No | **Yes** (auto-expands `use_tools`) | No | No |
 | `extends` / `include` | No | **Yes** | No | No |
 | `pipeline` stages | No | **Yes** (multi-model chaining) | No | No |
