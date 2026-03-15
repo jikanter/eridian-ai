@@ -288,7 +288,7 @@ Yes, but with a narrower scope than roles. The case for extending agents:
 
 1. **`output_schema`** — Highest value. Agents have their own tools (`functions.json`) and RAG, but no way to enforce structured output. An agent that can guarantee JSON conformance becomes composable in pipelines. Today an agent's output is always unvalidated text.
 
-2. **`input_schema`** — Medium value. Agents already have interactive variable prompting (`AgentVariable`), which is a runtime form of input validation. `input_schema` adds machine-checkable validation for non-interactive (pipeline/batch) use. Relevant when agents are invoked via `--each` (Phase 8C).
+2. **`input_schema`** — Medium value. Agents already have interactive variable prompting (`AgentVariable`), which is a runtime form of input validation. `input_schema` adds machine-checkable validation for non-interactive (pipeline/batch) use. Relevant when agents are invoked via `--each` (Phase 8B).
 
 3. **`pipe_to` / `save_to`** — Lower value. Agent sessions already manage output persistence. But for headless agent invocations (`aichat -a agent "prompt"` without session), lifecycle hooks add the same zero-friction routing that roles get. Becomes more valuable with `--each`.
 
@@ -327,15 +327,23 @@ pub struct AgentConfig {
 
 ### Phase 8: Data Processing & Observability
 
+> **[CHANGED 2026-03-15]** 8A expanded into 8A1–8A2. New items 8F (interaction trace) and 8G (trace JSONL) added.
+> These address a blind spot: the existing DEBUG log shows raw API request/response JSON but does NOT surface
+> model output content cleanly, does NOT trace multi-turn `call_react` loops (tool_call → tool_result → next response),
+> and does NOT show cost/token summaries. Informed by openclaw's stage-based JSONL cache-trace and per-turn
+> `model.usage` diagnostic event patterns. See conversation on 2026-03-15 for full analysis.
+
 | Item | Status | Notes |
 |---|---|---|
-| 8A. Run log & cost accounting | — | JSONL ledger from existing `ModelData.{input,output}_price` × `ChatCompletionsOutput.{input,output}_tokens`. Config: `run_log:` path. CLI: `--cost` displays per-invocation cost on stderr. |
-| 8B. Pipeline trace metadata | — | `-o json` wraps pipeline output in envelope with per-stage `{role, model, input_tokens, output_tokens, cost_usd, latency_ms}` and totals. Text mode unaffected. |
-| 8C. Batch record processing (`--each`) | — | `--each` reads stdin line-by-line, invokes once per record. `--parallel N` for concurrent execution. Works with `-r` (roles), `-a` (agents), and `--macro` (macros). Per-record errors on stderr, successes on stdout. |
-| 8D. Record field templating (`{{.field}}`) | — | Dot-prefixed interpolation extracts JSON fields from the current input record. Available in role prompts, agent instructions, and macro steps. `{{.}}` is the full record. Non-JSON lines: `{{.}}` is the raw line, named fields resolve empty. |
-| 8E. Headless RAG | — | Remove `IS_STDOUT_TERMINAL` gate from `Rag::init`. Non-interactive mode falls back to config defaults (`rag_embedding_model`, `rag_chunk_size`, `rag_chunk_overlap`). Unblocks RAG in pipelines and agent automation. |
+| 8A1. Run log & cost accounting | — | JSONL ledger from existing `ModelData.{input,output}_price` × `ChatCompletionsOutput.{input,output}_tokens`. Config: `run_log:` path. CLI: `--cost` displays per-invocation cost on stderr. |
+| 8A2. Pipeline trace metadata | — | `-o json` wraps pipeline output in envelope with per-stage `{role, model, input_tokens, output_tokens, cost_usd, latency_ms}` and totals. Text mode unaffected. |
+| 8B. Batch record processing (`--each`) | — | `--each` reads stdin line-by-line, invokes once per record. `--parallel N` for concurrent execution. Works with `-r` (roles), `-a` (agents), and `--macro` (macros). Per-record errors on stderr, successes on stdout. |
+| 8C. Record field templating (`{{.field}}`) | — | Dot-prefixed interpolation extracts JSON fields from the current input record. Available in role prompts, agent instructions, and macro steps. `{{.}}` is the full record. Non-JSON lines: `{{.}}` is the raw line, named fields resolve empty. |
+| 8D. Headless RAG | — | Remove `IS_STDOUT_TERMINAL` gate from `Rag::init`. Non-interactive mode falls back to config defaults (`rag_embedding_model`, `rag_chunk_size`, `rag_chunk_overlap`). Unblocks RAG in pipelines and agent automation. |
+| 8F. Interaction trace (`--trace`) | — | **[ADDED 2026-03-15]** Human-readable multi-turn summary on stderr. Each `call_react` turn shows: direction (→ request / ← response), model, tool calls with args, tool results (truncated), token counts, latency, schema validation outcome. Single invocations show one turn; tool-calling loops show full chain. |
+| 8G. Trace JSONL (`AICHAT_TRACE=1`) | — | **[ADDED 2026-03-15]** Env-var gated stage-based JSONL trace. Each `call_react` iteration emits: `{ts, turn, role, model, content_summary, tool_calls, tool_results_truncated, input_tokens, output_tokens, cost_usd, latency_ms, schema_valid}`. File path via `AICHAT_TRACE_FILE` (default: stderr). Adapts openclaw's cache-trace pattern for CLI — stage snapshots, not continuous logging. |
 
-**8A/8B — Cost wiring.** The infrastructure exists but is disconnected. `ModelData` carries `input_price`/`output_price` (loaded from `models.yaml`). Every API response populates `input_tokens`/`output_tokens` in `ChatCompletionsOutput`. The multiplication never happens — prices only appear in `--list-models`, token counts only in `serve.rs`. Phase 8A connects them into a ledger; 8B extends the `-o json` pipeline envelope with per-stage accounting.
+**8A1/8A2 — Cost wiring.** The infrastructure exists but is disconnected. `ModelData` carries `input_price`/`output_price` (loaded from `models.yaml`). Every API response populates `input_tokens`/`output_tokens` in `ChatCompletionsOutput`. The multiplication never happens — prices only appear in `--list-models`, token counts only in `serve.rs`. Phase 8A1 connects them into a ledger; 8A2 extends the `-o json` pipeline envelope with per-stage accounting.
 
 Run log record:
 ```jsonl
@@ -357,9 +365,52 @@ Pipeline trace envelope (`-o json`):
 }
 ```
 
-**8C/8D — Record processing.** `--each` is the minimal batch primitive. Everything else — schema validation (`input_schema`/`output_schema`), lifecycle hooks (`pipe_to`/`save_to`), output formatting (`-o jsonl`) — already works per-invocation. `--each` adds only the iteration loop. `{{.field}}` adds only field extraction. Together they compose with the full feature set of whichever entity type is invoked.
+**8F/8G — Interaction trace.** **[ADDED 2026-03-15]** Today's DEBUG log has a critical blind spot: multi-turn `call_react` loops are opaque. The raw `non-stream-data` JSON contains model output, but you cannot see: (a) what the model actually said, (b) what tool results came back, (c) how many turns the agent loop took, (d) whether `output_schema` validation passed. This was identified by tracing `aichat --role "data-discoverer" "ruby programming"` — the model called `web_search` but the trace stopped there.
 
-**8C/8D work uniformly across all entity types because they are input-level features, resolved before entity dispatch:**
+**Design principles** (informed by openclaw's `cache-trace.ts` and `diagnostic-events.ts`):
+
+- **Stage-based, not continuous.** One record per `call_react` turn, not per byte. Low overhead.
+- **Stderr for humans, JSONL for machines.** `--trace` prints a compact summary; `AICHAT_TRACE=1` writes structured JSONL.
+- **Truncation by default.** Tool results capped at 500 chars in trace output. Full payloads stay in DEBUG log.
+- **Composable with `--cost`.** `--trace` subsumes `--cost` (includes token/cost per turn plus totals). Using both is redundant but not an error.
+
+`--trace` stderr output example (multi-turn tool-calling invocation):
+```text
+[1] → qwen3-coder  1tok in  24tok out  0.3s
+    ← tool_call: web_search({"query":"ruby programming datasets"})
+[2] ← web_search  exit=0  1.2s  (342 chars)
+[3] → qwen3-coder  892tok in  341tok out  2.1s
+    ← {"datasets": [{"name": "Ruby Quiz",...}]}
+    ✓ output_schema valid
+total: 3 turns  893tok in  365tok out  $0.001  3.6s
+```
+
+`AICHAT_TRACE=1` JSONL output (same invocation):
+```jsonl
+{"ts":"2026-03-15T22:36:59Z","turn":1,"direction":"request","model":"qwen3-coder","input_tokens":1,"output_tokens":24,"latency_ms":300,"tool_calls":[{"name":"web_search","args":{"query":"ruby programming datasets"}}]}
+{"ts":"2026-03-15T22:37:00Z","turn":2,"direction":"tool_result","tool_name":"web_search","exit_code":0,"latency_ms":1200,"content_length":342}
+{"ts":"2026-03-15T22:37:02Z","turn":3,"direction":"request","model":"qwen3-coder","input_tokens":892,"output_tokens":341,"latency_ms":2100,"content_summary":"{\"datasets\": [{\"name\": \"Ruby Quiz\",...}]}","schema_valid":true}
+{"ts":"2026-03-15T22:37:02Z","turn":0,"direction":"summary","total_turns":3,"total_input_tokens":893,"total_output_tokens":365,"total_cost_usd":0.001,"total_latency_ms":3600}
+```
+
+**Implementation hook points:**
+
+- `src/client/common.rs` — `call_react` loop: emit trace record after each API response and after each tool result batch.
+- `src/function.rs` — `eval_tool_calls`: emit tool result trace records (one per tool, with exit code and truncated output).
+- New: `src/utils/trace.rs` — Trace emitter. Holds `TraceConfig { enabled, format (stderr|jsonl), file_path, truncate_at }`. Initialized from `--trace` flag and `AICHAT_TRACE`/`AICHAT_TRACE_FILE` env vars. Writes to stderr (human) or file (JSONL).
+
+**What NOT to build (informed by openclaw evaluation):**
+| Proposal | Reason |
+|---|---|
+| In-memory event bus / diagnostic listener API | Over-engineered for CLI. JSONL is the interface; downstream tools (`jq`, `duckdb`) are the listeners. |
+| Message fingerprinting (SHA256 digests) | Useful for servers with session persistence. aichat is single-shot CLI — the full trace is short enough to store directly. |
+| OpenTelemetry export | Wrong abstraction for Unix CLI. JSONL traces can be ingested by any OTEL collector via file receiver if needed. |
+| Payload deduplication | aichat doesn't have persistent sessions across invocations. Each trace is self-contained. |
+| Configurable per-stage inclusion (messages/prompt/system toggles) | Premature. `--trace` shows the summary; DEBUG log shows everything. Two levels is enough. |
+
+**8B/8C — Record processing.** `--each` is the minimal batch primitive. Everything else — schema validation (`input_schema`/`output_schema`), lifecycle hooks (`pipe_to`/`save_to`), output formatting (`-o jsonl`) — already works per-invocation. `--each` adds only the iteration loop. `{{.field}}` adds only field extraction. Together they compose with the full feature set of whichever entity type is invoked.
+
+**8B/8C work uniformly across all entity types because they are input-level features, resolved before entity dispatch:**
 
 | Entity | `--each` | `{{.field}}` in... | Mechanism |
 |---|---|---|---|
@@ -372,7 +423,7 @@ Pipeline trace envelope (`-o json`):
 ```
 {{var}}       Role/agent declared variable (-v key=value, --agent-variable)
 {{$VAR}}      Environment variable
-{{.field}}    Record field from current --each input line (Phase 8D)
+{{.field}}    Record field from current --each input line (Phase 8C)
 {{.}}         Full record (entire input line)
 {{timestamp}} Built-in (lifecycle hooks only)
 ```
@@ -388,7 +439,7 @@ Role prompt uses `{{.subject}}` and `{{.body}}`. `output_schema` validates each 
 ```bash
 cat tickets.jsonl | aichat -a triage-agent --each --parallel 2
 ```
-Agent `instructions` uses `{{.title}}` and `{{.description}}`. Agent tools and RAG available per-invocation (8E required for RAG).
+Agent `instructions` uses `{{.title}}` and `{{.description}}`. Agent tools and RAG available per-invocation (8D required for RAG).
 
 **Example — JSONL dataset with a macro:**
 ```yaml
@@ -404,7 +455,7 @@ steps:
 cat records.jsonl | aichat --macro enrich --each
 ```
 
-**8E — Headless RAG.** `Rag::init` currently calls `bail!("Failed to init rag in non-interactive mode")` when `!IS_STDOUT_TERMINAL`. This blocks any pipeline or automation use of agent RAG. The config defaults (`rag_embedding_model`, `rag_chunk_size`, `rag_chunk_overlap`) already exist — the fix is to use them instead of prompting interactively. Prerequisite for 8C to work with RAG-enabled agents.
+**8D — Headless RAG.** `Rag::init` currently calls `bail!("Failed to init rag in non-interactive mode")` when `!IS_STDOUT_TERMINAL`. This blocks any pipeline or automation use of agent RAG. The config defaults (`rag_embedding_model`, `rag_chunk_size`, `rag_chunk_overlap`) already exist — the fix is to use them instead of prompting interactively. Prerequisite for 8B to work with RAG-enabled agents.
 
 **What to kill:**
 | Proposal | Reason |
@@ -479,8 +530,8 @@ aichat has four entity types. Three form a capability hierarchy (**Prompt < Role
 | Session management | No | No | **Yes** (session vars, lifecycle) | No (clears session) |
 | Callable as tool | No | **Yes** (if has `pipeline:`) | No | No |
 | `-o` output format | Yes | Yes | Yes | N/A |
-| `--each` batch (Phase 8C) | Yes | Yes | Yes | Yes |
-| `{{.field}}` templating (Phase 8D) | Yes | Yes | Yes | Yes |
+| `--each` batch (Phase 8B) | Yes | Yes | Yes | Yes |
+| `{{.field}}` templating (Phase 8C) | Yes | Yes | Yes | Yes |
 
 ### Tool Dispatch
 
