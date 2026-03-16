@@ -1,4 +1,4 @@
-# Rocky: All-in-one LLM CLI Tool
+# Eridian: All-in-one LLM CLI Tool
 
 > *"Amaze!" — Rocky, upon discovering you can pipe seventeen LLM providers through a single CLI*
 
@@ -6,9 +6,9 @@
 [![Crates](https://img.shields.io/crates/v/aichat.svg)](https://crates.io/crates/aichat)
 [![Discord](https://img.shields.io/discord/1226737085453701222?label=Discord)](https://discord.gg/mr3ZZUB9hG)
 
-Rocky is a multi-target command-line tool for AI models — like having a five-armed Eridian engineer who can talk to every LLM at once. Shell Assistant, CMD & REPL Mode, RAG, AI Tools & Agents, MCP, composable pipelines, and more.
+Eridian is a multi-target command-line tool for AI models — like having a five-armed Eridian engineer who can talk to every LLM at once. Shell Assistant, CMD & REPL Mode, RAG, AI Tools & Agents, MCP, composable pipelines, and more.
 
-> This project is a fork of [sigoden/aichat](https://github.com/sigoden/aichat), a fantastic foundation for LLM CLI tooling. Rocky builds on that work with a focus on token efficiency, composable multi-model pipelines, and MCP integration — because even Eridians know you don't build a interstellar tunnel without a good blueprint to fork from.
+> This project is a fork of [sigoden/aichat](https://github.com/sigoden/aichat), a fantastic foundation for LLM CLI tooling. Eridian builds on that work with a focus on token efficiency, composable multi-model pipelines, and MCP integration — because even Eridians know you don't build a interstellar tunnel without a good blueprint to fork from.
 
 ## Install
 
@@ -95,7 +95,7 @@ Integrate external documents into your LLM conversations for more accurate and c
 
 ### Function Calling & Tools
 
-Function calling supercharges LLMs by connecting them to external tools and data sources. Rocky uses deferred tool loading to keep token costs low — when you have 15+ tools, only a `tool_search` meta-function is loaded initially, cutting token overhead by ~85%.
+Function calling supercharges LLMs by connecting them to external tools and data sources. Eridian uses deferred tool loading to keep token costs low — when you have 15+ tools, only a `tool_search` meta-function is loaded initially, cutting token overhead by ~85%.
 
 > Rocky's approach to tools: "Why carry all five arms' worth of equipment when you can fetch what you need?" *Amaze!*
 
@@ -115,7 +115,7 @@ AI Agent = Instructions (Prompt) + Tools (Function Callings) + Documents (RAG). 
 
 ### Composable Pipelines
 
-Multi-stage pipelines where roles can call other roles as tools — Rocky's answer to Anthropic's Programmatic Tool Calling. Chain models together, validate schemas between stages, and build complex workflows from simple, composable pieces.
+Multi-stage pipelines where roles can call other roles as tools — Eridian's answer to Anthropic's Programmatic Tool Calling. Chain models together, validate schemas between stages, and build complex workflows from simple, composable pieces.
 
 > If Rocky taught a masterclass in software architecture, lesson one would be: "Is same same as tunnel building. Many small piece, good good good. One big piece, bad bad bad."
 
@@ -132,7 +132,7 @@ Multiple output formats optimized for different consumers:
 
 ### Semantic Exit Codes
 
-11 distinct exit codes for agent-friendly error classification. When something goes wrong, Rocky doesn't just say "is bad" — you get structured error results with hints, stderr capture, and retry budgeting. Machines deserve good error messages too.
+11 distinct exit codes for agent-friendly error classification. When something goes wrong, Eridian doesn't just say "is bad" — you get structured error results with hints, stderr capture, and retry budgeting. Machines deserve good error messages too.
 
 ### Lifecycle Hooks
 
@@ -198,7 +198,7 @@ Supports custom dark and light themes, which highlight response text and code bl
 - [Custom REPL Prompt](https://github.com/sigoden/aichat/wiki/Custom-REPL-Prompt)
 - [FAQ](https://github.com/sigoden/aichat/wiki/FAQ)
 
-## Why "Rocky"?
+## Why "Eridian"?
 
 Named after the Eridian engineer from Andy Weir's *Project Hail Mary* — a five-armed, rock-shelled alien who doesn't speak your language but will absolutely out-engineer you while communicating in musical chords. Rocky solves impossible problems with whatever tools are available, composes elegant solutions from simple parts, and does it all with relentless optimism.
 
@@ -208,8 +208,8 @@ That's the vibe. This CLI doesn't care which LLM you speak — it'll bridge the 
 
 ## License
 
-Copyright (c) 2023-2025 Rocky contributors. Forked from [sigoden/aichat](https://github.com/sigoden/aichat).
+Copyright (c) 2023-2025 Eridian contributors. Forked from [sigoden/aichat](https://github.com/sigoden/aichat).
 
-Rocky is made available under the terms of either the MIT License or the Apache License 2.0, at your option.
+Eridian is made available under the terms of either the MIT License or the Apache License 2.0, at your option.
 
 See the LICENSE-APACHE and LICENSE-MIT files for license details.
