@@ -171,6 +171,18 @@ pub struct Cli {
     /// Turn off stream mode
     #[clap(short = 'S', long)]
     pub no_stream: bool,
+    /// Display cost summary on stderr
+    #[clap(long)]
+    pub cost: bool,
+    /// Display interaction trace on stderr
+    #[clap(long)]
+    pub trace: bool,
+    /// Process stdin line-by-line, one invocation per record
+    #[clap(long)]
+    pub each: bool,
+    /// Number of parallel workers for --each
+    #[clap(long, default_value = "1", requires = "each")]
+    pub parallel: usize,
     /// Display the message without sending it
     #[clap(long)]
     pub dry_run: bool,
@@ -206,7 +218,7 @@ pub struct Cli {
 impl Cli {
     pub fn text(&self) -> Result<Option<String>> {
         let mut stdin_text = String::new();
-        if !stdin().is_terminal() {
+        if !self.each && !stdin().is_terminal() {
             let _ = stdin()
                 .read_to_string(&mut stdin_text)
                 .context("Invalid stdin pipe")?;

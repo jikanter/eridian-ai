@@ -144,7 +144,15 @@ pub async fn claude_chat_completions_streaming(
                         ))?;
                     }
                 }
-                _ => {}
+                _ => {
+                    // Capture usage from message_start or message_delta events
+                    if let Some(usage) = data.get("usage").or_else(|| data["message"].get("usage")) {
+                        handler.set_usage(
+                            usage["input_tokens"].as_u64(),
+                            usage["output_tokens"].as_u64(),
+                        );
+                    }
+                }
             }
         }
         Ok(false)

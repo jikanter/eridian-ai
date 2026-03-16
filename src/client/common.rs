@@ -17,7 +17,7 @@ use reqwest::{Client as ReqwestClient, RequestBuilder};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::LazyLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::unbounded_channel;
 
 const MODELS_YAML: &str = include_str!("../../models.yaml");
@@ -304,6 +304,35 @@ impl ChatCompletionsOutput {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct CallMetrics {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+    pub latency_ms: u64,
+    pub model_id: String,
+    pub turns: u32,
+}
+
+impl CallMetrics {
+    pub fn merge(&mut self, other: &CallMetrics) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cost_usd += other.cost_usd;
+        self.latency_ms += other.latency_ms;
+        self.turns += other.turns;
+        if !other.model_id.is_empty() {
+            self.model_id.clone_from(&other.model_id);
+        }
+    }
+}
+
+pub fn compute_cost(model: &Model, input_tokens: u64, output_tokens: u64) -> f64 {
+    let ip = model.data().input_price.unwrap_or(0.0);
+    let op = model.data().output_price.unwrap_or(0.0);
+    (input_tokens as f64 * ip + output_tokens as f64 * op) / 1_000_000.0
+}
+
 #[derive(Debug)]
 pub struct EmbeddingsData {
     pub texts: Vec<String>,
@@ -415,13 +444,22 @@ pub async fn call_react(
     input: &mut Input,
     client: &dyn Client,
     abort_signal: AbortSignal,
-) -> Result<(String, Vec<ToolResult>)> {
+) -> Result<(String, Vec<ToolResult>, CallMetrics)> {
     let mut total_text = String::new();
+    let mut cumulative_metrics = CallMetrics::default();
     let mut step = 0;
     let mut max_steps = MAX_REACT_STEPS;
     let has_structured_output = input.role().has_output_schema()
         || input.has_structured_output_format();
     let print_output = !has_structured_output;
+
+    // Phase 8F/8G: Create trace emitter if tracing is active
+    let mut tracer = client
+        .global_config()
+        .read()
+        .trace_config
+        .clone()
+        .map(crate::utils::trace::TraceEmitter::new);
 
     // Phase 7C: Track repeated tool failures for retry budget.
     // Key: (tool_name, error_signature_hash), Value: retry count
@@ -429,17 +467,36 @@ pub async fn call_react(
         std::collections::HashMap::new();
 
     loop {
-        let (text, tool_results) = if input.stream() {
+        let (text, tool_results, metrics) = if input.stream() {
             call_chat_completions_streaming(input, client, abort_signal.clone()).await?
         } else {
             call_chat_completions(input, print_output, false, client, abort_signal.clone()).await?
         };
+
+        // Trace: emit request info
+        if let Some(ref mut t) = tracer {
+            let tool_names: Vec<String> = tool_results.iter().map(|r| r.call.name.clone()).collect();
+            t.emit_request(
+                &metrics.model_id,
+                metrics.input_tokens,
+                metrics.output_tokens,
+                metrics.latency_ms,
+                &tool_names,
+                &text,
+            );
+        }
+
+        cumulative_metrics.merge(&metrics);
         if !total_text.is_empty() {
             total_text.push('\n');
         }
         total_text.push_str(&text);
         if tool_results.is_empty() {
-            return Ok((total_text, vec![]));
+            cumulative_metrics.turns = (step + 1).min(u32::MAX as usize) as u32;
+            if let Some(ref t) = tracer {
+                t.emit_summary(&cumulative_metrics);
+            }
+            return Ok((total_text, vec![], cumulative_metrics));
         }
 
         // Phase 7C: Check for repeated failures and annotate tool results
@@ -448,6 +505,11 @@ pub async fn call_react(
             &mut failure_counts,
             &mut max_steps,
         );
+
+        // Trace: emit tool results
+        if let Some(ref mut t) = tracer {
+            t.emit_tool_results(&tool_results, metrics.latency_ms);
+        }
 
         step += 1;
         if step >= max_steps {
@@ -519,7 +581,8 @@ pub async fn call_chat_completions(
     extract_code: bool,
     client: &dyn Client,
     abort_signal: AbortSignal,
-) -> Result<(String, Vec<ToolResult>)> {
+) -> Result<(String, Vec<ToolResult>, CallMetrics)> {
+    let start = Instant::now();
     let ret = abortable_run_with_spinner(
         client.chat_completions(input.clone()),
         "Generating",
@@ -532,8 +595,20 @@ pub async fn call_chat_completions(
             let ChatCompletionsOutput {
                 mut text,
                 tool_calls,
+                input_tokens,
+                output_tokens,
                 ..
             } = ret;
+            let it = input_tokens.unwrap_or(0);
+            let ot = output_tokens.unwrap_or(0);
+            let metrics = CallMetrics {
+                input_tokens: it,
+                output_tokens: ot,
+                cost_usd: compute_cost(client.model(), it, ot),
+                latency_ms: start.elapsed().as_millis() as u64,
+                model_id: client.model().id(),
+                turns: 1,
+            };
             if !text.is_empty() {
                 if extract_code {
                     text = extract_code_block(&strip_think_tag(&text)).to_string();
@@ -542,7 +617,7 @@ pub async fn call_chat_completions(
                     client.global_config().read().print_markdown(&text)?;
                 }
             }
-            Ok((text, eval_tool_calls(client.global_config(), tool_calls).await?))
+            Ok((text, eval_tool_calls(client.global_config(), tool_calls).await?, metrics))
         }
         Err(err) => Err(err),
     }
@@ -552,7 +627,8 @@ pub async fn call_chat_completions_streaming(
     input: &Input,
     client: &dyn Client,
     abort_signal: AbortSignal,
-) -> Result<(String, Vec<ToolResult>)> {
+) -> Result<(String, Vec<ToolResult>, CallMetrics)> {
+    let start = Instant::now();
     let (tx, rx) = unbounded_channel();
     let mut handler = SseHandler::new(tx, abort_signal.clone());
 
@@ -567,13 +643,23 @@ pub async fn call_chat_completions_streaming(
 
     render_ret?;
 
-    let (text, tool_calls) = handler.take();
+    let (text, tool_calls, input_tokens, output_tokens) = handler.take();
+    let it = input_tokens.unwrap_or(0);
+    let ot = output_tokens.unwrap_or(0);
+    let metrics = CallMetrics {
+        input_tokens: it,
+        output_tokens: ot,
+        cost_usd: compute_cost(client.model(), it, ot),
+        latency_ms: start.elapsed().as_millis() as u64,
+        model_id: client.model().id(),
+        turns: 1,
+    };
     match send_ret {
         Ok(_) => {
             if !text.is_empty() && !text.ends_with('\n') {
                 println!();
             }
-            Ok((text, eval_tool_calls(client.global_config(), tool_calls).await?))
+            Ok((text, eval_tool_calls(client.global_config(), tool_calls).await?, metrics))
         }
         Err(err) => {
             if !text.is_empty() {
@@ -783,4 +869,66 @@ fn prompt_input_string(
     }
     let text = text.prompt()?;
     Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_call_metrics_merge() {
+        let mut a = CallMetrics {
+            input_tokens: 100,
+            output_tokens: 50,
+            cost_usd: 0.001,
+            latency_ms: 500,
+            model_id: "model-a".into(),
+            turns: 1,
+        };
+        let b = CallMetrics {
+            input_tokens: 200,
+            output_tokens: 100,
+            cost_usd: 0.002,
+            latency_ms: 300,
+            model_id: "model-b".into(),
+            turns: 1,
+        };
+        a.merge(&b);
+        assert_eq!(a.input_tokens, 300);
+        assert_eq!(a.output_tokens, 150);
+        assert!((a.cost_usd - 0.003).abs() < 1e-10);
+        assert_eq!(a.latency_ms, 800);
+        assert_eq!(a.model_id, "model-b");
+        assert_eq!(a.turns, 2);
+    }
+
+    #[test]
+    fn test_call_metrics_merge_empty_model_id() {
+        let mut a = CallMetrics {
+            model_id: "original".into(),
+            ..Default::default()
+        };
+        let b = CallMetrics::default(); // empty model_id
+        a.merge(&b);
+        assert_eq!(a.model_id, "original"); // should not overwrite with empty
+    }
+
+    #[test]
+    fn test_compute_cost_with_prices() {
+        let mut model = Model::new("test", "gpt-4o");
+        let data = model.data_mut();
+        data.input_price = Some(5.0); // $5 per 1M tokens
+        data.output_price = Some(15.0); // $15 per 1M tokens
+
+        let cost = compute_cost(&model, 1000, 500);
+        // (1000 * 5.0 + 500 * 15.0) / 1_000_000 = (5000 + 7500) / 1_000_000 = 0.0125
+        assert!((cost - 0.0125).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_compute_cost_no_prices() {
+        let model = Model::new("test", "unknown-model");
+        let cost = compute_cost(&model, 1000, 500);
+        assert!((cost - 0.0).abs() < 1e-10);
+    }
 }

@@ -191,6 +191,29 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
     if cli.dry_run {
         config.write().dry_run = true;
     }
+    if cli.cost {
+        config.write().show_cost = true;
+    }
+    // Run log from env var AICHAT_RUN_LOG
+    if let Ok(log_path) = std::env::var(get_env_name("run_log")) {
+        config.write().run_log = Some(log_path);
+    }
+    // Trace config from --trace flag or AICHAT_TRACE env var
+    {
+        let env_trace = std::env::var(get_env_name("trace"))
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        if cli.trace || env_trace {
+            let trace_file = std::env::var(get_env_name("trace_file")).ok().map(std::path::PathBuf::from);
+            let jsonl_trace = env_trace || trace_file.is_some();
+            config.write().trace_config = Some(crate::utils::trace::TraceConfig {
+                human_trace: cli.trace,
+                jsonl_trace,
+                jsonl_file: trace_file,
+                truncate_at: 500,
+            });
+        }
+    }
 
     if let Some(agent) = &cli.agent {
         let session = cli.session.as_ref().map(|v| match v {
@@ -317,6 +340,9 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         return Ok(());
     }
     config.write().apply_prelude()?;
+    if cli.each {
+        return batch_execute(&config, &cli, text, abort_signal).await;
+    }
     match is_repl {
         false => {
             let mut input = create_input(&config, text, &cli.file, abort_signal.clone()).await?;
@@ -349,8 +375,36 @@ async fn start_directive(
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
-    let (output, tool_results) =
+    let (output, tool_results, metrics) =
         call_react(&mut input, client.as_ref(), abort_signal.clone()).await?;
+
+    // Cost display on stderr if --cost flag is set
+    if config.read().show_cost {
+        eprintln!(
+            "tokens: {}in/{}out  cost: ${:.6}  latency: {:.1}s",
+            metrics.input_tokens,
+            metrics.output_tokens,
+            metrics.cost_usd,
+            metrics.latency_ms as f64 / 1000.0
+        );
+    }
+
+    // JSONL run log
+    if let Some(ref log_path) = config.read().run_log {
+        let log_path = std::path::PathBuf::from(log_path);
+        let record = serde_json::json!({
+            "ts": crate::utils::now(),
+            "run_id": uuid::Uuid::new_v4().to_string(),
+            "model": metrics.model_id,
+            "input_tokens": metrics.input_tokens,
+            "output_tokens": metrics.output_tokens,
+            "cost_usd": metrics.cost_usd,
+            "latency_ms": metrics.latency_ms,
+        });
+        if let Err(e) = crate::utils::ledger::append_run_log(&log_path, &record) {
+            warn!("Failed to write run log: {e}");
+        }
+    }
 
     // Structured output needs explicit printing since call_react suppresses it.
     // In dry_run mode, just print the echoed prompt — no validation.
@@ -408,7 +462,7 @@ async fn shell_execute(
 ) -> Result<()> {
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
-    let (eval_str, _) =
+    let (eval_str, _, _metrics) =
         call_chat_completions(&input, false, true, client.as_ref(), abort_signal.clone()).await?;
 
     config
@@ -454,14 +508,14 @@ async fn shell_execute(
                     let role = config.read().retrieve_role(EXPLAIN_SHELL_ROLE)?;
                     let input = Input::from_str(config, &eval_str, Some(role));
                     if input.stream() {
-                        call_chat_completions_streaming(
+                        let _r = call_chat_completions_streaming(
                             &input,
                             client.as_ref(),
                             abort_signal.clone(),
                         )
                         .await?;
                     } else {
-                        call_chat_completions(
+                        let _r = call_chat_completions(
                             &input,
                             true,
                             false,
@@ -509,6 +563,127 @@ async fn create_input(
         bail!("No input");
     }
     Ok(input)
+}
+
+async fn batch_execute(
+    config: &GlobalConfig,
+    cli: &Cli,
+    prompt_text: Option<String>,
+    abort_signal: AbortSignal,
+) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let prompt_template = prompt_text.unwrap_or_default();
+    let parallel = cli.parallel.max(1);
+    let reader = BufReader::new(tokio::io::stdin());
+    let mut lines = reader.lines();
+
+    if parallel <= 1 {
+        // Sequential mode
+        while let Some(line) = lines.next_line().await? {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match process_one_record(config, &prompt_template, &line, abort_signal.clone()).await {
+                Ok(output) => println!("{}", output.trim()),
+                Err(err) => {
+                    let preview = if line.len() > 40 { &line[..40] } else { &line };
+                    eprintln!("error: {}: {}", preview, err);
+                }
+            }
+        }
+    } else {
+        // Parallel mode using buffered futures
+        use futures_util::stream::{self, StreamExt};
+
+        let mut records = Vec::new();
+        while let Some(line) = lines.next_line().await? {
+            if !line.trim().is_empty() {
+                records.push(line);
+            }
+        }
+
+        let results: Vec<_> = stream::iter(records.into_iter().enumerate())
+            .map(|(idx, line)| {
+                let config = config.clone();
+                let template = prompt_template.clone();
+                let abort = abort_signal.clone();
+                async move {
+                    let result = process_one_record(&config, &template, &line, abort).await;
+                    (idx, line, result)
+                }
+            })
+            .buffer_unordered(parallel)
+            .collect()
+            .await;
+
+        // Sort by original index to preserve order
+        let mut sorted = results;
+        sorted.sort_by_key(|(idx, _, _)| *idx);
+        for (_idx, line, result) in sorted {
+            match result {
+                Ok(output) => println!("{}", output.trim()),
+                Err(err) => {
+                    let preview = if line.len() > 40 { &line[..40] } else { &line };
+                    eprintln!("error: {}: {}", preview, err);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn process_one_record(
+    config: &GlobalConfig,
+    prompt_template: &str,
+    record: &str,
+    abort_signal: AbortSignal,
+) -> Result<String> {
+    // Build the prompt: interpolate record fields into the template
+    let mut prompt = if prompt_template.is_empty() {
+        record.to_string()
+    } else {
+        let mut text = prompt_template.to_string();
+        crate::utils::interpolate_record_fields(&mut text, record);
+        // If template had no placeholders and record isn't embedded, append it
+        if text == prompt_template && !prompt_template.contains("{{.") {
+            format!("{text}\n{record}")
+        } else {
+            text
+        }
+    };
+
+    // Apply role prompt if set
+    let role = config.read().role.clone();
+    if let Some(ref role) = role {
+        if role.has_output_schema() || config.read().output_format.map(|f| f.is_structured()).unwrap_or(false) {
+            // keep prompt as is for structured output
+        }
+    }
+
+    let mut input = Input::from_str(config, &prompt, role);
+    let client = input.create_client()?;
+    config.write().before_chat_completion(&input)?;
+
+    let (output, _tool_results, _metrics) =
+        call_react(&mut input, client.as_ref(), abort_signal).await?;
+
+    // Validate and clean output
+    let output = if let Some(schema) = input.role().output_schema() {
+        validate_schema("output", schema, &output)?;
+        output
+    } else if let Some(fmt) = config.read().output_format {
+        if fmt.is_structured() {
+            fmt.clean_output(&output)?
+        } else {
+            output
+        }
+    } else {
+        output
+    };
+
+    Ok(output)
 }
 
 fn setup_logger(is_serve: bool) -> Result<()> {

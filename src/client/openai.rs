@@ -146,6 +146,13 @@ pub async fn openai_chat_completions_streaming(
             }
             handler.text(text)?;
         }
+        // Capture usage from final streaming chunk if available
+        if let Some(usage) = data.get("usage") {
+            handler.set_usage(
+                usage["prompt_tokens"].as_u64(),
+                usage["completion_tokens"].as_u64(),
+            );
+        }
         if let (Some(function), index, id) = (
             data["choices"][0]["delta"]["tool_calls"][0]["function"].as_object(),
             data["choices"][0]["delta"]["tool_calls"][0]["index"].as_u64(),

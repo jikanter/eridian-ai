@@ -1,17 +1,29 @@
 use crate::cli::Cli;
-use crate::client::{call_chat_completions, call_chat_completions_streaming, call_react};
+use crate::client::{
+    call_chat_completions, call_chat_completions_streaming, call_react, CallMetrics,
+};
 use crate::config::{
     run_lifecycle_hooks, validate_schema, Config, GlobalConfig, Input, RoleLike, RolePipelineStage,
 };
 use crate::utils::*;
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 struct PipelineStage {
     role_name: String,
     model_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct StageTrace {
+    role: String,
+    model: String,
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_usd: f64,
+    latency_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -57,11 +69,13 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
     };
 
     let abort_signal = create_abort_signal();
+    let output_format = cli.output_format;
 
     let stage_count = stages.len();
+    let mut stage_traces: Vec<StageTrace> = Vec::new();
     for (i, stage) in stages.iter().enumerate() {
         let is_last = i == stage_count - 1;
-        input_text = run_stage(
+        let (output, metrics) = run_stage(
             &config,
             stage,
             i,
@@ -71,6 +85,30 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
             abort_signal.clone(),
         )
         .await?;
+        stage_traces.push(StageTrace {
+            role: stage.role_name.clone(),
+            model: metrics.model_id.clone(),
+            input_tokens: metrics.input_tokens,
+            output_tokens: metrics.output_tokens,
+            cost_usd: metrics.cost_usd,
+            latency_ms: metrics.latency_ms,
+        });
+        input_text = output;
+    }
+
+    // JSON envelope with trace metadata when output format is JSON
+    if matches!(output_format, Some(crate::cli::OutputFormat::Json)) {
+        let total_cost: f64 = stage_traces.iter().map(|s| s.cost_usd).sum();
+        let total_latency: u64 = stage_traces.iter().map(|s| s.latency_ms).sum();
+        let envelope = serde_json::json!({
+            "output": serde_json::from_str::<serde_json::Value>(&input_text).unwrap_or(serde_json::Value::String(input_text)),
+            "trace": {
+                "stages": stage_traces,
+                "total_cost_usd": total_cost,
+                "total_latency_ms": total_latency,
+            }
+        });
+        println!("{}", serde_json::to_string_pretty(&envelope)?);
     }
 
     Ok(())
@@ -84,7 +122,7 @@ async fn run_stage(
     input_text: &str,
     is_last: bool,
     abort_signal: AbortSignal,
-) -> Result<String> {
+) -> Result<(String, CallMetrics)> {
     // Phase 0C: Save model state for restoration after stage
     let saved_model_id = config.read().current_model().id();
 
@@ -115,7 +153,7 @@ async fn run_stage_inner(
     input_text: &str,
     is_last: bool,
     abort_signal: AbortSignal,
-) -> Result<String> {
+) -> Result<(String, CallMetrics)> {
     let role = config
         .read()
         .retrieve_role(&stage.role_name)
@@ -136,7 +174,7 @@ async fn run_stage_inner(
     config.write().before_chat_completion(&input)?;
 
     // Phase 0B: Use call_react when the stage role has tools
-    let (output, tool_results) = if has_tools {
+    let (output, tool_results, metrics) = if has_tools {
         call_react(&mut input, client.as_ref(), abort_signal).await?
     } else if input.stream() && is_last {
         call_chat_completions_streaming(&input, client.as_ref(), abort_signal).await?
@@ -178,11 +216,12 @@ async fn run_stage_inner(
     }
 
     // Strip think tags from intermediate output
-    if !is_last {
-        Ok(strip_think_tag(&output).to_string())
+    let output = if !is_last {
+        strip_think_tag(&output).to_string()
     } else {
-        Ok(output)
-    }
+        output
+    };
+    Ok((output, metrics))
 }
 
 fn parse_stages(stage_specs: &[String]) -> Result<Vec<PipelineStage>> {
@@ -259,7 +298,7 @@ pub async fn run_pipeline_role(
     let mut current_input = input_text.to_string();
 
     for (i, stage) in pipeline_stages.iter().enumerate() {
-        current_input = run_stage(
+        let (output, _metrics) = run_stage(
             config,
             stage,
             i,
@@ -270,6 +309,7 @@ pub async fn run_pipeline_role(
             abort_signal.clone(),
         )
         .await?;
+        current_input = output;
     }
 
     Ok(current_input)

@@ -5,11 +5,13 @@ mod crypto;
 pub mod exit_code;
 mod html_to_md;
 mod input;
+pub mod ledger;
 mod loader;
 mod path;
 mod render_prompt;
 mod request;
 mod spinner;
+pub mod trace;
 mod variables;
 
 pub use self::abort_signal::*;

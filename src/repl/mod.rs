@@ -737,7 +737,7 @@ async fn ask(
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
-    let (output, tool_results) =
+    let (output, tool_results, _metrics) =
         call_react(&mut input, client.as_ref(), abort_signal.clone()).await?;
     config
         .write()

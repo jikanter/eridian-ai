@@ -311,6 +311,22 @@ impl Agent {
         Ok(())
     }
 
+    pub fn set_output_schema(&mut self, value: Option<serde_json::Value>) {
+        self.config.output_schema = value;
+    }
+
+    pub fn set_input_schema(&mut self, value: Option<serde_json::Value>) {
+        self.config.input_schema = value;
+    }
+
+    pub fn set_pipe_to(&mut self, value: Option<String>) {
+        self.config.pipe_to = value;
+    }
+
+    pub fn set_save_to(&mut self, value: Option<String>) {
+        self.config.save_to = value;
+    }
+
     fn run_instructions_fn(&self) -> Result<String> {
         // run_llm_function is async; bridge from sync context via block_in_place
         let name = self.name().to_string();
@@ -332,6 +348,18 @@ impl RoleLike for Agent {
         let prompt = self.interpolated_instructions();
         let mut role = Role::new("", &prompt);
         role.sync(self);
+        if self.config.output_schema.is_some() {
+            role.set_output_schema(self.config.output_schema.clone());
+        }
+        if self.config.input_schema.is_some() {
+            role.set_input_schema(self.config.input_schema.clone());
+        }
+        if self.config.pipe_to.is_some() {
+            role.set_pipe_to(self.config.pipe_to.clone());
+        }
+        if self.config.save_to.is_some() {
+            role.set_save_to(self.config.save_to.clone());
+        }
         role
     }
 
@@ -385,6 +413,14 @@ pub struct AgentConfig {
     pub instructions: Option<String>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub variables: AgentVariables,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipe_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_to: Option<String>,
 }
 
 impl AgentConfig {

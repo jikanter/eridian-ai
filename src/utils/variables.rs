@@ -158,6 +158,30 @@ fn resolve_model_variables(model: &Model) -> HashMap<&'static str, String> {
     vars
 }
 
+static RE_DOT_FIELD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\{\{\.(\w+)?\}\}").unwrap());
+
+/// Interpolate record fields into a template string.
+/// `{{.}}` is replaced with the full record, `{{.field}}` with the named field from JSON.
+pub fn interpolate_record_fields(text: &mut String, record: &str) {
+    let parsed: Option<serde_json::Value> = serde_json::from_str(record).ok();
+    *text = RE_DOT_FIELD
+        .replace_all(text, |caps: &Captures<'_>| {
+            match caps.get(1).map(|m| m.as_str()) {
+                None => record.to_string(), // {{.}} = full record
+                Some(key) => match &parsed {
+                    Some(obj) => match obj.get(key) {
+                        Some(serde_json::Value::String(s)) => s.clone(),
+                        Some(v) => v.to_string(),
+                        None => String::new(),
+                    },
+                    None => String::new(), // not JSON, named fields = empty
+                },
+            }
+        })
+        .to_string();
+}
+
 fn is_truthy(value: &str) -> bool {
     !matches!(value, "false" | "0" | "" | "unknown")
 }
@@ -424,5 +448,40 @@ mod tests {
         assert!(text.contains("env_resolved"));
         assert!(!text.contains("{{"));
         std::env::remove_var("AICHAT_TEST_VAR_4");
+    }
+
+    #[test]
+    fn test_interpolate_record_fields_full_record() {
+        let mut text = "Process: {{.}}".to_string();
+        interpolate_record_fields(&mut text, "hello world");
+        assert_eq!(text, "Process: hello world");
+    }
+
+    #[test]
+    fn test_interpolate_record_fields_json_field() {
+        let mut text = "Hello {{.name}}, age {{.age}}".to_string();
+        interpolate_record_fields(&mut text, r#"{"name":"Alice","age":30}"#);
+        assert_eq!(text, "Hello Alice, age 30");
+    }
+
+    #[test]
+    fn test_interpolate_record_fields_missing_field() {
+        let mut text = "Hello {{.name}}".to_string();
+        interpolate_record_fields(&mut text, r#"{"id":1}"#);
+        assert_eq!(text, "Hello ");
+    }
+
+    #[test]
+    fn test_interpolate_record_fields_non_json() {
+        let mut text = "{{.}} and {{.field}}".to_string();
+        interpolate_record_fields(&mut text, "plain text");
+        assert_eq!(text, "plain text and ");
+    }
+
+    #[test]
+    fn test_interpolate_record_fields_full_json_record() {
+        let mut text = "Data: {{.}}".to_string();
+        interpolate_record_fields(&mut text, r#"{"a":1}"#);
+        assert_eq!(text, r#"Data: {"a":1}"#);
     }
 }

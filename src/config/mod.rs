@@ -173,6 +173,13 @@ pub struct Config {
     pub mcp_servers: IndexMap<String, McpServerConfig>,
 
     #[serde(skip)]
+    pub show_cost: bool,
+    #[serde(skip)]
+    pub run_log: Option<String>,
+    #[serde(skip)]
+    pub trace_config: Option<crate::utils::trace::TraceConfig>,
+
+    #[serde(skip)]
     pub output_format: Option<crate::cli::OutputFormat>,
     #[serde(skip)]
     pub macro_flag: bool,
@@ -267,6 +274,10 @@ impl Default for Config {
 
             clients: vec![],
             mcp_servers: Default::default(),
+
+            show_cost: false,
+            run_log: None,
+            trace_config: None,
 
             output_format: None,
             macro_flag: false,
@@ -657,6 +668,20 @@ impl Config {
                     .unwrap_or_else(|| "null".into()),
             ),
             ("save_session", format_option_value(&self.save_session)),
+        ];
+        if role.output_schema().is_some() {
+            items.push(("output_schema", role.output_schema().unwrap().to_string()));
+        }
+        if role.input_schema().is_some() {
+            items.push(("input_schema", role.input_schema().unwrap().to_string()));
+        }
+        if role.pipe_to().is_some() {
+            items.push(("pipe_to", role.pipe_to().unwrap().to_string()));
+        }
+        if role.save_to().is_some() {
+            items.push(("save_to", role.save_to().unwrap().to_string()));
+        }
+        items.extend([
             ("compress_threshold", self.compress_threshold.to_string()),
             ("tool_timeout", self.tool_timeout.to_string()),
             (
@@ -681,7 +706,7 @@ impl Config {
             ("macros_dir", display_path(&Self::macros_dir())),
             ("functions_dir", display_path(&Self::functions_dir())),
             ("messages_file", display_path(&self.messages_file())),
-        ];
+        ]);
         if let Ok((_, Some(log_path))) = Self::log_config(self.working_mode.is_serve()) {
             items.push(("log_path", display_path(&log_path)));
         }
@@ -694,12 +719,13 @@ impl Config {
     }
 
     pub fn update(config: &GlobalConfig, data: &str) -> Result<()> {
-        let parts: Vec<&str> = data.split_whitespace().collect();
-        if parts.len() != 2 {
+        let (key, value) = match data.split_once(|c: char| c.is_whitespace()) {
+            Some((k, v)) => (k, v.trim()),
+            None => bail!("Usage: .set <key> <value>. If value is null, unset key."),
+        };
+        if value.is_empty() {
             bail!("Usage: .set <key> <value>. If value is null, unset key.");
         }
-        let key = parts[0];
-        let value = parts[1];
         match key {
             "temperature" => {
                 let value = parse_value(value)?;
@@ -759,6 +785,38 @@ impl Config {
             "highlight" => {
                 let value = value.parse().with_context(|| "Invalid value")?;
                 config.write().highlight = value;
+            }
+            "model" => {
+                config.write().set_model(value)?;
+            }
+            "output_schema" => {
+                let schema = parse_schema_value(value)?;
+                if let Some(ref s) = schema {
+                    validate_json_schema(s)?;
+                }
+                config.write().set_output_schema(schema);
+            }
+            "input_schema" => {
+                let schema = parse_schema_value(value)?;
+                if let Some(ref s) = schema {
+                    validate_json_schema(s)?;
+                }
+                config.write().set_input_schema(schema);
+            }
+            "pipe_to" => {
+                if value == "null" {
+                    config.write().set_pipe_to(None);
+                } else {
+                    validate_pipe_to_command(value)?;
+                    config.write().set_pipe_to(Some(value.to_string()));
+                }
+            }
+            "save_to" => {
+                if value == "null" {
+                    config.write().set_save_to(None);
+                } else {
+                    config.write().set_save_to(Some(value.to_string()));
+                }
             }
             _ => bail!("Unknown key '{key}'"),
         }
@@ -934,6 +992,46 @@ impl Config {
             }
         }
         Ok(())
+    }
+
+    pub fn set_output_schema(&mut self, value: Option<serde_json::Value>) {
+        if let Some(session) = self.session.as_mut() {
+            session.set_output_schema(value);
+        } else if let Some(agent) = self.agent.as_mut() {
+            agent.set_output_schema(value);
+        } else if let Some(role) = self.role.as_mut() {
+            role.set_output_schema(value);
+        }
+    }
+
+    pub fn set_input_schema(&mut self, value: Option<serde_json::Value>) {
+        if let Some(session) = self.session.as_mut() {
+            session.set_input_schema(value);
+        } else if let Some(agent) = self.agent.as_mut() {
+            agent.set_input_schema(value);
+        } else if let Some(role) = self.role.as_mut() {
+            role.set_input_schema(value);
+        }
+    }
+
+    pub fn set_pipe_to(&mut self, value: Option<String>) {
+        if let Some(session) = self.session.as_mut() {
+            session.set_pipe_to(value);
+        } else if let Some(agent) = self.agent.as_mut() {
+            agent.set_pipe_to(value);
+        } else if let Some(role) = self.role.as_mut() {
+            role.set_pipe_to(value);
+        }
+    }
+
+    pub fn set_save_to(&mut self, value: Option<String>) {
+        if let Some(session) = self.session.as_mut() {
+            session.set_save_to(value);
+        } else if let Some(agent) = self.agent.as_mut() {
+            agent.set_save_to(value);
+        } else if let Some(role) = self.role.as_mut() {
+            role.set_save_to(value);
+        }
     }
 
     pub fn use_prompt(&mut self, prompt: &str) -> Result<()> {
@@ -2079,6 +2177,11 @@ impl Config {
                         "stream",
                         "save",
                         "highlight",
+                        "model",
+                        "output_schema",
+                        "input_schema",
+                        "pipe_to",
+                        "save_to",
                     ];
                     values.sort_unstable();
                     values
@@ -2133,6 +2236,12 @@ impl Config {
                     .map(|v| v.id())
                     .collect(),
                 "highlight" => complete_bool(self.highlight),
+                "model" => list_models(self, ModelType::Chat)
+                    .into_iter()
+                    .map(|v| v.id())
+                    .collect(),
+                "output_schema" | "input_schema" => vec!["null".to_string()],
+                "pipe_to" | "save_to" => vec!["null".to_string()],
                 _ => vec![],
             };
             values = candidates.into_iter().map(|v| (v, None)).collect();
@@ -3040,4 +3149,34 @@ where
         Some(value) => value.to_string(),
         None => "null".to_string(),
     }
+}
+
+fn parse_schema_value(value: &str) -> Result<Option<serde_json::Value>> {
+    if value == "null" {
+        return Ok(None);
+    }
+    if let Some(path) = value.strip_prefix('@') {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read schema file '{path}'"))?;
+        let schema: serde_json::Value = serde_json::from_str(&content)
+            .with_context(|| format!("Invalid JSON in schema file '{path}'"))?;
+        Ok(Some(schema))
+    } else {
+        let schema: serde_json::Value =
+            serde_json::from_str(value).with_context(|| "Invalid JSON for schema")?;
+        Ok(Some(schema))
+    }
+}
+
+fn validate_json_schema(schema: &serde_json::Value) -> Result<()> {
+    jsonschema::validator_for(schema)
+        .map_err(|e| anyhow!("Invalid JSON schema: {e}"))?;
+    Ok(())
+}
+
+fn validate_pipe_to_command(cmd: &str) -> Result<()> {
+    let binary = cmd.split_whitespace().next().unwrap_or(cmd);
+    which::which(binary)
+        .map_err(|_| anyhow!("Command not found: '{binary}'"))?;
+    Ok(())
 }
