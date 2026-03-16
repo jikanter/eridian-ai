@@ -674,6 +674,22 @@ impl Role {
         self.save_to.as_deref()
     }
 
+    pub fn set_output_schema(&mut self, value: Option<Value>) {
+        self.output_schema = value;
+    }
+
+    pub fn set_input_schema(&mut self, value: Option<Value>) {
+        self.input_schema = value;
+    }
+
+    pub fn set_pipe_to(&mut self, value: Option<String>) {
+        self.pipe_to = value;
+    }
+
+    pub fn set_save_to(&mut self, value: Option<String>) {
+        self.save_to = value;
+    }
+
     pub fn role_mcp_servers(&self) -> &[String] {
         &self.role_mcp_servers
     }
@@ -1609,5 +1625,47 @@ Context: {{ctx}}."#;
             &role.variables()[0].default,
             Some(VariableDefault::Shell { shell }) if shell == "echo hello"
         ));
+    }
+
+    #[test]
+    fn test_set_output_schema() {
+        let mut role = Role::new("test", "prompt");
+        assert!(role.output_schema().is_none());
+        let schema = serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
+        role.set_output_schema(Some(schema.clone()));
+        assert_eq!(role.output_schema(), Some(&schema));
+        role.set_output_schema(None);
+        assert!(role.output_schema().is_none());
+    }
+
+    #[test]
+    fn test_set_input_schema() {
+        let mut role = Role::new("test", "prompt");
+        assert!(role.input_schema().is_none());
+        let schema = serde_json::json!({"type": "object", "properties": {"query": {"type": "string"}}});
+        role.set_input_schema(Some(schema.clone()));
+        assert_eq!(role.input_schema(), Some(&schema));
+        role.set_input_schema(None);
+        assert!(role.input_schema().is_none());
+    }
+
+    #[test]
+    fn test_set_pipe_to() {
+        let mut role = Role::new("test", "prompt");
+        assert!(role.pipe_to().is_none());
+        role.set_pipe_to(Some("pbcopy".to_string()));
+        assert_eq!(role.pipe_to(), Some("pbcopy"));
+        role.set_pipe_to(None);
+        assert!(role.pipe_to().is_none());
+    }
+
+    #[test]
+    fn test_set_save_to() {
+        let mut role = Role::new("test", "prompt");
+        assert!(role.save_to().is_none());
+        role.set_save_to(Some("./output.md".to_string()));
+        assert_eq!(role.save_to(), Some("./output.md"));
+        role.set_save_to(None);
+        assert!(role.save_to().is_none());
     }
 }

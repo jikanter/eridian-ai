@@ -62,6 +62,14 @@ pub struct Session {
     autoname: Option<AutoName>,
     #[serde(skip)]
     tokens: usize,
+    #[serde(skip)]
+    output_schema: Option<serde_json::Value>,
+    #[serde(skip)]
+    input_schema: Option<serde_json::Value>,
+    #[serde(skip)]
+    pipe_to_override: Option<String>,
+    #[serde(skip)]
+    save_to_override: Option<String>,
 }
 
 impl Session {
@@ -317,6 +325,22 @@ impl Session {
         }
     }
 
+    pub fn set_output_schema(&mut self, value: Option<serde_json::Value>) {
+        self.output_schema = value;
+    }
+
+    pub fn set_input_schema(&mut self, value: Option<serde_json::Value>) {
+        self.input_schema = value;
+    }
+
+    pub fn set_pipe_to(&mut self, value: Option<String>) {
+        self.pipe_to_override = value;
+    }
+
+    pub fn set_save_to(&mut self, value: Option<String>) {
+        self.save_to_override = value;
+    }
+
     pub fn need_compress(&self, global_compress_threshold: usize) -> bool {
         if self.compressing {
             return false;
@@ -562,6 +586,18 @@ impl RoleLike for Session {
         let role_name = self.role_name.as_deref().unwrap_or_default();
         let mut role = Role::new(role_name, &self.role_prompt);
         role.sync(self);
+        if self.output_schema.is_some() {
+            role.set_output_schema(self.output_schema.clone());
+        }
+        if self.input_schema.is_some() {
+            role.set_input_schema(self.input_schema.clone());
+        }
+        if self.pipe_to_override.is_some() {
+            role.set_pipe_to(self.pipe_to_override.clone());
+        }
+        if self.save_to_override.is_some() {
+            role.set_save_to(self.save_to_override.clone());
+        }
         role
     }
 

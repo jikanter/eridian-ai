@@ -63,11 +63,23 @@ impl Rag {
         doc_paths: &[String],
         abort_signal: AbortSignal,
     ) -> Result<Self> {
-        if !*IS_STDOUT_TERMINAL {
-            bail!("Failed to init rag in non-interactive mode");
-        }
-        println!("⚙ Initializing RAG...");
-        let (embedding_model, chunk_size, chunk_overlap) = Self::create_config(config)?;
+        let (embedding_model, chunk_size, chunk_overlap) = if *IS_STDOUT_TERMINAL {
+            println!("⚙ Initializing RAG...");
+            Self::create_config(config)?
+        } else {
+            // Non-interactive: use config defaults without prompts
+            let config_r = config.read();
+            let emb_id = config_r
+                .rag_embedding_model
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("rag_embedding_model must be set for non-interactive RAG init"))?;
+            let chunk_size = config_r.rag_chunk_size.unwrap_or(1000);
+            let chunk_overlap = config_r.rag_chunk_overlap.unwrap_or(200);
+            drop(config_r);
+            let embedding_model =
+                Model::retrieve_model(&config.read(), &emb_id, ModelType::Embedding)?;
+            (embedding_model, chunk_size, chunk_overlap)
+        };
         let (reranker_model, top_k) = {
             let config = config.read();
             (config.rag_reranker_model.clone(), config.rag_top_k)
@@ -83,6 +95,9 @@ impl Rag {
         let mut rag = Self::create(config, name, save_path, data)?;
         let mut paths = doc_paths.to_vec();
         if paths.is_empty() {
+            if !*IS_STDOUT_TERMINAL {
+                bail!("RAG document paths must be provided in non-interactive mode");
+            }
             paths = add_documents()?;
         };
         let loaders = config.read().document_loaders.clone();
@@ -93,7 +108,7 @@ impl Rag {
             abort_signal,
         )
         .await?;
-        if rag.save()? {
+        if rag.save()? && *IS_STDOUT_TERMINAL {
             println!("✓ Saved RAG to '{}'.", save_path.display());
         }
         Ok(rag)

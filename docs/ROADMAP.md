@@ -1,7 +1,7 @@
 # AIChat Roadmap
 
-**Last updated:** 2026-03-15
-**300 tests passing (127 unit + 173 compatibility), 0 failures**
+**Last updated:** 2026-03-16
+**317 tests passing (144 unit + 173 compatibility), 0 failures**
 
 ---
 
@@ -223,10 +223,10 @@ tool_timeout: 0
 
 | Item | Status | Notes |
 |---|---|---|
-| 7.5A. Extend `.set` with role-level fields | — | Add `model`, `output_schema`, `input_schema`, `pipe_to`, `save_to` to `.set` dispatch in `Config::set()`. Schema fields accept inline JSON or `@file` path. |
-| 7.5B. Macro frontmatter assembly | — | Macros can now use `.set` to dress up a `.prompt` or override fields on a `.role` before prompting. This turns macros into role factories without collapsing the declarative/imperative boundary. |
-| 7.5C. Agent `.set` parity | — | Agents gain the same `.set` overrides through the `RoleLike` trait. `AgentConfig` adds optional `output_schema`, `input_schema`, `pipe_to`, `save_to`. `Agent::to_role()` propagates them via `role.sync()`. |
-| 7.5D. Guard rails | — | `.set output_schema` and `.set input_schema` validate the schema itself (meta-validation via `jsonschema::is_valid`) before accepting. `.set pipe_to` validates the target exists. Errors use Phase 4 structured format. |
+| 7.5A. Extend `.set` with role-level fields | Done | Add `model`, `output_schema`, `input_schema`, `pipe_to`, `save_to` to `.set` dispatch in `Config::set()`. Schema fields accept inline JSON or `@file` path. |
+| 7.5B. Macro frontmatter assembly | Done | Macros can now use `.set` to dress up a `.prompt` or override fields on a `.role` before prompting. This turns macros into role factories without collapsing the declarative/imperative boundary. |
+| 7.5C. Agent `.set` parity | Done | Agents gain the same `.set` overrides through the `RoleLike` trait. `AgentConfig` adds optional `output_schema`, `input_schema`, `pipe_to`, `save_to`. `Agent::to_role()` propagates them via `role.sync()`. |
+| 7.5D. Guard rails | Done | `.set output_schema` and `.set input_schema` validate the schema itself (meta-validation via `jsonschema::is_valid`) before accepting. `.set pipe_to` validates the target exists. Errors use Phase 4 structured format. |
 
 **Why this phase exists.** Today's entity hierarchy has an awkward gap:
 
@@ -335,13 +335,13 @@ pub struct AgentConfig {
 
 | Item | Status | Notes |
 |---|---|---|
-| 8A1. Run log & cost accounting | — | JSONL ledger from existing `ModelData.{input,output}_price` × `ChatCompletionsOutput.{input,output}_tokens`. Config: `run_log:` path. CLI: `--cost` displays per-invocation cost on stderr. |
-| 8A2. Pipeline trace metadata | — | `-o json` wraps pipeline output in envelope with per-stage `{role, model, input_tokens, output_tokens, cost_usd, latency_ms}` and totals. Text mode unaffected. |
-| 8B. Batch record processing (`--each`) | — | `--each` reads stdin line-by-line, invokes once per record. `--parallel N` for concurrent execution. Works with `-r` (roles), `-a` (agents), and `--macro` (macros). Per-record errors on stderr, successes on stdout. |
-| 8C. Record field templating (`{{.field}}`) | — | Dot-prefixed interpolation extracts JSON fields from the current input record. Available in role prompts, agent instructions, and macro steps. `{{.}}` is the full record. Non-JSON lines: `{{.}}` is the raw line, named fields resolve empty. |
-| 8D. Headless RAG | — | Remove `IS_STDOUT_TERMINAL` gate from `Rag::init`. Non-interactive mode falls back to config defaults (`rag_embedding_model`, `rag_chunk_size`, `rag_chunk_overlap`). Unblocks RAG in pipelines and agent automation. |
-| 8F. Interaction trace (`--trace`) | — | **[ADDED 2026-03-15]** Human-readable multi-turn summary on stderr. Each `call_react` turn shows: direction (→ request / ← response), model, tool calls with args, tool results (truncated), token counts, latency, schema validation outcome. Single invocations show one turn; tool-calling loops show full chain. |
-| 8G. Trace JSONL (`AICHAT_TRACE=1`) | — | **[ADDED 2026-03-15]** Env-var gated stage-based JSONL trace. Each `call_react` iteration emits: `{ts, turn, role, model, content_summary, tool_calls, tool_results_truncated, input_tokens, output_tokens, cost_usd, latency_ms, schema_valid}`. File path via `AICHAT_TRACE_FILE` (default: stderr). Adapts openclaw's cache-trace pattern for CLI — stage snapshots, not continuous logging. |
+| 8A1. Run log & cost accounting | Done | `CallMetrics` struct, `compute_cost()`, `--cost` flag, JSONL ledger via `AICHAT_RUN_LOG` env var. All call sites return metrics. |
+| 8A2. Pipeline trace metadata | Done | `StageTrace` struct, `-o json` wraps pipeline output in envelope with per-stage metrics and totals. |
+| 8B. Batch record processing (`--each`) | Done | `--each` reads stdin line-by-line, `--parallel N` for concurrent execution. `batch_execute` + `process_one_record`. |
+| 8C. Record field templating (`{{.field}}`) | Done | `interpolate_record_fields()` in `variables.rs`. `{{.}}` = full record, `{{.field}}` = JSON field. |
+| 8D. Headless RAG | Done | Non-interactive path in `Rag::init` uses config defaults. Guards `add_documents()` for non-terminal. |
+| 8F. Interaction trace (`--trace`) | Done | `TraceEmitter` in `trace.rs`, human-readable stderr output per `call_react` turn with tool calls, tokens, latency. |
+| 8G. Trace JSONL (`AICHAT_TRACE=1`) | Done | Env-var gated JSONL trace. `AICHAT_TRACE_FILE` for file output. Per-turn and summary events. |
 
 **8A1/8A2 — Cost wiring.** The infrastructure exists but is disconnected. `ModelData` carries `input_price`/`output_price` (loaded from `models.yaml`). Every API response populates `input_tokens`/`output_tokens` in `ChatCompletionsOutput`. The multiplication never happens — prices only appear in `--list-models`, token counts only in `serve.rs`. Phase 8A1 connects them into a ledger; 8A2 extends the `-o json` pipeline envelope with per-stage accounting.
 
