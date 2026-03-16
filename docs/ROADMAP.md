@@ -466,6 +466,137 @@ cat records.jsonl | aichat --macro enrich --each
 | Cost dashboard / visualization | JSONL run log is the interface. Pipe to `jq`, `duckdb`, Grafana. |
 | `{{.field.nested}}` deep access | Premature. If needed, the role prompt can instruct the model to extract nested fields. |
 
+### Phase 9: Runtime Intelligence — Schema Fidelity (Epic 2, Features 1+2+6)
+
+> **[ADDED 2026-03-16]** Builds the deterministic intelligence layer between user input and LLM calls.
+> Governing principle: every token sent to an LLM should be a token that only an LLM can process.
+> Full design: [`docs/analysis/epic-2.md`](./analysis/epic-2.md)
+
+| Item | Status | Notes |
+|---|---|---|
+| 9A. Provider-native structured output (OpenAI `response_format`) | — | When role has `output_schema` and model supports `response_format: json_schema`, inject it into the API request body. Suppresses system prompt schema suffix (saves ~50-200 tokens). New `supports_response_format_json_schema` boolean on `ModelData`. |
+| 9B. Provider-native structured output (Claude tool-use-as-schema) | — | For Claude models: define synthetic tool whose `input_schema` IS the `output_schema`, force via `tool_choice`, extract args as output. Different API shape than 9A but same outcome. |
+| 9C. Schema validation retry loop | — | On `validate_schema("output", ...)` failure, inject validation error as new user message and retry (default: 1 retry). New `schema_retries:` role frontmatter field. Short-circuits when native structured output (9A/9B) is active. |
+| 9D. Capability-aware pre-flight validation | — | Before API call: check `use_tools` vs `supports_function_calling`, images vs `supports_vision`, pipeline stage model availability and schema compatibility. Fails at config time, not at API time. Zero tokens. |
+
+**Parallelization:** 9A, 9B, 9C, 9D are all independently implementable. 9A and 9B can run concurrently (different provider paths). 9C has a soft dependency on 9A/9B (should short-circuit when native mode active) but can be built first. 9D is fully independent.
+
+**Key files:** `src/client/openai.rs` (9A), `src/client/claude.rs` (9B), `src/main.rs` + `src/pipe.rs` (9C), new `src/config/preflight.rs` (9D), `src/client/model.rs` + `models.yaml` (9A/9B).
+
+### Phase 10: Runtime Intelligence — Resilience (Epic 2, Features 3+4)
+
+| Item | Status | Notes |
+|---|---|---|
+| 10A. API-level retry with exponential backoff | — | New `src/client/retry.rs`. Retries on HTTP 429/500/502/503 with exponential backoff (default: 3 retries, 1s initial, 30s max). Parses `Retry-After` header on 429. Fails immediately on 401/403/404. Global `retry:` config section. |
+| 10B. Pipeline stage output cache | — | New `src/cache.rs`. Content-addressable cache keyed on `sha256(role + model + input)`. File-backed in `<config_dir>/.cache/stages/`. Configurable TTL (default: 1hr). `--no-cache` flag to bypass. Checked before LLM call in `pipe.rs:run_stage_inner()`. |
+| 10C. Pipeline stage retry | — | On stage failure, retry up to N times (default: 1) before propagating. New `stage_retries:` role frontmatter field. `is_retryable_stage_error()` returns true for API (5/6), schema (8), and model (7) errors; false for config (3), auth (4), abort (9). |
+| 10D. Pipeline model fallback | — | New `fallback_models:` role frontmatter field (list of model IDs). After exhausting retries with primary model, try each fallback in order. Wraps the retry loop: `fallback(retry(cache(run_stage_inner)))`. |
+
+**Parallelization:** 10A is fully independent of 10B/C/D. Within the pipeline features: 10B (cache), 10C (retry), 10D (fallback) modify different layers of `pipe.rs:run_stage()` and can be implemented by separate agents, then composed. Nesting order: `10D(10C(10B(run_stage_inner)))`.
+
+**Dependency:** 10A should land before 10C — stage retry benefits from API retry being in place (otherwise a stage retry that hits a rate limit still fails).
+
+**Key files:** new `src/client/retry.rs` (10A), new `src/cache.rs` (10B), `src/pipe.rs` (10B/C/D), `src/config/role.rs` (10C/D), `src/cli.rs` (10B `--no-cache` flag), `Cargo.toml` (`sha2` crate for 10B).
+
+### Phase 11: Runtime Intelligence — Context Budget (Epic 2, Feature 5)
+
+| Item | Status | Notes |
+|---|---|---|
+| 11A. Context budget allocator core | — | New `src/context_budget.rs`. Calculates: `remaining = max_input_tokens - output_reserve - fixed_allocations`. Fixed = system prompt + schema + user message (always included). Remaining fills greedily by priority. Replaces hard error in `guard_max_input_tokens()` with intelligent truncation + stderr warning. |
+| 11B. BM25-ranked file inclusion | — | When `-f` includes multiple files/directory, score each file against user query via `bm25` crate (already in deps). Include files in descending relevance order until budget exhausted. Produces `RankedContent { path, content, relevance_score, token_estimate }`. Emits selection summary on stderr. |
+| 11C. Budget-aware RAG | — | Pass remaining token budget to `Config::search_rag()`. Compute `top_k = remaining / avg_chunk_tokens` instead of fixed k. Requires modifying `Rag::search()` signature to accept budget parameter. |
+
+**Parallelization:** 11A, 11B, 11C are independently implementable:
+- **Agent A**: Core `ContextBudget` struct + integration in `Input::prepare_completion_data()`
+- **Agent B**: BM25 file ranking module (standalone, returns ranked file list)
+- **Agent C**: Budget-aware RAG (modify `search_rag` to accept budget)
+
+All three merge into `prepare_completion_data()` where the budget allocator orchestrates them.
+
+**Config:**
+```yaml
+context_budget:
+  output_reserve: 4096     # tokens reserved for output
+  file_strategy: bm25      # bm25 | truncate | all (default: bm25 when >1 file)
+  warn_on_truncation: true  # emit warning to stderr when content is truncated
+```
+
+**Key files:** new `src/context_budget.rs` (11A), `src/config/input.rs` (11A integration), `src/config/mod.rs` (11C, config parsing), `src/client/model.rs` (11A soft-fail guard), `src/rag/mod.rs` (11C).
+
+**What to kill:**
+| Proposal | Reason |
+|---|---|
+| Token-exact counting (tiktoken) | `tiktoken-rs` only covers OpenAI tokenizers. Heuristic (~1.3 tokens/word) is sufficient for budget allocation — order-of-magnitude correctness, not precision. |
+| LiteLLM integration as dependency | Python runtime conflicts with single-binary. AIChat already targets LiteLLM proxy via `openai-compatible` with zero code changes. |
+| Automatic model selection (`model: auto`) | Requires quality benchmarks per model per task. Manual selection + fallback chains (10D) is more reliable. |
+| Prompt caching API integration | Provider-specific (Anthropic cache_control, OpenAI implicit). Separate epic for provider-specific optimizations. |
+
+### Phase 12: Server — Hardening & Knowledge Exposure (Epic 3, Features 3+5+6)
+
+> **[ADDED 2026-03-16]** Makes the server usable beyond localhost and exposes AIChat's knowledge model safely.
+> AIChat's `--serve` already works as an OpenWebUI backend (OpenAI-compatible HTTP). These changes
+> remove friction and fix data leakage without building platform features.
+> Full design: [`docs/analysis/epic-3.md`](./analysis/epic-3.md)
+
+| Item | Status | Notes |
+|---|---|---|
+| 12A. Configurable CORS origins | — | Replace hardcoded `is_local_origin()` with configurable `serve_cors_origins:` list in config.yaml. `serve_cors_allow_all: true` for trusted networks. Unblocks Docker/OpenWebUI bridge network access. |
+| 12B. Optional bearer token auth | — | `serve_api_key:` in config.yaml. When set, checks `Authorization: Bearer <token>` on every request. Returns 401 on mismatch. When unset, no auth (current behavior). |
+| 12C. Health endpoint | — | `GET /health` → `200 {"status": "ok", "models": N, "roles": N}`. Required for Docker/K8s/systemd orchestration. |
+| 12D. Streaming usage in final SSE chunk | — | Add `usage` object (input_tokens, output_tokens, cost_usd) to the final SSE chunk. OpenWebUI relies on this for streaming token accounting. |
+| 12E. Hot-reload endpoint | — | `POST /v1/reload` → reloads roles and models from disk without restart. Eliminates restart friction during role development. |
+| 12F. Role metadata security (`RolePublicView`) | — | Replace full `Role` serialization in `/v1/roles` with `RolePublicView` that exposes: name, description, model_id, input_schema, output_schema, variable names (not shell commands), pipeline stage names. Hides: prompt text, pipe_to/save_to paths, MCP server configs, shell-injective defaults. |
+| 12G. Single-role retrieval | — | `GET /v1/roles/{name}` returns `RolePublicView` for one role. `GET /v1/roles/{name}/schema` returns input/output schemas. Avoids listing all roles to find one. |
+| 12H. Cost in API responses | — | Multiply `ModelData.{input,output}_price` × response tokens. Add `usage.cost_usd` to every `/v1/chat/completions` response. Add `X-AIChat-Cost-USD`, `X-AIChat-Model`, `X-AIChat-Latency-Ms` response headers. |
+
+**Parallelization:** All items are independently implementable. 12A-12E are server infrastructure changes to `serve.rs`. 12F-12G are serialization changes. 12H is arithmetic. All can run in parallel.
+
+**Key files:** `src/serve.rs` (all items), `src/config/mod.rs` (12A/12B config parsing).
+
+### Phase 13: Server — Role & Pipeline Execution (Epic 3, Features 1+2+4)
+
+> **[ADDED 2026-03-16]** Exposes AIChat's unique capabilities over HTTP. Turns the server from a
+> commodity proxy into a pipeline execution engine and role-as-API gateway.
+
+| Item | Status | Notes |
+|---|---|---|
+| 13A. Roles as virtual models | — | Roles appear as `role:{name}` in `/v1/models` listing. When `POST /v1/chat/completions` receives `"model": "role:classify"`, the server resolves the role, executes full machinery (schema validation, pipeline, tools), returns standard OpenAI response. Zero-change OpenWebUI integration — roles become selectable "models." |
+| 13B. Role invocation endpoint (non-streaming) | — | `POST /v1/roles/{name}/invoke` accepts `{"input": "...", "variables": {...}, "trace": true}`. Validates against `input_schema`, executes role/pipeline, validates `output_schema`, returns output with cost and trace metadata. 422 for schema failures. |
+| 13C. Role invocation endpoint (streaming) | — | Streaming variant of 13B with SSE stage-boundary events: `stage_start`, `delta`, `stage_end`, `done`. Requires refactoring `pipe.rs` to emit events via callback/channel instead of printing to stdout. |
+| 13D. Pipeline execution endpoint | — | `POST /v1/pipelines/run` accepts named pipeline or inline `{"stages": [...]}`. Reuses `pipe.rs:run_pipeline_role()`. Returns Phase 8A2 trace envelope format. |
+| 13E. Batch processing endpoint | — | `POST /v1/batch` accepts `{"role": "classify", "records": [...], "parallel": 4}`. Returns JSONL-shaped results. HTTP equivalent of `--each`. Per-record errors, not per-batch. Depends on Phase 8B (`--each`) landing first. |
+
+**Parallelization:** 13A is independent. 13B is independent (non-streaming path). 13C depends on 13B and shares a `pipe.rs` refactor with 13D. 13D is independent of 13A/13B. 13E depends on Phase 8B.
+
+**Recommended order:** 13A → 13B → 13D → 13C → 13E
+
+**Pipe.rs refactoring note:** 13C and 13D both need `pipe.rs` to emit stage events rather than writing to stdout. This is a shared refactor: add an optional `stage_event_sender: Option<Sender<StageEvent>>` parameter to `run_stage`. When present, emit events. When absent, print as today. This preserves CLI behavior.
+
+**Key files:** `src/serve.rs` (all items), `src/pipe.rs` (13C/13D stage-event refactor), `src/config/role.rs` (13A role resolution).
+
+### Phase 14: Server — Discovery & Estimation (Epic 3, Features 7+8)
+
+| Item | Status | Notes |
+|---|---|---|
+| 14A. Cost estimation endpoint | — | `POST /v1/estimate` accepts `{"role": "...", "input": "...", "model": "..."}`. Returns `{estimated_input_tokens, estimated_output_tokens, estimated_cost_usd, alternatives: [...]}`. Alternatives list all configured models sorted by estimated cost, filtered by required capabilities. Zero LLM cost — pure arithmetic against `models.yaml`. |
+| 14B. OpenAPI specification | — | `GET /v1/openapi.json` serves a static OpenAPI 3.0 spec documenting all endpoints, schemas, errors, and auth. Embedded in binary like `models.yaml`. |
+| 14C. Root page | — | `GET /` returns lightweight HTML listing all endpoints with descriptions and links. Replaces current 404. |
+
+**Parallelization:** All independent. 14B should be done last (documents endpoints from all other phases).
+
+**Key files:** `src/serve.rs` (all items), new `assets/openapi.json` (14B).
+
+**What NOT to build (server scope):**
+| Proposal | Reason |
+|---|---|
+| Multi-user auth (OAuth/LDAP) | Platform feature. Delegate to gateway. Bearer token (12B) is sufficient. |
+| Conversation persistence / database | Server is stateless. Callers manage message history. OpenWebUI owns persistence. |
+| Rich web UI / SPA beyond playground/arena | Violates "no desktop UI" constraint. Freeze at current scope. |
+| WebSocket streaming | SSE works. WebSocket adds dependency for no capability gain. |
+| Pipeline designer / role editor GUI | Roles are YAML files. Text editor is the authoring tool. |
+| Agent hosting (long-running sessions) | `call_react` is single-invocation. Concurrent long-running agents need different architecture. |
+| MCP-over-HTTP in `--serve` | MCP server (`--mcp`) uses stdio. MCPO bridges to HTTP. Keep separate. |
+
 ---
 
 ## Architecture Notes
@@ -484,6 +615,7 @@ cat records.jsonl | aichat --macro enrich --each
 | `src/mcp_client/streamable_http.rs` | ~250 | HTTP/SSE transport adapter (Phase 5A) |
 | `src/mcp.rs` | ~270 | MCP server mode with lazy discovery (Phase 5B) |
 | `src/pipe.rs` | ~220 | Pipeline execution with tool-calling and config isolation |
+| `src/serve.rs` | ~960 | HTTP server: OpenAI-compatible API, playground, arena (Phases 12-14) |
 | `src/utils/exit_code.rs` | ~710 | Semantic exit codes, error chain classification, typed tool errors, ToolTimeout |
 | `src/client/common.rs` | — | `call_react` agent loop, model data, provider abstraction |
 
@@ -605,3 +737,5 @@ Legacy anyhow::Error paths still work via string-matching fallback in classify_e
 | Error messages analysis | [`docs/analysis/2026-03-13-user-friendly-error-messages.mdx`](./analysis/2026-03-13-user-friendly-error-messages.mdx) |
 | Macro documentation | [`docs/macros.md`](./macros.md) |
 | Role parameters | [`docs/analysis/2026-03-02-role-parameters.md`](./analysis/2026-03-02-role-parameters.md) |
+| Epic 2: Runtime Intelligence Layer | [`docs/analysis/epic-2.md`](./analysis/epic-2.md) |
+| Epic 3: Server as Pipeline Engine | [`docs/analysis/epic-3.md`](./analysis/epic-3.md) |
