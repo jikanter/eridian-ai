@@ -138,7 +138,7 @@ aichat is the **bridge** between the Unix world and the protocol world. Tools st
 
 ### What to fix instead
 
-The real friction is not the tool protocol — it is the plumbing around it:
+The real fr/niction is not the tool protocol — it is the plumbing around it:
 
 - **`$LLM_OUTPUT` should become optional.** If a tool writes to stdout and `$LLM_OUTPUT` is not set, the runtime should capture stdout. If `$LLM_OUTPUT` is set, use it. This makes tools work as normal Unix commands *and* as aichat functions without modification.
 - **stderr should be captured and forwarded.** Today stderr is silently discarded or printed to the terminal. The runtime should capture it and include it in error responses to the LLM.
