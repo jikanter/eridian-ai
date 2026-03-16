@@ -39,6 +39,7 @@ impl McpConnection {
             .split_first()
             .ok_or_else(|| anyhow!("Empty MCP server command"))?;
 
+        info!("Spawning MCP server: {command}");
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args);
         cmd.args(extra_args);

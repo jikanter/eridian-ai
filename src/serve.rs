@@ -145,12 +145,17 @@ impl Server {
     ) -> std::result::Result<AppResponse, hyper::Error> {
         let method = req.method().clone();
         let uri = req.uri().clone();
+        let request_origin = req
+            .headers()
+            .get(hyper::header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         let path = uri.path();
 
         if method == Method::OPTIONS {
             let mut res = Response::default();
             *res.status_mut() = StatusCode::NO_CONTENT;
-            set_cors_header(&mut res);
+            set_cors_header(&mut res, request_origin.as_deref());
             return Ok(res);
         }
 
@@ -191,7 +196,7 @@ impl Server {
             }
         };
         *res.status_mut() = status;
-        set_cors_header(&mut res);
+        set_cors_header(&mut res, request_origin.as_deref());
         Ok(res)
     }
 
@@ -634,11 +639,20 @@ fn generate_completion_id() -> String {
     format!("chatcmpl-{random_id}")
 }
 
-fn set_cors_header(res: &mut AppResponse) {
-    res.headers_mut().insert(
-        hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN,
-        hyper::header::HeaderValue::from_static("*"),
-    );
+/// Set CORS headers only for requests originating from localhost.
+///
+/// This prevents arbitrary websites from making cross-origin requests to the
+/// local API server (e.g. a malicious page exfiltrating data via the LLM).
+/// Same-origin requests (playground, arena) are unaffected by CORS.
+fn set_cors_header(res: &mut AppResponse, request_origin: Option<&str>) {
+    let origin = match request_origin {
+        Some(o) if is_local_origin(o) => o,
+        _ => return,
+    };
+    if let Ok(value) = hyper::header::HeaderValue::from_str(origin) {
+        res.headers_mut()
+            .insert(hyper::header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+    }
     res.headers_mut().insert(
         hyper::header::ACCESS_CONTROL_ALLOW_METHODS,
         hyper::header::HeaderValue::from_static("GET,POST,PUT,PATCH,DELETE"),
@@ -647,6 +661,19 @@ fn set_cors_header(res: &mut AppResponse) {
         hyper::header::ACCESS_CONTROL_ALLOW_HEADERS,
         hyper::header::HeaderValue::from_static("Content-Type,Authorization"),
     );
+}
+
+fn is_local_origin(origin: &str) -> bool {
+    let rest = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"));
+    match rest {
+        Some(authority) => {
+            let host = authority.split(':').next().unwrap_or("");
+            matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]" | "0.0.0.0")
+        }
+        None => false,
+    }
 }
 
 fn create_text_frame(id: &str, model: &str, created: i64, content: &str) -> Frame<Bytes> {

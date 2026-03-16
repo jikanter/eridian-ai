@@ -77,9 +77,19 @@ pub fn interpolate_variables_with_model(text: &mut String, model: Option<&Model>
         .to_string();
 
     // Phase 3: Replace environment variable references {{$VAR}}
+    // Only AICHAT_-prefixed env vars are permitted to prevent accidental
+    // leakage of sensitive environment variables (API keys, tokens, etc.)
+    // into prompts sent to LLM providers.
     *text = RE_ENV_VARIABLE
         .replace_all(text, |caps: &Captures<'_>| {
             let var_name = &caps[1];
+            if !var_name.starts_with("AICHAT_") {
+                warn!(
+                    "Skipping env var '{{{{${var_name}}}}}': \
+                     only AICHAT_* vars are allowed in templates"
+                );
+                return caps[0].to_string();
+            }
             match std::env::var(var_name) {
                 Ok(value) => value,
                 Err(_) => caps[0].to_string(),
@@ -380,8 +390,19 @@ mod tests {
         interpolate_variables_with_model(&mut text, None);
         // {{foo}} gets processed by RE_VARIABLE (unresolved, stays as {{foo}})
         assert!(text.contains("{{foo}}"));
-        // {{$BAR}} stays unresolved since BAR is not set
+        // {{$BAR}} blocked: not AICHAT_-prefixed, stays unchanged
         assert!(text.contains("{{$BAR}}"));
+    }
+
+    #[test]
+    fn test_env_variable_non_aichat_prefix_blocked() {
+        std::env::set_var("SECRET_TOKEN", "super_secret");
+        let mut text = "Token: {{$SECRET_TOKEN}}".to_string();
+        interpolate_variables_with_model(&mut text, None);
+        // Non-AICHAT_ vars are blocked even when set
+        assert_eq!(text, "Token: {{$SECRET_TOKEN}}");
+        assert!(!text.contains("super_secret"));
+        std::env::remove_var("SECRET_TOKEN");
     }
 
     #[test]
