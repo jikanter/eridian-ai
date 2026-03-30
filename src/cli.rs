@@ -147,6 +147,12 @@ pub struct Cli {
     /// JSON arguments for --call
     #[clap(long = "json", value_name = "JSON", requires = "call")]
     pub call_json: Option<String>,
+    /// Tool call arguments as KEY=VALUE pairs (repeatable, use with --call)
+    #[clap(long = "arg", value_name = "KEY=VALUE", requires = "call")]
+    pub call_args: Vec<String>,
+    /// Bypass MCP schema cache (force re-fetch from server)
+    #[clap(long)]
+    pub refresh: bool,
     /// Run a multi-stage pipeline
     #[clap(long)]
     pub pipe: bool,
