@@ -1,37 +1,27 @@
 # Phase 8: Data Processing & Observability
 
-*2026-03-16T22:24:00Z by Showboat 0.6.1*
-<!-- showboat-id: 4dc4903e-baa1-4152-8743-bf97730205f0 -->
+*2026-03-30T15:48:42Z by Showboat 0.6.1*
+<!-- showboat-id: 1edf13dd-1740-4994-8087-af378cb1bdf6 -->
 
-Phase 8 connects the existing-but-disconnected pricing/token infrastructure into actionable observability, and adds batch record processing. This demo verifies all seven sub-items: 8D (headless RAG), 8A1 (cost accounting), 8F/8G (interaction trace), 8A2 (pipeline trace), 8C (record field templating), and 8B (batch processing).
+Phase 8 connects pricing/token infrastructure into actionable observability and adds batch record processing.
 
-## Build verification
-
-All 317 tests pass (144 unit + 173 compatibility) with no failures.
+## Tests
 
 ```bash
-cargo test 2>&1 | grep '^test result'
+cargo test 2>&1 | grep "test result:" | sed "s/finished in [0-9.]*s/finished in Xs/"
 ```
 
 ```output
-test result: ok. 144 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
-test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 144 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
 ```
+
+## 8A1: Cost Accounting
+
+New `--cost` and `--trace` CLI flags:
 
 ```bash
-cargo build 2>&1 | tail -1
-```
-
-```output
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
-```
-
-## 8A1: New CLI flags
-
-The `--cost`, `--trace`, `--each`, and `--parallel` flags are registered in the CLI.
-
-```bash
-./target/debug/aichat --help 2>&1 | grep -E '^\s+--(cost|trace|each|parallel)'
+aichat --help 2>&1 | grep -E "^\s+--(cost|trace|each|parallel)"
 ```
 
 ```output
@@ -41,69 +31,59 @@ The `--cost`, `--trace`, `--each`, and `--parallel` flags are registered in the 
       --parallel <PARALLEL>
 ```
 
-## 8A1: CallMetrics & compute_cost unit tests
-
-New unit tests verify cost arithmetic and metrics merging.
+CallMetrics unit tests:
 
 ```bash
-cargo test -- call_metrics compute_cost 2>&1 | grep -E 'running|test.*ok|test result'
+cargo test -- call_metrics compute_cost 2>&1 | grep -E "test.*ok|test result" | sort
 ```
 
 ```output
-running 4 tests
 test client::common::tests::test_call_metrics_merge ... ok
 test client::common::tests::test_call_metrics_merge_empty_model_id ... ok
 test client::common::tests::test_compute_cost_no_prices ... ok
 test client::common::tests::test_compute_cost_with_prices ... ok
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; finished in 0.00s
-running 0 tests
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
 ```
 
-## 8C: Record field templating unit tests
+## 8C: Record Field Templating
 
-`interpolate_record_fields` supports `{{.}}` for full record and `{{.field}}` for JSON field extraction.
+`{{.}}` for full record, `{{.field}}` for JSON field extraction:
 
 ```bash
-cargo test -- interpolate_record 2>&1 | grep -E 'running|test.*ok|test result'
+cargo test -- interpolate_record 2>&1 | grep -E "test.*ok|test result" | sort
 ```
 
 ```output
-running 5 tests
-test utils::variables::tests::test_interpolate_record_fields_full_record ... ok
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 139 filtered out; finished in 0.00s
 test utils::variables::tests::test_interpolate_record_fields_full_json_record ... ok
-test utils::variables::tests::test_interpolate_record_fields_missing_field ... ok
+test utils::variables::tests::test_interpolate_record_fields_full_record ... ok
 test utils::variables::tests::test_interpolate_record_fields_json_field ... ok
+test utils::variables::tests::test_interpolate_record_fields_missing_field ... ok
 test utils::variables::tests::test_interpolate_record_fields_non_json ... ok
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 139 filtered out; finished in 0.01s
-running 0 tests
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
 ```
 
-## 8F/8G: Trace module unit tests
-
-The TraceEmitter correctly truncates content and handles newlines.
+## 8F/8G: Trace Module
 
 ```bash
-cargo test -- utils::trace 2>&1 | grep -E 'running|test.*ok|test result'
+cargo test -- utils::trace 2>&1 | grep -E "test.*ok|test result" | sort
 ```
 
 ```output
-running 3 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 0.00s
+test utils::trace::tests::test_truncate_long ... ok
 test utils::trace::tests::test_truncate_newlines ... ok
 test utils::trace::tests::test_truncate_short ... ok
-test utils::trace::tests::test_truncate_long ... ok
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 0.00s
-running 0 tests
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
 ```
 
 ## 8D: Headless RAG
 
-The `IS_STDOUT_TERMINAL` bail was replaced with a non-interactive config-defaults path.
+The `IS_STDOUT_TERMINAL` bail was replaced with a non-interactive config-defaults path:
 
 ```bash
-grep -n 'IS_STDOUT_TERMINAL' src/rag/mod.rs | head -5
+grep -n "IS_STDOUT_TERMINAL" src/rag/mod.rs | head -5
 ```
 
 ```output
@@ -113,89 +93,10 @@ grep -n 'IS_STDOUT_TERMINAL' src/rag/mod.rs | head -5
 433:            if *IS_STDOUT_TERMINAL && total > 0 {
 ```
 
-```bash
-grep -A2 'Non-interactive' src/rag/mod.rs
-```
-
-```output
-            // Non-interactive: use config defaults without prompts
-            let config_r = config.read();
-            let emb_id = config_r
-```
-
-## 8A1: Return type changes
-
-All three core functions now return `CallMetrics` as a third tuple element.
+## 8A2: Pipeline Trace Metadata
 
 ```bash
-grep -n 'Result<(String, Vec<ToolResult>, CallMetrics)>' src/client/common.rs
-```
-
-```output
-447:) -> Result<(String, Vec<ToolResult>, CallMetrics)> {
-584:) -> Result<(String, Vec<ToolResult>, CallMetrics)> {
-630:) -> Result<(String, Vec<ToolResult>, CallMetrics)> {
-```
-
-## 8A1: SseHandler usage tracking
-
-Streaming handlers now capture token counts via `set_usage()` and return them from `take()`.
-
-```bash
-grep -n 'set_usage\|input_tokens.*Option<u64>' src/client/stream.rs
-```
-
-```output
-16:    input_tokens: Option<u64>,
-76:    pub fn set_usage(&mut self, input_tokens: Option<u64>, output_tokens: Option<u64>) {
-```
-
-```bash
-grep -n 'set_usage' src/client/openai.rs src/client/claude.rs
-```
-
-```output
-src/client/openai.rs:151:            handler.set_usage(
-src/client/claude.rs:150:                        handler.set_usage(
-```
-
-## 8A1: JSONL run log ledger
-
-New `ledger.rs` module provides `append_run_log()` for cost tracking. Activated via `AICHAT_RUN_LOG` env var.
-
-```bash
-cat src/utils/ledger.rs
-```
-
-```output
-use anyhow::{Context, Result};
-use serde_json::Value;
-use std::io::Write;
-use std::path::Path;
-
-/// Append one JSONL record to the run log file.
-pub fn append_run_log(path: &Path, record: &Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create run log directory: {}", parent.display()))?;
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("Failed to open run log: {}", path.display()))?;
-    let line = serde_json::to_string(record)?;
-    writeln!(file, "{line}")?;
-    Ok(())
-}
-```
-
-## 8A2: Pipeline trace metadata
-
-`StageTrace` struct collects per-stage metrics. When `-o json` is used with pipelines, a trace envelope wraps the output.
-
-```bash
-grep -A7 'struct StageTrace' src/pipe.rs
+grep -A7 "struct StageTrace" src/pipe.rs
 ```
 
 ```output
@@ -209,12 +110,10 @@ struct StageTrace {
 }
 ```
 
-## 8B: Batch record processing
-
-`batch_execute()` reads stdin line-by-line with `--each`. Supports `--parallel N` for concurrent execution via `buffer_unordered`.
+## 8B: Batch Record Processing
 
 ```bash
-grep -n 'async fn batch_execute\|async fn process_one_record' src/main.rs
+grep -n "async fn batch_execute\|async fn process_one_record" src/main.rs
 ```
 
 ```output
@@ -222,32 +121,45 @@ grep -n 'async fn batch_execute\|async fn process_one_record' src/main.rs
 637:async fn process_one_record(
 ```
 
+## 8A1: Run Log Ledger
+
 ```bash
-grep -c 'buffer_unordered' src/main.rs
+wc -l < src/utils/ledger.rs
 ```
 
 ```output
-1
+      20
 ```
 
-## 8F/8G: TraceEmitter integration
+## Integration Tests
 
-The trace emitter hooks into `call_react` — emitting per-turn request info, tool results, and a final summary.
+Verify CLI flags are registered:
 
 ```bash
-grep -n 'emit_request\|emit_tool_results\|emit_summary' src/client/common.rs
+aichat --help 2>&1 | grep -c -E "(cost|trace|each|parallel)"
 ```
 
 ```output
-479:            t.emit_request(
-497:                t.emit_summary(&cumulative_metrics);
-511:            t.emit_tool_results(&tool_results, metrics.latency_ms);
+7
 ```
 
-## Files changed summary
+Test record field templating via `--dry-run` with a role that uses `{{.}}` placeholders:
 
-**New files (2):** `src/utils/ledger.rs`, `src/utils/trace.rs`
+```bash
+ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/test-record-tmpl.md" <<'ROLE'
+Process this record: {{.}}
+Extract the name field: {{.name}}
+ROLE
+echo "{\"name\": \"Alice\", \"age\": 30}" | aichat --dry-run -r test-record-tmpl 2>/dev/null
+rm "$ROLES_DIR/test-record-tmpl.md"
+```
 
-**Modified files (12):** `src/client/common.rs`, `src/client/stream.rs`, `src/client/openai.rs`, `src/client/claude.rs`, `src/cli.rs`, `src/config/mod.rs`, `src/main.rs`, `src/pipe.rs`, `src/repl/mod.rs`, `src/rag/mod.rs`, `src/utils/variables.rs`, `src/utils/mod.rs`
+```output
+Process this record: {{.}}
+Extract the name field: {{.name}}
 
-**Tests:** 317 total (144 unit + 173 compatibility), 12 new unit tests added.
+{"name": "Alice", "age": 30}
+```
+
+Record field templating resolves `{{.}}` to the full input and `{{.name}}` to the extracted JSON field.

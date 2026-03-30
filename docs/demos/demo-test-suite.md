@@ -1,56 +1,131 @@
-# Comprehensive Test Suite for llm-functions & argc Compatibility
+# Comprehensive Test Suite
 
-*2026-03-13T15:34:58Z by Showboat 0.6.1*
-<!-- showboat-id: e9811fd6-130e-47a5-b7b2-37397cdd71aa -->
+*2026-03-30T15:42:27Z by Showboat 0.6.1*
+<!-- showboat-id: 406e23bd-d189-4543-a6db-d5ab60e56b4a -->
 
-This test suite validates that our changes (Phases 0-4) remain compatible with llm-functions and argc tooling. It covers: function declarations, tool dispatch, deferred tool loading, pipeline stages, MCP tool conversion, error classification, role parsing, schema validation, and CLI output formatting.
+This document verifies the full test suite passes — both unit tests and compatibility tests.
+
+## Unit Tests
 
 ```bash
-cargo test 2>&1 | grep -E "^(running|test result)"
+cargo test --bin aichat 2>&1 | grep -E "(running|test result)" | sed "s/finished in [0-9.]*s/finished in Xs/"
 ```
 
 ```output
-running 99 tests
-test result: ok. 99 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
-running 117 tests
-test result: ok. 117 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+running 144 tests
+test result: ok. 144 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
 ```
 
-The test suite is organized into 20 modules covering all compatibility-critical areas:
+## Compatibility Tests
 
 ```bash
-cargo test --test compatibility 2>&1 | grep -E "^test " | sed "s/ \.\.\. ok//" | sort | awk -F"::" "{print \$1}" | uniq -c | sort -rn
+cargo test --test compatibility 2>&1 | grep -E "(running|test result)" | sed "s/finished in [0-9.]*s/finished in Xs/"
 ```
 
 ```output
-  15 test error_classification
-  14 test role_parsing
-   7 test typed_errors
-   7 test tool_search
-   7 test pipeline_parsing
-   7 test mcp_tool_conversion
-   6 test tool_selection
-   6 test output_format
-   6 test function_declaration
-   5 test tool_call_dedup
-   5 test schema_validation
-   5 test argc_contract
-   4 test variable_expansion
-   4 test env_resolution
-   4 test dehoist_input
-   4 test config_paths
-   3 test schema_cache
-   3 test mcp_config
-   3 test builtin_roles
-   2 test mcp_output_format
-   1 test result: ok. 117 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+running 173 tests
+test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
 ```
 
-**Coverage by phase:**
+## Module Breakdown
 
-- **Phase 0 (Prerequisites):** Pipeline stage parsing (7 tests), tool dispatch dedup (5 tests)
-- **Phase 1 (Token Efficiency):** Deferred tool loading/search (7 tests), role descriptions (2 tests), tool examples (1 test)
-- **Phase 2 (Pipeline & Output):** Pipeline-as-role (7 tests), output formats (6 tests), __INPUT__ de-hoisting (4 tests)
-- **Phase 3 (MCP Consumption):** MCP tool conversion (7 tests), MCP config (3 tests), MCP output (2 tests), schema cache (3 tests), env resolution (4 tests)
-- **Phase 4 (Error Handling):** Error classification (15 tests), typed errors (7 tests), schema validation (5 tests)
-- **Compatibility Guards:** argc contract (5 tests), built-in roles (3 tests), config paths (4 tests), role parsing (14 tests), variables (4 tests), function declarations (6 tests)
+Unit test modules:
+
+```bash
+cargo test --bin aichat 2>&1 | grep "^test " | grep " \.\.\. " | sed "s/::tests::.*//" | sed "s/::test_.*//" | sort -u
+```
+
+```output
+test cli
+test client::common
+test client::stream
+test config::role
+test rag::splitter
+test render::markdown
+test repl
+test repl::completer
+test utils
+test utils::exit_code
+test utils::path
+test utils::render_prompt
+test utils::trace
+test utils::variables
+```
+
+Compatibility test modules:
+
+```bash
+cargo test --test compatibility 2>&1 | grep "^test " | grep " \.\.\. " | sed "s/::.*//" | sort -u
+```
+
+```output
+test argc_contract
+test builtin_roles
+test config_paths
+test dehoist_input
+test env_resolution
+test error_classification
+test function_declaration
+test mcp_config
+test mcp_output_format
+test mcp_tool_conversion
+test output_format
+test phase7_tool_errors
+test phase8_timeout_and_concurrency
+test pipeline_parsing
+test role_parsing
+test schema_cache
+test schema_validation
+test tool_call_dedup
+test tool_search
+test tool_selection
+test typed_errors
+test variable_expansion
+```
+
+## Integration Tests
+
+Verify the CLI binary runs and basic commands work:
+
+```bash
+aichat --help 2>&1 | head -3
+```
+
+```output
+All-in-one LLM CLI Tool
+
+Usage: aichat [OPTIONS] [TEXT]...
+```
+
+```bash
+aichat --list-roles 2>&1 | head -6
+```
+
+```output
+%code%
+%create-prompt%
+%create-title%
+%explain-shell%
+%functions%
+%shell%
+```
+
+```bash
+echo "test" | aichat --dry-run -r %code% 2>/dev/null
+```
+
+````output
+Provide only code without comments or explanations.
+### INPUT:
+async sleep in js
+### OUTPUT:
+```javascript
+async function timeout(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+```
+
+test
+````
+
+All tests pass and the CLI binary is functional.

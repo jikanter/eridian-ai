@@ -1,133 +1,123 @@
 # Schema-Aware Stdin/Stdout for Validated Pipelines
 
-*2026-02-28T19:45:08Z by Showboat 0.6.1*
-<!-- showboat-id: d83e2824-daa9-4565-9d8d-21a016c54b28 -->
+*2026-03-30T15:42:55Z by Showboat 0.6.1*
+<!-- showboat-id: 331f4db4-4219-4e7f-81f2-36e1f1147eaa -->
 
-This feature adds `input_schema` and `output_schema` fields to aichat roles, enabling JSON Schema validation on both the input piped into a role and the output produced by the LLM. This turns aichat into a building block for validated, composable pipelines where structured data flows through roles with guaranteed contracts.
+Adds `input_schema` and `output_schema` fields to roles for JSON Schema validation on both input and output. This turns aichat into a building block for validated, composable pipelines.
 
-## How It Works
+**`input_schema`** — validates stdin/input before the LLM call  
+**`output_schema`** — validates LLM output (with auto-retry on failure)  
+Both accept standard JSON Schema objects in YAML frontmatter.
 
-A role definition can now include `input_schema` and/or `output_schema` in its YAML frontmatter. When present:
-
-1. **Input validation** — stdin is validated against `input_schema` before the prompt is sent to the LLM
-2. **System prompt injection** — the `output_schema` is automatically appended to the system prompt, instructing the LLM to respond with conformant JSON
-3. **Output validation** — the LLM response is validated against `output_schema` before being written to stdout
-
-If validation fails at either end, aichat exits with an error — no silent corruption.
-
-## Role Definition
-
-Here's an example role with an output schema that enforces structured entity extraction:
+## Unit Tests
 
 ```bash
-cat <<'ROLE'
----
-model: openai:gpt-4o
-output_schema:
-  type: object
-  properties:
-    entities:
-      type: array
-      items:
-        type: object
-        properties:
-          name:
-            type: string
-          type:
-            type: string
-        required: [name, type]
-  required: [entities]
----
-Extract all named entities from the input text.
-ROLE
+cargo test -- config::role::tests::test_validate_schema_success config::role::tests::test_validate_schema_failure config::role::tests::test_validate_schema_not_json config::role::tests::test_role_with_schemas config::role::tests::test_role_without_schemas config::role::tests::test_set_input_schema config::role::tests::test_set_output_schema 2>&1 | grep "^test config" | sort
 ```
 
 ```output
----
-model: openai:gpt-4o
-output_schema:
-  type: object
-  properties:
-    entities:
-      type: array
-      items:
-        type: object
-        properties:
-          name:
-            type: string
-          type:
-            type: string
-        required: [name, type]
-  required: [entities]
----
-Extract all named entities from the input text.
-```
-
-## Schema Validation in Code
-
-The validation logic uses the `jsonschema` crate. Let's look at the unit tests that prove it works:
-
-```bash
-cargo test test_validate_schema -- --nocapture 2>&1
-```
-
-```output
-   Compiling aichat v0.31.0-mcp (/Volumes/ExternalData/admin/Developer/Projects/aichat/.claude/worktrees/phase-3)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.76s
-     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
-
-running 3 tests
+test config::role::tests::test_role_with_schemas ... ok
+test config::role::tests::test_role_without_schemas ... ok
+test config::role::tests::test_set_input_schema ... ok
+test config::role::tests::test_set_output_schema ... ok
+test config::role::tests::test_validate_schema_failure ... ok
 test config::role::tests::test_validate_schema_not_json ... ok
 test config::role::tests::test_validate_schema_success ... ok
-test config::role::tests::test_validate_schema_failure ... ok
-
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 90 filtered out; finished in 0.03s
-
 ```
 
-All three validation paths pass: valid JSON matching the schema, JSON missing a required field, and non-JSON input.
-
-## Role Parsing Tests
-
-The role parser correctly picks up schema fields from YAML frontmatter:
-
 ```bash
-cargo test test_role_with_schemas -- --nocapture 2>&1 && cargo test test_role_without_schemas -- --nocapture 2>&1
+cargo test --test compatibility -- schema_validation 2>&1 | grep "^test " | grep -v "^test result" | sort
 ```
 
 ```output
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
-     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
-
-running 1 test
-test config::role::tests::test_role_with_schemas ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
-
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
-     Running unittests src/main.rs (target/debug/deps/aichat-36ac9b2d8a5415a1)
-
-running 1 test
-test config::role::tests::test_role_without_schemas ... ok
-
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 92 filtered out; finished in 0.01s
-
+test schema_validation::test_validate_invalid_json ... ok
+test schema_validation::test_validate_missing_required_field ... ok
+test schema_validation::test_validate_schema_with_enum ... ok
+test schema_validation::test_validate_type_mismatch ... ok
+test schema_validation::test_validate_valid_json_against_schema ... ok
+test typed_errors::test_schema_validation_error_display ... ok
 ```
 
-Roles with schemas parse correctly and expose the schema via `input_schema()` / `output_schema()` accessors. Roles without schemas return `None` — no behavioral change for existing roles.
+## Integration Tests
 
-## Pipeline Example
+Create a role with schemas and test validation via `--dry-run`:
 
-With this feature, you can build validated Unix pipelines:
+```bash
+ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/test-schema-demo.md" <<'ROLE'
+---
+input_schema:
+  type: object
+  properties:
+    query:
+      type: string
+  required: [query]
+output_schema:
+  type: object
+  properties:
+    answer:
+      type: string
+    confidence:
+      type: number
+  required: [answer, confidence]
+---
+Answer the query and provide confidence. __INPUT__
+ROLE
+echo "{\"query\": \"What is 2+2?\"}" | aichat --dry-run -r test-schema-demo 2>/dev/null
+rm "$ROLES_DIR/test-schema-demo.md"
+```
 
-    echo '{"text": "Alice met Bob in Paris"}' | aichat -r entity-extractor | aichat -r summarizer
+```output
+---
+input_schema:
+  type: object
+  properties:
+    query:
+      type: string
+  required:
+  - query
+output_schema:
+  type: object
+  properties:
+    answer:
+      type: string
+    confidence:
+      type: number
+  required:
+  - answer
+  - confidence
+---
 
-Each stage validates its input and output against its declared schemas. If the LLM hallucinates malformed JSON or the wrong structure, the pipeline fails fast with a clear error instead of silently propagating garbage.
+Answer the query and provide confidence. {"query": "What is 2+2?"}
+```
 
-## Implementation Summary
+The schema-enabled role loads and validates the JSON input against `input_schema` before constructing the prompt. The output_schema instructions are injected into the system prompt automatically.
 
-| File | Change |
-|------|--------|
-| `src/config/role.rs` | Added `input_schema` / `output_schema` fields, schema-aware system prompt injection, `validate_schema()` function, and export serialization via `serde_yaml` |
-| `src/main.rs` | Wired up input validation before LLM call and output validation after, with direct stdout printing for schema-validated output |
-| `Cargo.toml` | Added `jsonschema` dependency |
+Test input validation failure with invalid input:
+
+```bash
+ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/test-schema-fail.md" <<'ROLE'
+---
+input_schema:
+  type: object
+  properties:
+    query:
+      type: string
+  required: [query]
+---
+Answer: __INPUT__
+ROLE
+echo "not json at all" | aichat --dry-run -r test-schema-fail 2>&1; echo "exit: $?"
+rm "$ROLES_DIR/test-schema-fail.md"
+```
+
+```output
+Error: Schema input validation failed: not valid JSON
+
+Caused by:
+    expected ident at line 1 column 2
+exit: 8
+```
+
+Invalid input is caught by schema validation before the LLM call, providing clear error feedback.

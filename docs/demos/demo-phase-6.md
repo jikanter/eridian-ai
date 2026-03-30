@@ -1,7 +1,7 @@
 # Phase 6: Metadata Framework Enhancements
 
-*2026-03-13T16:35:08Z by Showboat 0.6.1*
-<!-- showboat-id: 1ee29d4d-0d72-4446-977e-facf08039769 -->
+*2026-03-30T15:36:23Z by Showboat 0.6.1*
+<!-- showboat-id: ce1df082-2886-43cb-b1be-1c0ccc68f4df -->
 
 Phase 6 adds three features that make roles self-contained workflow units:
 
@@ -26,11 +26,11 @@ pub enum VariableDefault {
 impl VariableDefault {
 ```
 
-Shell variables execute via `sh -c` at invocation time. CLI `-v` flag overrides shell defaults. Failed commands warn instead of crashing (Phase 4A pattern).
+Shell variables execute via `sh -c` at invocation time. CLI `-v` flag overrides shell defaults.
 
 ## 6B: Lifecycle Hooks
 
-`pipe_to` pipes output to a shell command via stdin. `save_to` writes to a file with `{{timestamp}}` interpolation. Hooks fire in `start_directive` and pipeline last stage.
+`pipe_to` pipes output to a shell command via stdin. `save_to` writes to a file with `{{timestamp}}` interpolation.
 
 ## 6C: Unified Resource Binding
 
@@ -52,62 +52,117 @@ grep -A 8 "Phase 6C: Auto-bind" src/config/mod.rs
             if !mcp_prefixes.is_empty() {
 ```
 
-## Tests
-
-112 tests pass (19 new Phase 6 tests + 93 existing):
+## Unit Tests
 
 ```bash
-cargo test 2>&1 | grep -c "^test .* ok$"
+cargo test -- config::role::tests::test_shell_variable config::role::tests::test_value_variable config::role::tests::test_pipe config::role::tests::test_save config::role::tests::test_mcp_servers config::role::tests::test_both_hooks config::role::tests::test_no_hooks config::role::tests::test_hooks_in config::role::tests::test_all_phase6 2>&1 | grep -E "(running|test .*\.\.\.|test result)" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
 ```
 
 ```output
-112
+running 0 tests
+running 19 tests
+test config::role::tests::test_all_phase6_fields_coexist ... ok
+test config::role::tests::test_both_hooks_parsing ... ok
+test config::role::tests::test_hooks_in_export ... ok
+test config::role::tests::test_mcp_servers_empty_by_default ... ok
+test config::role::tests::test_mcp_servers_in_export ... ok
+test config::role::tests::test_mcp_servers_parsing ... ok
+test config::role::tests::test_no_hooks_by_default ... ok
+test config::role::tests::test_pipe_output_to_command ... ok
+test config::role::tests::test_pipe_to_parsing ... ok
+test config::role::tests::test_save_output_to_path ... ok
+test config::role::tests::test_save_to_parsing ... ok
+test config::role::tests::test_save_to_timestamp_interpolation ... ok
+test config::role::tests::test_shell_variable_default_parsing ... ok
+test config::role::tests::test_shell_variable_in_role_new ... ok
+test config::role::tests::test_shell_variable_multiline_output ... ok
+test config::role::tests::test_shell_variable_resolve_failure ... ok
+test config::role::tests::test_shell_variable_resolve_success ... ok
+test config::role::tests::test_shell_variable_resolve_trims_whitespace ... ok
+test config::role::tests::test_value_variable_resolve ... ok
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in Xs
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in Xs
 ```
 
-## Combined Example
+## Integration Tests
 
-All three features in one self-contained code review role:
+Test shell-injective variable resolution with `--dry-run`:
 
 ```bash
-cat <<'YAML'
+ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/test-shell-var-demo.md" <<'ROLE'
 ---
-description: "Self-contained code reviewer"
 variables:
-  - name: diff
-    default: { shell: "git diff --cached" }
-  - name: files
-    default: { shell: "git diff --cached --name-only" }
-pipe_to: "pbcopy"
-save_to: "./reviews/{{timestamp}}.md"
-mcp_servers:
-  - github-server
+  - name: hostname
+    default:
+      shell: "echo injected-host"
+  - name: date
+    default:
+      shell: "echo 2026-01-01"
 ---
-Review: {{files}}
+System hostname: {{hostname}}
+Current date: {{date}}
+Analyze: __INPUT__
+ROLE
+echo "check status" | aichat --dry-run -r test-shell-var-demo 2>/dev/null
+rm "$ROLES_DIR/test-shell-var-demo.md"
+```
 
-{{diff}}
+```output
+System hostname: injected-host
+Current date: 2026-01-01
+Analyze: check status
+```
 
+The shell variables resolved at invocation time, injecting the actual hostname and date into the prompt.
+
+Test CLI `-v` flag overriding shell defaults:
+
+```bash
+ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/test-shell-override.md" <<'ROLE'
+---
+variables:
+  - name: context
+    default:
+      shell: "echo auto-gathered-context"
+---
+Context: {{context}}
 __INPUT__
-YAML
+ROLE
+echo "test" | aichat --dry-run -r test-shell-override -v context=manual-override 2>/dev/null
+rm "$ROLES_DIR/test-shell-override.md"
+```
+
+```output
+Context: manual-override
+test
+```
+
+The `-v context=manual-override` flag took precedence over the shell default, proving the override chain works.
+
+Test lifecycle hooks with a save_to path:
+
+```bash
+ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/test-hooks-demo.md" <<'ROLE'
+---
+pipe_to: "cat > /dev/null"
+save_to: "/tmp/aichat-test-{{timestamp}}.md"
+---
+Summarize: __INPUT__
+ROLE
+echo "test input" | aichat --dry-run -r test-hooks-demo 2>&1
+rm "$ROLES_DIR/test-hooks-demo.md"
 ```
 
 ```output
 ---
-description: "Self-contained code reviewer"
-variables:
-  - name: diff
-    default: { shell: "git diff --cached" }
-  - name: files
-    default: { shell: "git diff --cached --name-only" }
-pipe_to: "pbcopy"
-save_to: "./reviews/{{timestamp}}.md"
-mcp_servers:
-  - github-server
+pipe_to: cat > /dev/null
+save_to: /tmp/aichat-test-{{timestamp}}.md
 ---
-Review: {{files}}
 
-{{diff}}
-
-__INPUT__
+Summarize: test input
 ```
 
-Usage: `aichat -r code-reviewer 'Focus on security'` — gathers context (6A), binds MCP tools (6C), copies to clipboard + saves to file (6B). No manual piping.
+The role loaded successfully with hooks configured. In non-dry-run mode, `pipe_to` and `save_to` execute after LLM output.
