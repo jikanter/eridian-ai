@@ -1,0 +1,27 @@
+# Phase 13: Server — Role & Pipeline Execution
+
+**Status:** Planned
+**Epic:** 3 — Server Pipeline Engine
+**Design:** [epic-3.md](../analysis/epic-3.md)
+
+---
+
+> **[ADDED 2026-03-16]** Exposes AIChat's unique capabilities over HTTP. Turns the server from a
+> commodity proxy into a pipeline execution engine and role-as-API gateway.
+> Full design: [`docs/analysis/epic-3.md`](../analysis/epic-3.md)
+
+| Item | Status | Notes |
+|---|---|---|
+| 13A. Roles as virtual models | — | Roles appear as `role:{name}` in `/v1/models` listing. When `POST /v1/chat/completions` receives `"model": "role:classify"`, the server resolves the role, executes full machinery (schema validation, pipeline, tools), returns standard OpenAI response. Zero-change OpenWebUI integration — roles become selectable "models." |
+| 13B. Role invocation endpoint (non-streaming) | — | `POST /v1/roles/{name}/invoke` accepts `{"input": "...", "variables": {...}, "trace": true}`. Validates against `input_schema`, executes role/pipeline, validates `output_schema`, returns output with cost and trace metadata. 422 for schema failures. |
+| 13C. Role invocation endpoint (streaming) | — | Streaming variant of 13B with SSE stage-boundary events: `stage_start`, `delta`, `stage_end`, `done`. Requires refactoring `pipe.rs` to emit events via callback/channel instead of printing to stdout. |
+| 13D. Pipeline execution endpoint | — | `POST /v1/pipelines/run` accepts named pipeline or inline `{"stages": [...]}`. Reuses `pipe.rs:run_pipeline_role()`. Returns Phase 8A2 trace envelope format. |
+| 13E. Batch processing endpoint | — | `POST /v1/batch` accepts `{"role": "classify", "records": [...], "parallel": 4}`. Returns JSONL-shaped results. HTTP equivalent of `--each`. Per-record errors, not per-batch. Depends on Phase 8B (`--each`) landing first. |
+
+**Parallelization:** 13A is independent. 13B is independent (non-streaming path). 13C depends on 13B and shares a `pipe.rs` refactor with 13D. 13D is independent of 13A/13B. 13E depends on Phase 8B.
+
+**Recommended order:** 13A → 13B → 13D → 13C → 13E
+
+**Pipe.rs refactoring note:** 13C and 13D both need `pipe.rs` to emit stage events rather than writing to stdout. This is a shared refactor: add an optional `stage_event_sender: Option<Sender<StageEvent>>` parameter to `run_stage`. When present, emit events. When absent, print as today. This preserves CLI behavior.
+
+**Key files:** `src/serve.rs` (all items), `src/pipe.rs` (13C/13D stage-event refactor), `src/config/role.rs` (13A role resolution).
