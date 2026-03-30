@@ -5,11 +5,12 @@
 ## Constraints
 
 ### Hard (Non-negotiable)
-- This tool should be cost conscious. In other words, it should help the llm to accomplish a task in the least amount of tokens possible.
+- **IMPORTANT:** This tool should be cost conscious. In other words, it should help the llm to accomplish a task in the least amount of tokens possible.
 
 ### Soft (Preferred)
 - This tool should function using the "one tool per job" unix ethos
 - This tool should use the 'showboat' command to demo its work. Use the output of `showboat --help` to understand how to implement.
+- When running `showboat note`, output in a deterministic manner. This is important for `showboat validate` to work.
 
 ### Ask First (Requires approval)
 - No desktop UI, all Ux work should happen

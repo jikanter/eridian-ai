@@ -56,22 +56,22 @@ Always respond in markdown. Include type annotations.
 Relevant unit tests covering frontmatter parsing, metadata merging, cycle detection, and prompt ordering:
 
 ```bash
-cargo test -- config::role::tests::test_parse_raw_frontmatter_extends config::role::tests::test_parse_raw_frontmatter_include config::role::tests::test_metadata_merge config::role::tests::test_prompt_ordering config::role::tests::test_cycle_detection config::role::tests::test_resolve_builtin_passthrough config::role::tests::test_compose_role_content_no_metadata config::role::tests::test_compose_role_content_with_metadata 2>&1 | grep -E "^(running|test |test result)"
+cargo test -- config::role::tests::test_parse_raw_frontmatter_extends config::role::tests::test_parse_raw_frontmatter_include config::role::tests::test_metadata_merge config::role::tests::test_prompt_ordering config::role::tests::test_cycle_detection config::role::tests::test_resolve_builtin_passthrough config::role::tests::test_compose_role_content_no_metadata config::role::tests::test_compose_role_content_with_metadata 2>&1 | grep -E "^(running|test |test result)" | sort | sed "s/finished in [0-9.]*s/finished in Xs/"
 ```
 
 ```output
+running 0 tests
 running 8 tests
 test config::role::tests::test_compose_role_content_no_metadata ... ok
-test config::role::tests::test_prompt_ordering ... ok
-test config::role::tests::test_metadata_merge ... ok
-test config::role::tests::test_cycle_detection ... ok
-test config::role::tests::test_resolve_builtin_passthrough ... ok
-test config::role::tests::test_parse_raw_frontmatter_include ... ok
-test config::role::tests::test_parse_raw_frontmatter_extends ... ok
 test config::role::tests::test_compose_role_content_with_metadata ... ok
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 136 filtered out; finished in 0.02s
-running 0 tests
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
+test config::role::tests::test_cycle_detection ... ok
+test config::role::tests::test_metadata_merge ... ok
+test config::role::tests::test_parse_raw_frontmatter_extends ... ok
+test config::role::tests::test_parse_raw_frontmatter_include ... ok
+test config::role::tests::test_prompt_ordering ... ok
+test config::role::tests::test_resolve_builtin_passthrough ... ok
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in Xs
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 136 filtered out; finished in Xs
 ```
 
 ## Integration Tests
@@ -150,4 +150,4 @@ Always respond in markdown. Include type annotations.
 hello
 ````
 
-The `include` mixin also prepends the `%code%` prompt before the child's own instructions — same composition ordering, different semantics. Both directives produce deterministic, verifiable prompt composition.
+The `include` mixin also prepends the `%code%` prompt before the child's own instructions — same composition ordering, different semantics.
