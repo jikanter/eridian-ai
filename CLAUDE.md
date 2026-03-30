@@ -5,7 +5,7 @@
 ## Constraints
 
 ### Hard (Non-negotiable)
-- **IMPORTANT:** This tool should be cost conscious. In other words, it should help the llm to accomplish a task in the least amount of tokens possible.
+- **IMPORTANT:** This tool should be cost-conscious. In other words, it should help the llm to accomplish a task in the least amount of tokens possible.
 
 ### Soft (Preferred)
 - This tool should function using the "one tool per job" unix ethos
