@@ -172,6 +172,19 @@ pub struct Config {
     #[serde(default)]
     pub mcp_servers: IndexMap<String, McpServerConfig>,
 
+    /// MCP schema cache TTL in seconds (default: 3600)
+    #[serde(default = "default_mcp_cache_ttl")]
+    pub mcp_cache_ttl: u64,
+    /// MCP server startup timeout in seconds (default: 30)
+    #[serde(default = "default_mcp_startup_timeout")]
+    pub mcp_startup_timeout: u64,
+    /// MCP tool call timeout in seconds (default: 120, 0 = no timeout)
+    #[serde(default = "default_mcp_call_timeout")]
+    pub mcp_call_timeout: u64,
+    /// Maximum concurrent MCP connections (default: 10)
+    #[serde(default = "default_mcp_max_connections")]
+    pub mcp_max_connections: usize,
+
     #[serde(skip)]
     pub show_cost: bool,
     #[serde(skip)]
@@ -224,6 +237,19 @@ pub struct DeferredToolState {
 
 const DEFERRED_TOOL_THRESHOLD: usize = 15;
 
+fn default_mcp_cache_ttl() -> u64 {
+    3600
+}
+fn default_mcp_startup_timeout() -> u64 {
+    30
+}
+fn default_mcp_call_timeout() -> u64 {
+    120
+}
+fn default_mcp_max_connections() -> usize {
+    10
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -274,6 +300,10 @@ impl Default for Config {
 
             clients: vec![],
             mcp_servers: Default::default(),
+            mcp_cache_ttl: default_mcp_cache_ttl(),
+            mcp_startup_timeout: default_mcp_startup_timeout(),
+            mcp_call_timeout: default_mcp_call_timeout(),
+            mcp_max_connections: default_mcp_max_connections(),
 
             show_cost: false,
             run_log: None,
@@ -346,7 +376,11 @@ impl Config {
 
         // Initialize MCP connection pool and load tool declarations from configured servers
         if !config.mcp_servers.is_empty() && !info_flag {
-            let pool = McpConnectionPool::new(config.mcp_servers.clone());
+            let pool = McpConnectionPool::new(
+                config.mcp_servers.clone(),
+                config.mcp_startup_timeout,
+                config.mcp_max_connections,
+            );
             match pool.all_tool_declarations().await {
                 Ok(decls) => {
                     if !decls.is_empty() {
@@ -2711,6 +2745,18 @@ impl Config {
         }
         if let Some(Some(v)) = read_env_value::<u64>(&get_env_name("tool_timeout")) {
             self.tool_timeout = v;
+        }
+        if let Some(Some(v)) = read_env_value::<u64>(&get_env_name("mcp_cache_ttl")) {
+            self.mcp_cache_ttl = v;
+        }
+        if let Some(Some(v)) = read_env_value::<u64>(&get_env_name("mcp_startup_timeout")) {
+            self.mcp_startup_timeout = v;
+        }
+        if let Some(Some(v)) = read_env_value::<u64>(&get_env_name("mcp_call_timeout")) {
+            self.mcp_call_timeout = v;
+        }
+        if let Some(Some(v)) = read_env_value::<usize>(&get_env_name("mcp_max_connections")) {
+            self.mcp_max_connections = v;
         }
         if let Some(v) = read_env_value::<String>(&get_env_name("summarize_prompt")) {
             self.summarize_prompt = v;

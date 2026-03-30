@@ -24,14 +24,17 @@ mod streamable_http;
 pub struct McpConnection {
     client: RunningService<RoleClient, ()>,
     tools: Vec<Tool>,
+    last_used: std::sync::atomic::AtomicI64,
 }
 
 impl McpConnection {
     /// Spawn an MCP server process and perform the initialize handshake.
+    /// `startup_timeout` is in seconds (0 = no timeout).
     pub async fn connect(
         command: &str,
         extra_args: &[String],
         envs: HashMap<String, String>,
+        startup_timeout: u64,
     ) -> Result<Self> {
         let parts = shell_words::split(command)
             .with_context(|| format!("Invalid MCP server command: {command}"))?;
@@ -57,7 +60,23 @@ impl McpConnection {
                 )
             })?;
 
-        let client = ().serve(transport).await.map_err(|e| {
+        let handshake = ().serve(transport);
+        let client = if startup_timeout > 0 {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(startup_timeout),
+                handshake,
+            )
+            .await
+            .map_err(|_| {
+                anyhow!(
+                    "MCP server \"{command}\" startup timed out after {startup_timeout}s\n\
+                     hint: increase mcp_startup_timeout or check the server"
+                )
+            })?
+        } else {
+            handshake.await
+        }
+        .map_err(|e| {
             anyhow!(
                 "MCP server \"{command}\" did not complete initialization: {e}\n\
                  hint: the server may require additional configuration"
@@ -68,7 +87,11 @@ impl McpConnection {
             anyhow!("Failed to list tools from MCP server \"{command}\": {e}")
         })?;
 
-        Ok(Self { client, tools })
+        Ok(Self {
+            client,
+            tools,
+            last_used: std::sync::atomic::AtomicI64::new(chrono::Utc::now().timestamp()),
+        })
     }
 
     /// Connect to a remote MCP server over HTTP/SSE (Streamable HTTP transport).
@@ -89,7 +112,23 @@ impl McpConnection {
             anyhow!("Failed to list tools from remote MCP server \"{endpoint}\": {e}")
         })?;
 
-        Ok(Self { client, tools })
+        Ok(Self {
+            client,
+            tools,
+            last_used: std::sync::atomic::AtomicI64::new(chrono::Utc::now().timestamp()),
+        })
+    }
+
+    fn touch(&self) {
+        self.last_used.store(
+            chrono::Utc::now().timestamp(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    fn idle_seconds(&self) -> i64 {
+        chrono::Utc::now().timestamp()
+            - self.last_used.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn tools(&self) -> &[Tool] {
@@ -127,7 +166,11 @@ impl McpConnection {
 pub struct McpConnectionPool {
     connections: RwLock<HashMap<String, McpConnection>>,
     configs: IndexMap<String, McpServerConfig>,
+    pub startup_timeout: u64,
+    pub max_connections: usize,
 }
+
+const IDLE_TIMEOUT_SECS: i64 = 300; // 5 minutes
 
 impl std::fmt::Debug for McpConnectionPool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -138,19 +181,56 @@ impl std::fmt::Debug for McpConnectionPool {
 }
 
 impl McpConnectionPool {
-    pub fn new(configs: IndexMap<String, McpServerConfig>) -> Self {
+    pub fn new(
+        configs: IndexMap<String, McpServerConfig>,
+        startup_timeout: u64,
+        max_connections: usize,
+    ) -> Self {
         Self {
             connections: RwLock::new(HashMap::new()),
             configs,
+            startup_timeout,
+            max_connections,
         }
     }
 
     /// Get or lazily create a connection to a named MCP server.
+    /// Evicts idle connections (>5 min) and enforces max_connections limit.
     async fn get_or_connect(&self, name: &str) -> Result<()> {
+        // Check for existing non-stale connection
         {
             let conns = self.connections.read().await;
-            if conns.contains_key(name) {
-                return Ok(());
+            if let Some(conn) = conns.get(name) {
+                if conn.idle_seconds() < IDLE_TIMEOUT_SECS {
+                    conn.touch();
+                    return Ok(());
+                }
+            }
+        }
+
+        // Remove stale connection if present
+        {
+            let mut conns = self.connections.write().await;
+            if let Some(conn) = conns.get(name) {
+                if conn.idle_seconds() < IDLE_TIMEOUT_SECS {
+                    conn.touch();
+                    return Ok(());
+                }
+            }
+            if let Some(old) = conns.remove(name) {
+                let _ = old.shutdown().await;
+            }
+        }
+
+        // Check max connections limit before creating new
+        {
+            let conns = self.connections.read().await;
+            if conns.len() >= self.max_connections {
+                bail!(
+                    "MCP connection limit reached ({}/{}). Close unused servers or increase mcp_max_connections.",
+                    conns.len(),
+                    self.max_connections,
+                );
             }
         }
 
@@ -163,7 +243,7 @@ impl McpConnectionPool {
             McpConnection::connect_remote(endpoint, server_config.headers.clone()).await?
         } else {
             let envs = resolve_env_vars(&server_config.env);
-            McpConnection::connect(&server_config.command, &server_config.args, envs).await?
+            McpConnection::connect(&server_config.command, &server_config.args, envs, self.startup_timeout).await?
         };
 
         let mut conns = self.connections.write().await;
@@ -205,6 +285,7 @@ impl McpConnectionPool {
             _ => None,
         };
         let result = conn.call_tool(tool_name, args).await?;
+        conn.touch();
 
         let text = result
             .content
@@ -379,16 +460,18 @@ async fn connect_for_cli(server_cmd: &str) -> Result<McpConnection> {
     if is_remote_endpoint(server_cmd) {
         McpConnection::connect_remote(server_cmd, Default::default()).await
     } else {
-        McpConnection::connect(server_cmd, &[], Default::default()).await
+        McpConnection::connect(server_cmd, &[], Default::default(), 30).await
     }
 }
 
 async fn cmd_list_tools(cli: &Cli, server_cmd: &str) -> Result<()> {
-    // Check cache first
-    if let Some(cached) = read_cache(server_cmd) {
-        let output = format_tools_output(&cached, cli.output_format);
-        println!("{output}");
-        return Ok(());
+    // Check cache first (skip if --refresh)
+    if !cli.refresh {
+        if let Some(cached) = read_cache(server_cmd) {
+            let output = format_tools_output(&cached, cli.output_format);
+            println!("{output}");
+            return Ok(());
+        }
     }
 
     let conn = connect_for_cli(server_cmd).await?;
@@ -478,17 +561,65 @@ fn extract_text_content(result: &CallToolResult) -> String {
 }
 
 fn parse_call_arguments(cli: &Cli) -> Result<Option<Map<String, Value>>> {
-    match &cli.call_json {
+    // Start from --json if provided, or empty object
+    let mut map: Map<String, Value> = match &cli.call_json {
         Some(json_str) => {
             let val: Value = serde_json::from_str(json_str)
                 .with_context(|| format!("Invalid JSON in --json: {json_str}"))?;
             match val {
-                Value::Object(map) => Ok(Some(map)),
+                Value::Object(m) => m,
                 _ => bail!("--json must be a JSON object, got: {val}"),
             }
         }
-        None => Ok(None),
+        None => Map::new(),
+    };
+
+    // Merge --arg KEY=VALUE pairs (overrides --json per Rule 5)
+    let mut array_keys: HashMap<String, Vec<Value>> = HashMap::new();
+    for arg in &cli.call_args {
+        let (key, val_str) = arg
+            .split_once('=')
+            .ok_or_else(|| anyhow!("Invalid --arg format '{arg}': expected KEY=VALUE"))?;
+        let value = parse_scalar_value(val_str);
+        array_keys.entry(key.to_string()).or_default().push(value);
     }
+
+    for (key, values) in array_keys {
+        if values.len() == 1 {
+            map.insert(key, values.into_iter().next().unwrap());
+        } else {
+            // Repeated key -> JSON array (Rule 2)
+            map.insert(key, Value::Array(values));
+        }
+    }
+
+    if map.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(map))
+    }
+}
+
+/// Parse a string value into a JSON scalar, attempting number/bool detection.
+fn parse_scalar_value(s: &str) -> Value {
+    if s == "true" {
+        return Value::Bool(true);
+    }
+    if s == "false" {
+        return Value::Bool(false);
+    }
+    if s == "null" {
+        return Value::Null;
+    }
+    if let Ok(n) = s.parse::<i64>() {
+        return Value::Number(n.into());
+    }
+    if let Ok(n) = s.parse::<f64>() {
+        if let Some(n) = serde_json::Number::from_f64(n) {
+            return Value::Number(n);
+        }
+    }
+    Value::String(s.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -510,4 +641,258 @@ pub async fn eval_mcp_tool(config: &GlobalConfig, call_name: &str, arguments: Va
     };
 
     pool.call_tool(server_name, tool_name, arguments).await
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+    use serde_json::json;
+
+    // ---- Feature 2: parse_scalar_value ----
+
+    #[test]
+    fn test_parse_scalar_value_string() {
+        assert_eq!(parse_scalar_value("hello"), Value::String("hello".into()));
+    }
+
+    #[test]
+    fn test_parse_scalar_value_integer() {
+        assert_eq!(parse_scalar_value("42"), json!(42));
+    }
+
+    #[test]
+    fn test_parse_scalar_value_negative_integer() {
+        assert_eq!(parse_scalar_value("-7"), json!(-7));
+    }
+
+    #[test]
+    fn test_parse_scalar_value_float() {
+        assert_eq!(parse_scalar_value("3.14"), json!(3.14));
+    }
+
+    #[test]
+    fn test_parse_scalar_value_bool_true() {
+        assert_eq!(parse_scalar_value("true"), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_parse_scalar_value_bool_false() {
+        assert_eq!(parse_scalar_value("false"), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_parse_scalar_value_null() {
+        assert_eq!(parse_scalar_value("null"), Value::Null);
+    }
+
+    #[test]
+    fn test_parse_scalar_value_numeric_string() {
+        // A string that looks like a number but has extra chars stays a string
+        assert_eq!(
+            parse_scalar_value("42abc"),
+            Value::String("42abc".into())
+        );
+    }
+
+    // ---- Feature 2: parse_call_arguments with --arg ----
+
+    fn make_cli_with_args(call_json: Option<&str>, call_args: Vec<&str>) -> Cli {
+        let mut cli = Cli::parse_from(["aichat", "--mcp-server", "test", "--call", "tool"]);
+        cli.call_json = call_json.map(String::from);
+        cli.call_args = call_args.into_iter().map(String::from).collect();
+        cli
+    }
+
+    #[test]
+    fn test_parse_args_single_kv() {
+        let cli = make_cli_with_args(None, vec!["path=/tmp/file.txt"]);
+        let result = parse_call_arguments(&cli).unwrap();
+        assert_eq!(result, Some(serde_json::from_str::<Map<String, Value>>(
+            r#"{"path": "/tmp/file.txt"}"#
+        ).unwrap().into()));
+    }
+
+    #[test]
+    fn test_parse_args_multiple_kv() {
+        let cli = make_cli_with_args(None, vec!["title=Bug", "priority=3"]);
+        let result = parse_call_arguments(&cli).unwrap().unwrap();
+        assert_eq!(result["title"], json!("Bug"));
+        assert_eq!(result["priority"], json!(3));
+    }
+
+    #[test]
+    fn test_parse_args_repeated_key_becomes_array() {
+        let cli = make_cli_with_args(None, vec!["label=bug", "label=urgent"]);
+        let result = parse_call_arguments(&cli).unwrap().unwrap();
+        assert_eq!(result["label"], json!(["bug", "urgent"]));
+    }
+
+    #[test]
+    fn test_parse_args_json_only() {
+        let cli = make_cli_with_args(Some(r#"{"title": "Bug"}"#), vec![]);
+        let result = parse_call_arguments(&cli).unwrap().unwrap();
+        assert_eq!(result["title"], json!("Bug"));
+    }
+
+    #[test]
+    fn test_parse_args_hybrid_merge() {
+        let cli = make_cli_with_args(Some(r#"{"body": "Details"}"#), vec!["title=Bug"]);
+        let result = parse_call_arguments(&cli).unwrap().unwrap();
+        assert_eq!(result["title"], json!("Bug"));
+        assert_eq!(result["body"], json!("Details"));
+    }
+
+    #[test]
+    fn test_parse_args_override_json_with_arg() {
+        // Rule 5: --arg overrides --json
+        let cli = make_cli_with_args(Some(r#"{"title": "Old"}"#), vec!["title=New"]);
+        let result = parse_call_arguments(&cli).unwrap().unwrap();
+        assert_eq!(result["title"], json!("New"));
+    }
+
+    #[test]
+    fn test_parse_args_invalid_format() {
+        let cli = make_cli_with_args(None, vec!["noequals"]);
+        assert!(parse_call_arguments(&cli).is_err());
+    }
+
+    #[test]
+    fn test_parse_args_empty() {
+        let cli = make_cli_with_args(None, vec![]);
+        let result = parse_call_arguments(&cli).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_args_value_with_equals() {
+        // KEY=VALUE where VALUE itself contains =
+        let cli = make_cli_with_args(None, vec!["query=a=b"]);
+        let result = parse_call_arguments(&cli).unwrap().unwrap();
+        assert_eq!(result["query"], json!("a=b"));
+    }
+
+    // ---- Feature 1: --refresh flag existence ----
+
+    #[test]
+    fn test_cli_refresh_flag_defaults_false() {
+        let cli = Cli::parse_from(["aichat", "--mcp-server", "test", "--list-tools"]);
+        assert!(!cli.refresh);
+    }
+
+    #[test]
+    fn test_cli_refresh_flag_set() {
+        let cli = Cli::parse_from([
+            "aichat",
+            "--mcp-server",
+            "test",
+            "--list-tools",
+            "--refresh",
+        ]);
+        assert!(cli.refresh);
+    }
+
+    // ---- Feature 2: --arg flag existence ----
+
+    #[test]
+    fn test_cli_arg_flag() {
+        let cli = Cli::parse_from([
+            "aichat",
+            "--mcp-server",
+            "test",
+            "--call",
+            "tool",
+            "--arg",
+            "key=val",
+        ]);
+        assert_eq!(cli.call_args, vec!["key=val"]);
+    }
+
+    #[test]
+    fn test_cli_arg_multiple() {
+        let cli = Cli::parse_from([
+            "aichat",
+            "--mcp-server",
+            "test",
+            "--call",
+            "tool",
+            "--arg",
+            "a=1",
+            "--arg",
+            "b=2",
+        ]);
+        assert_eq!(cli.call_args, vec!["a=1", "b=2"]);
+    }
+
+    // ---- Feature 3: Config fields ----
+
+    #[test]
+    fn test_config_mcp_defaults() {
+        let config = crate::config::Config::default();
+        assert_eq!(config.mcp_cache_ttl, 3600);
+        assert_eq!(config.mcp_startup_timeout, 30);
+        assert_eq!(config.mcp_call_timeout, 120);
+        assert_eq!(config.mcp_max_connections, 10);
+    }
+
+    // ---- Feature 4: McpConnection idle tracking ----
+
+    #[test]
+    fn test_mcp_connection_pool_new_with_params() {
+        let pool = McpConnectionPool::new(
+            IndexMap::new(),
+            30,  // startup_timeout
+            10,  // max_connections
+        );
+        assert_eq!(pool.startup_timeout, 30);
+        assert_eq!(pool.max_connections, 10);
+    }
+
+    // ---- Feature 5: Max connections ----
+
+    #[test]
+    fn test_pool_max_connections_stored() {
+        let pool = McpConnectionPool::new(IndexMap::new(), 30, 5);
+        assert_eq!(pool.max_connections, 5);
+    }
+
+    // ---- Existing: resolve_env_vars ----
+
+    #[test]
+    fn test_resolve_env_vars_literal() {
+        let mut env = HashMap::new();
+        env.insert("KEY".into(), "literal_value".into());
+        let resolved = resolve_env_vars(&env);
+        assert_eq!(resolved["KEY"], "literal_value");
+    }
+
+    #[test]
+    fn test_resolve_env_vars_expansion() {
+        std::env::set_var("TEST_MCP_TOKEN_12345", "secret");
+        let mut env = HashMap::new();
+        env.insert("TOKEN".into(), "${TEST_MCP_TOKEN_12345}".into());
+        let resolved = resolve_env_vars(&env);
+        assert_eq!(resolved["TOKEN"], "secret");
+        std::env::remove_var("TEST_MCP_TOKEN_12345");
+    }
+
+    // ---- Schema cache helpers ----
+
+    #[test]
+    fn test_cache_key_deterministic() {
+        let k1 = cache_key("npx server-filesystem /tmp");
+        let k2 = cache_key("npx server-filesystem /tmp");
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn test_cache_key_differs_for_different_commands() {
+        let k1 = cache_key("npx server-a");
+        let k2 = cache_key("npx server-b");
+        assert_ne!(k1, k2);
+    }
 }
