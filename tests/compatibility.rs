@@ -2549,3 +2549,683 @@ mod phase8_timeout_and_concurrency {
         assert_eq!(collected[2], json!("ok"));
     }
 }
+
+// ===========================================================================
+// 21. Tool execution — end-to-end invocation via real llm-functions
+// ===========================================================================
+//
+// These tests execute real tool binaries from the llm-functions directory,
+// validating the full flow: server response → tool call parsing → subprocess
+// execution → result formatting.
+//
+// Configurable via environment variables:
+//   AICHAT_TEST_LLM_FUNCTIONS_DIR — path to llm-functions (default: ~/Developer/Scripts/llm-functions)
+//   AICHAT_TEST_CONFIG_DIR        — path to aichat config  (default: ~/Library/Application Support/aichat)
+//
+// Prerequisites: argc, jq must be installed (used by tool runner scripts).
+// Tests skip gracefully when directories or prerequisites are missing.
+
+mod tool_execution {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    const ENV_LLM_FUNCTIONS_DIR: &str = "AICHAT_TEST_LLM_FUNCTIONS_DIR";
+    const ENV_CONFIG_DIR: &str = "AICHAT_TEST_CONFIG_DIR";
+
+    /// Monotonic counter for unique temp file names across parallel tests.
+    static EXEC_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn expand_tilde(path: &str) -> PathBuf {
+        if let Some(rest) = path.strip_prefix("~/") {
+            if let Ok(home) = std::env::var("HOME") {
+                return PathBuf::from(home).join(rest);
+            }
+        }
+        PathBuf::from(path)
+    }
+
+    fn llm_functions_dir() -> PathBuf {
+        expand_tilde(
+            &std::env::var(ENV_LLM_FUNCTIONS_DIR)
+                .unwrap_or_else(|_| "~/Developer/Scripts/llm-functions".to_string()),
+        )
+    }
+
+    fn aichat_config_dir() -> PathBuf {
+        expand_tilde(
+            &std::env::var(ENV_CONFIG_DIR)
+                .unwrap_or_else(|_| "~/Library/Application Support/aichat".to_string()),
+        )
+    }
+
+    /// Returns Some(reason) if tool execution prerequisites are not met.
+    fn check_exec_prerequisites() -> Option<String> {
+        let dir = llm_functions_dir();
+        if !dir.exists() {
+            return Some(format!(
+                "{} not found (set {} to override)",
+                dir.display(),
+                ENV_LLM_FUNCTIONS_DIR
+            ));
+        }
+        if !dir.join("bin").is_dir() {
+            return Some(format!("{}/bin not found", dir.display()));
+        }
+        for (cmd, flag) in [("argc", "--argc-version"), ("jq", "--version")] {
+            if Command::new(cmd)
+                .arg(flag)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_err()
+            {
+                return Some(format!("{cmd} not installed (required by tool scripts)"));
+            }
+        }
+        None
+    }
+
+    macro_rules! skip_if {
+        ($check:expr) => {
+            if let Some(reason) = $check {
+                eprintln!("SKIP: {reason}");
+                return;
+            }
+        };
+    }
+
+    #[allow(dead_code)]
+    struct ToolExecResult {
+        exit_code: i32,
+        /// Contents of the LLM_OUTPUT file after tool execution.
+        output: String,
+        /// Captured stderr from the subprocess.
+        stderr: String,
+    }
+
+    /// Execute a tool binary the way aichat does: prepend bin/ to PATH,
+    /// set LLM_OUTPUT to a temp file, pass JSON as the argument.
+    fn exec_tool(functions_dir: &Path, tool_name: &str, json_data: &str) -> ToolExecResult {
+        let bin_dir = functions_dir.join("bin");
+        let path = format!(
+            "{}:{}",
+            bin_dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let seq = EXEC_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let llm_output = std::env::temp_dir().join(format!(
+            "aichat-compat-{}-{}-{}",
+            tool_name,
+            std::process::id(),
+            seq
+        ));
+        let _ = std::fs::remove_file(&llm_output);
+
+        let result = Command::new(tool_name)
+            .arg(json_data)
+            .env("PATH", &path)
+            .env("LLM_OUTPUT", llm_output.display().to_string())
+            .env(
+                "LLM_ROOT_DIR",
+                functions_dir.display().to_string(),
+            )
+            .env("LLM_TOOL_NAME", tool_name)
+            .env(
+                "LLM_TOOL_CACHE_DIR",
+                functions_dir
+                    .join("cache")
+                    .join(tool_name)
+                    .display()
+                    .to_string(),
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output();
+
+        match result {
+            Ok(out) => {
+                let output =
+                    std::fs::read_to_string(&llm_output).unwrap_or_default();
+                let _ = std::fs::remove_file(&llm_output);
+                ToolExecResult {
+                    exit_code: out.status.code().unwrap_or(-1),
+                    output,
+                    stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+                }
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&llm_output);
+                ToolExecResult {
+                    exit_code: -1,
+                    output: String::new(),
+                    stderr: format!("spawn failed: {e}"),
+                }
+            }
+        }
+    }
+
+    /// Normalize tool output the way aichat's eval() does:
+    /// - non-zero exit → [TOOL_ERROR] string
+    /// - empty output  → {"status": "ok", "output": null}
+    /// - JSON output   → parsed Value
+    /// - text output   → {"output": text}
+    fn normalize_result(
+        exit_code: i32,
+        raw_output: &str,
+        tool_name: &str,
+    ) -> Value {
+        if exit_code != 0 {
+            return json!(format!(
+                "[TOOL_ERROR] {} failed (exit {}).",
+                tool_name, exit_code
+            ));
+        }
+        let trimmed = raw_output.trim();
+        if trimmed.is_empty() {
+            return json!({"status": "ok", "output": null});
+        }
+        serde_json::from_str::<Value>(trimmed)
+            .unwrap_or_else(|_| json!({"output": trimmed}))
+    }
+
+    fn load_functions_json(dir: &Path) -> Vec<Value> {
+        let path = dir.join("functions.json");
+        let content = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("cannot read {}", path.display()));
+        serde_json::from_str(&content)
+            .unwrap_or_else(|_| panic!("cannot parse {}", path.display()))
+    }
+
+    fn find_tool(tools: &[Value], name: &str) -> Option<Value> {
+        tools
+            .iter()
+            .find(|t| t["name"].as_str() == Some(name))
+            .cloned()
+    }
+
+    // ---- Directory structure ----
+
+    #[test]
+    fn test_llm_functions_dir_structure() {
+        let dir = llm_functions_dir();
+        if !dir.exists() {
+            eprintln!("SKIP: {} not found (set {ENV_LLM_FUNCTIONS_DIR})", dir.display());
+            return;
+        }
+        assert!(dir.join("bin").is_dir(), "must have bin/");
+        assert!(dir.join("scripts").is_dir(), "must have scripts/");
+        assert!(
+            dir.join("functions.json").is_file(),
+            "must have functions.json"
+        );
+        assert!(
+            dir.join("scripts/run-tool.sh").is_file(),
+            "must have scripts/run-tool.sh"
+        );
+    }
+
+    #[test]
+    fn test_real_functions_json_all_tools_valid() {
+        let dir = llm_functions_dir();
+        if !dir.exists() {
+            return;
+        }
+        let tools = load_functions_json(&dir);
+        assert!(!tools.is_empty(), "functions.json must declare at least one tool");
+        for tool in &tools {
+            let name = tool["name"]
+                .as_str()
+                .unwrap_or_else(|| panic!("tool missing name: {tool:?}"));
+            assert!(
+                tool.get("description").is_some(),
+                "tool '{name}' missing description"
+            );
+            assert!(
+                tool["parameters"].is_object(),
+                "tool '{name}' parameters must be a JSON object"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bin_entries_resolve_and_executable() {
+        let dir = llm_functions_dir();
+        if !dir.exists() {
+            return;
+        }
+        let bin = dir.join("bin");
+        let mut count = 0;
+        for entry in std::fs::read_dir(&bin).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let fname = path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            let meta = std::fs::metadata(&path)
+                .unwrap_or_else(|e| panic!("bin/{fname}: broken symlink: {e}"));
+            assert!(meta.is_file(), "bin/{fname} must resolve to a file");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert!(
+                    meta.permissions().mode() & 0o111 != 0,
+                    "bin/{fname} must be executable"
+                );
+            }
+            count += 1;
+        }
+        assert!(count > 0, "bin/ must have entries");
+    }
+
+    #[test]
+    fn test_all_declared_tools_have_bin_entry() {
+        let dir = llm_functions_dir();
+        if !dir.exists() {
+            return;
+        }
+        let tools = load_functions_json(&dir);
+        let bin = dir.join("bin");
+        let bin_names: HashSet<String> = std::fs::read_dir(&bin)
+            .unwrap()
+            .filter_map(|e| {
+                e.ok()
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+            })
+            .collect();
+        for tool in &tools {
+            let name = tool["name"].as_str().unwrap();
+            assert!(
+                bin_names.contains(name),
+                "tool '{name}' in functions.json has no bin/ entry"
+            );
+        }
+    }
+
+    // ---- Tool execution — core subprocess contract ----
+
+    #[test]
+    fn test_execute_no_arg_tool() {
+        skip_if!(check_exec_prerequisites());
+        let dir = llm_functions_dir();
+        let tools = load_functions_json(&dir);
+        if find_tool(&tools, "get_current_time").is_none() {
+            eprintln!("SKIP: get_current_time not in functions.json");
+            return;
+        }
+        let r = exec_tool(&dir, "get_current_time", "{}");
+        assert_eq!(
+            r.exit_code, 0,
+            "get_current_time should exit 0. stderr: {}",
+            r.stderr
+        );
+        assert!(
+            !r.output.trim().is_empty(),
+            "get_current_time must produce output"
+        );
+    }
+
+    #[test]
+    fn test_tool_output_written_to_llm_output_file() {
+        // Core contract: tool writes output to the $LLM_OUTPUT file.
+        skip_if!(check_exec_prerequisites());
+        let dir = llm_functions_dir();
+        let tools = load_functions_json(&dir);
+        if find_tool(&tools, "get_current_time").is_none() {
+            return;
+        }
+        let r = exec_tool(&dir, "get_current_time", "{}");
+        assert_eq!(r.exit_code, 0);
+        assert!(
+            !r.output.trim().is_empty(),
+            "tool must write output to $LLM_OUTPUT, not solely to stdout"
+        );
+    }
+
+    #[test]
+    fn test_tool_result_normalizes_text_to_json() {
+        // When tool output is plain text, aichat wraps it as {"output": text}.
+        skip_if!(check_exec_prerequisites());
+        let dir = llm_functions_dir();
+        let tools = load_functions_json(&dir);
+        if find_tool(&tools, "get_current_time").is_none() {
+            return;
+        }
+        let r = exec_tool(&dir, "get_current_time", "{}");
+        assert_eq!(r.exit_code, 0);
+        let normalized = normalize_result(r.exit_code, &r.output, "get_current_time");
+        assert!(
+            normalized.is_object(),
+            "normalized text result must be a JSON object, got: {normalized}"
+        );
+        assert!(
+            normalized.get("output").is_some(),
+            "wrapped text result must have 'output' key"
+        );
+    }
+
+    #[test]
+    fn test_execute_tool_with_arguments() {
+        skip_if!(check_exec_prerequisites());
+        let dir = llm_functions_dir();
+        let tools = load_functions_json(&dir);
+        // fs_ls is a safe read-only tool that takes a "path" argument
+        if find_tool(&tools, "fs_ls").is_none() {
+            eprintln!("SKIP: fs_ls not in functions.json");
+            return;
+        }
+        let r = exec_tool(&dir, "fs_ls", r#"{"path":"/tmp"}"#);
+        assert_eq!(r.exit_code, 0, "fs_ls /tmp failed: {}", r.stderr);
+        assert!(
+            !r.output.trim().is_empty(),
+            "fs_ls /tmp must produce directory listing"
+        );
+    }
+
+    #[test]
+    fn test_nonexistent_tool_fails() {
+        let dir = llm_functions_dir();
+        if !dir.exists() {
+            return;
+        }
+        let r = exec_tool(&dir, "__nonexistent_tool_compat_test__", "{}");
+        assert_ne!(
+            r.exit_code, 0,
+            "nonexistent tool must produce a non-zero exit code"
+        );
+    }
+
+    // ---- Server response → tool execution → result formatting ----
+
+    #[test]
+    fn test_openai_response_to_tool_execution() {
+        // Full flow: parse OpenAI tool_call response → execute → format result message
+        skip_if!(check_exec_prerequisites());
+        let dir = llm_functions_dir();
+        let tools = load_functions_json(&dir);
+        if find_tool(&tools, "get_current_time").is_none() {
+            return;
+        }
+
+        // 1. Parse server response (OpenAI chat completions format)
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_abc123",
+                        "type": "function",
+                        "function": {
+                            "name": "get_current_time",
+                            "arguments": "{}"
+                        }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let tool_calls = response["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .expect("response must have tool_calls");
+        assert_eq!(tool_calls.len(), 1);
+
+        let call = &tool_calls[0];
+        let name = call["function"]["name"].as_str().unwrap();
+        let args = call["function"]["arguments"].as_str().unwrap();
+        let call_id = call["id"].as_str().unwrap();
+
+        // 2. Verify tool exists in declarations (aichat does this pre-flight)
+        assert!(
+            find_tool(&tools, name).is_some(),
+            "tool '{name}' must be declared in functions.json"
+        );
+
+        // 3. Execute the tool
+        let r = exec_tool(&dir, name, args);
+        assert_eq!(r.exit_code, 0, "tool failed: {}", r.stderr);
+
+        // 4. Format result the way aichat does
+        let result = normalize_result(r.exit_code, &r.output, name);
+
+        // 5. Construct the tool result message for the next API call
+        let tool_msg = json!({
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": serde_json::to_string(&result).unwrap()
+        });
+        assert_eq!(tool_msg["role"], "tool");
+        assert_eq!(tool_msg["tool_call_id"], "call_abc123");
+        assert!(
+            !tool_msg["content"].as_str().unwrap().is_empty(),
+            "tool result content must not be empty"
+        );
+    }
+
+    #[test]
+    fn test_claude_response_to_tool_execution() {
+        // Full flow: parse Claude tool_use response → execute → format result message
+        skip_if!(check_exec_prerequisites());
+        let dir = llm_functions_dir();
+        let tools = load_functions_json(&dir);
+        if find_tool(&tools, "get_current_time").is_none() {
+            return;
+        }
+
+        // 1. Parse server response (Claude format)
+        let response = json!({
+            "content": [
+                {"type": "text", "text": "Let me check the time."},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_01A",
+                    "name": "get_current_time",
+                    "input": {}
+                }
+            ],
+            "stop_reason": "tool_use"
+        });
+
+        let tool_uses: Vec<&Value> = response["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["type"] == "tool_use")
+            .collect();
+        assert_eq!(tool_uses.len(), 1);
+
+        let tu = tool_uses[0];
+        let name = tu["name"].as_str().unwrap();
+        let input = &tu["input"];
+        let tu_id = tu["id"].as_str().unwrap();
+
+        // 2. Execute
+        let r = exec_tool(&dir, name, &serde_json::to_string(input).unwrap());
+        assert_eq!(r.exit_code, 0, "tool failed: {}", r.stderr);
+
+        // 3. Format result for Claude API
+        let result = normalize_result(r.exit_code, &r.output, name);
+        let tool_result = json!({
+            "type": "tool_result",
+            "tool_use_id": tu_id,
+            "content": serde_json::to_string(&result).unwrap()
+        });
+        assert_eq!(tool_result["type"], "tool_result");
+        assert_eq!(tool_result["tool_use_id"], "toolu_01A");
+        assert!(
+            !tool_result["content"].as_str().unwrap().is_empty(),
+            "tool result content must not be empty"
+        );
+    }
+
+    #[test]
+    fn test_multi_tool_call_execution_preserves_order() {
+        // Multiple tool_calls → execute all → results maintain call order
+        skip_if!(check_exec_prerequisites());
+        let dir = llm_functions_dir();
+        let tools = load_functions_json(&dir);
+        if find_tool(&tools, "get_current_time").is_none() {
+            return;
+        }
+
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_current_time", "arguments": "{}"}
+                        },
+                        {
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {"name": "get_current_time", "arguments": "{}"}
+                        }
+                    ]
+                }
+            }]
+        });
+
+        let calls = response["choices"][0]["message"]["tool_calls"]
+            .as_array()
+            .unwrap();
+
+        let mut results: Vec<(String, Value)> = Vec::new();
+        for call in calls {
+            let name = call["function"]["name"].as_str().unwrap();
+            let args = call["function"]["arguments"].as_str().unwrap();
+            let id = call["id"].as_str().unwrap().to_string();
+            let r = exec_tool(&dir, name, args);
+            results.push((id, normalize_result(r.exit_code, &r.output, name)));
+        }
+
+        assert_eq!(results.len(), 2, "all tool calls must produce results");
+        assert_eq!(results[0].0, "call_1", "result order must match call order");
+        assert_eq!(results[1].0, "call_2");
+        for (id, result) in &results {
+            assert!(
+                result.is_object(),
+                "result for {id} must be a JSON object"
+            );
+        }
+    }
+
+    #[test]
+    fn test_tool_call_with_arguments_from_response() {
+        // Server response contains a tool_call with real arguments → execute
+        skip_if!(check_exec_prerequisites());
+        let dir = llm_functions_dir();
+        let tools = load_functions_json(&dir);
+        if find_tool(&tools, "fs_ls").is_none() {
+            eprintln!("SKIP: fs_ls not in functions.json");
+            return;
+        }
+
+        let response = json!({
+            "choices": [{
+                "message": {
+                    "tool_calls": [{
+                        "id": "call_ls",
+                        "type": "function",
+                        "function": {
+                            "name": "fs_ls",
+                            "arguments": "{\"path\":\"/tmp\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+
+        let call = &response["choices"][0]["message"]["tool_calls"][0];
+        let name = call["function"]["name"].as_str().unwrap();
+        let args = call["function"]["arguments"].as_str().unwrap();
+
+        let r = exec_tool(&dir, name, args);
+        assert_eq!(r.exit_code, 0, "fs_ls failed: {}", r.stderr);
+
+        let result = normalize_result(r.exit_code, &r.output, name);
+        assert!(result.is_object(), "result must be a JSON object");
+    }
+
+    // ---- Result normalization contracts ----
+
+    #[test]
+    fn test_normalize_error_result() {
+        let result = normalize_result(1, "", "broken_tool");
+        let err = result.as_str().unwrap();
+        assert!(
+            err.starts_with("[TOOL_ERROR]"),
+            "error result must have [TOOL_ERROR] prefix"
+        );
+        assert!(err.contains("broken_tool"), "must include tool name");
+        assert!(err.contains("exit 1"), "must include exit code");
+    }
+
+    #[test]
+    fn test_normalize_empty_output_to_structured_null() {
+        let result = normalize_result(0, "", "quiet_tool");
+        assert_eq!(result["status"], "ok");
+        assert!(result["output"].is_null());
+    }
+
+    #[test]
+    fn test_normalize_json_output_preserved() {
+        let result = normalize_result(
+            0,
+            r#"{"temperature": 72, "unit": "F"}"#,
+            "weather",
+        );
+        assert_eq!(result["temperature"], 72);
+        assert_eq!(result["unit"], "F");
+    }
+
+    #[test]
+    fn test_normalize_text_output_wrapped() {
+        let result = normalize_result(0, "Mon Mar 30 14:22:01 PDT 2026\n", "get_current_time");
+        assert!(result.is_object());
+        assert!(result["output"].as_str().unwrap().contains("Mon Mar 30"));
+    }
+
+    // ---- Config directory — installed aichat contract ----
+
+    #[test]
+    fn test_config_dir_has_functions() {
+        let dir = aichat_config_dir();
+        if !dir.exists() {
+            eprintln!("SKIP: {} not found (set {ENV_CONFIG_DIR})", dir.display());
+            return;
+        }
+        let functions = dir.join("functions");
+        assert!(
+            functions.exists(),
+            "aichat config dir must have functions/ (directory or symlink)"
+        );
+    }
+
+    #[test]
+    fn test_config_functions_resolves_to_llm_functions() {
+        let config = aichat_config_dir();
+        let llm = llm_functions_dir();
+        if !config.exists() || !llm.exists() {
+            return;
+        }
+        let config_functions = config.join("functions");
+        if !config_functions.exists() {
+            return;
+        }
+        if let (Ok(a), Ok(b)) = (
+            std::fs::canonicalize(&config_functions),
+            std::fs::canonicalize(&llm),
+        ) {
+            assert_eq!(
+                a, b,
+                "config/functions should resolve to the llm-functions directory"
+            );
+        }
+    }
+}
