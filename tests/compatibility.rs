@@ -4,8 +4,10 @@
 //! MCP conversion, error handling, schema validation) do not break the existing
 //! llm-functions integration or argc-based workflows.
 
-use serde_json::{json, Value};
+
+use serde_json::{json};
 use std::collections::{HashMap, HashSet};
+
 
 // ===========================================================================
 // 1. FunctionDeclaration & Functions — llm-functions compatibility
@@ -3227,5 +3229,95 @@ mod tool_execution {
                 "config/functions should resolve to the llm-functions directory"
             );
         }
+    }
+}
+
+// ===========================================================================
+// Serve endpoint: /v1/prompts
+// ===========================================================================
+
+mod serve_prompts {
+    use super::*;
+    use std::fs;
+    use serde_json::Value;
+
+
+    fn fake_all_prompts(dir: &std::path::Path) -> Vec<Value> {
+            let mut prompts = vec![];
+            if let Ok(rd) = fs::read_dir(dir) {
+                for entry in rd.flatten() {
+                    if let Some(name) = entry
+                        .file_name()
+                        .to_str()
+                        .and_then(|v| v.strip_suffix(".md"))
+                    {
+                        if let Ok(content) = fs::read_to_string(entry.path()) {
+                            prompts.push(json!({
+                            "name": name,
+                            "content": content,
+                        }));
+                        }
+                    }
+                }
+            }
+            prompts.sort_by(|a, b| {
+                a["name"].as_str().unwrap().cmp(b["name"].as_str().unwrap())
+            });
+            prompts
+        }
+
+    #[test]
+    fn test_prompts_endpoint_returns_name_and_content() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("summarize.md"), "Summarize the following text.").unwrap();
+        fs::write(dir.path().join("translate.md"), "Translate to French.").unwrap();
+
+        let prompts = fake_all_prompts(dir.path());
+        let body = json!({ "data": prompts });
+
+        // Endpoint must return a JSON object with a "data" array
+        assert!(body["data"].is_array());
+        let data = body["data"].as_array().unwrap();
+        assert_eq!(data.len(), 2);
+
+        // Each entry must have "name" and "content" fields
+        assert_eq!(data[0]["name"], "summarize");
+        assert_eq!(data[0]["content"], "Summarize the following text.");
+        assert_eq!(data[1]["name"], "translate");
+        assert_eq!(data[1]["content"], "Translate to French.");
+    }
+
+    #[test]
+    fn test_prompts_endpoint_empty_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let prompts = fake_all_prompts(dir.path());
+        let body = json!({ "data": prompts });
+
+        assert!(body["data"].is_array());
+        assert_eq!(body["data"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_prompts_endpoint_ignores_non_md_files() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("good.md"), "A prompt.").unwrap();
+        fs::write(dir.path().join("not-a-prompt.txt"), "Ignored.").unwrap();
+        fs::write(dir.path().join("also-ignored.yaml"), "key: val").unwrap();
+
+        let prompts = fake_all_prompts(dir.path());
+        assert_eq!(prompts.len(), 1);
+        assert_eq!(prompts[0]["name"], "good");
+    }
+
+    #[test]
+    fn test_prompts_endpoint_sorted_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("zebra.md"), "z").unwrap();
+        fs::write(dir.path().join("alpha.md"), "a").unwrap();
+        fs::write(dir.path().join("middle.md"), "m").unwrap();
+
+        let prompts = fake_all_prompts(dir.path());
+        let names: Vec<&str> = prompts.iter().map(|p| p["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["alpha", "middle", "zebra"]);
     }
 }

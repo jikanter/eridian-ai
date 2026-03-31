@@ -121,3 +121,89 @@ exit: 8
 ```
 
 Invalid input is caught by schema validation before the LLM call, providing clear error feedback.
+
+Test input_schema with an array of objects — validates that nested array/object schemas are parsed and enforced correctly.
+
+```bash
+ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/test-schema-array.md" <<'ROLE'
+---
+input_schema:
+  type: object
+  properties:
+    items:
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          quantity:
+            type: integer
+        required: [name, quantity]
+  required: [items]
+---
+Process the items: __INPUT__
+ROLE
+echo '{"items": [{"name": "apple", "quantity": 3}, {"name": "banana", "quantity": 5}]}' | aichat --dry-run -r test-schema-array 2>/dev/null
+rm "$ROLES_DIR/test-schema-array.md"
+```
+
+```output
+---
+input_schema:
+  type: object
+  properties:
+    items:
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          quantity:
+            type: integer
+        required:
+        - name
+        - quantity
+  required:
+  - items
+---
+
+Process the items: {"items": [{"name": "apple", "quantity": 3}, {"name": "banana", "quantity": 5}]}
+```
+
+Validation also catches type errors inside array elements:
+
+```bash
+ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/test-schema-array-fail.md" <<'ROLE'
+---
+input_schema:
+  type: object
+  properties:
+    items:
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          quantity:
+            type: integer
+        required: [name, quantity]
+  required: [items]
+---
+Process: __INPUT__
+ROLE
+echo '{"items": [{"name": "apple", "quantity": "not_a_number"}]}' | aichat --dry-run -r test-schema-array-fail 2>&1; echo "exit: $?"
+rm "$ROLES_DIR/test-schema-array-fail.md"
+```
+
+```output
+Error: Schema input validation failed:
+  - "not_a_number" is not of type "integer"
+exit: 8
+```
+
+Array-of-objects schemas work end-to-end: valid input passes through, and type mismatches inside array elements are caught before the LLM call.

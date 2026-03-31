@@ -1,7 +1,8 @@
-mod agent;
-mod input;
-mod role;
-mod session;
+pub mod agent;
+pub mod input;
+pub mod role;
+pub mod session;
+pub mod prompt;
 
 pub use self::agent::{complete_agent_variables, list_agents, Agent, AgentVariables};
 pub use self::input::Input;
@@ -9,8 +10,8 @@ pub use self::role::{
     run_lifecycle_hooks, validate_schema, Role, RoleExample, RoleLike, RolePipelineStage,
     CODE_ROLE, CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
 };
+pub use self::prompt::Prompt;
 use self::session::Session;
-
 use crate::client::{
     create_client_config, list_client_types, list_models, ClientConfig, MessageContentToolCalls,
     Model, ModelType, ProviderModels, OPENAI_COMPATIBLE_PROVIDERS,
@@ -62,6 +63,8 @@ const FUNCTIONS_DIR_NAME: &str = "functions";
 const FUNCTIONS_FILE_NAME: &str = "functions.json";
 const FUNCTIONS_BIN_DIR_NAME: &str = "bin";
 const AGENTS_DIR_NAME: &str = "agents";
+
+const PROMPTS_DIR_NAME: &str = "prompts";
 
 const CLIENTS_FIELD: &str = "clients";
 
@@ -190,7 +193,7 @@ pub struct Config {
     #[serde(skip)]
     pub run_log: Option<String>,
     #[serde(skip)]
-    pub trace_config: Option<crate::utils::trace::TraceConfig>,
+    pub trace_config: Option<trace::TraceConfig>,
 
     #[serde(skip)]
     pub output_format: Option<crate::cli::OutputFormat>,
@@ -429,6 +432,16 @@ impl Config {
     pub fn role_file(name: &str) -> PathBuf {
         Self::roles_dir().join(format!("{name}.md"))
     }
+
+    pub fn prompts_dir() -> PathBuf {
+        match env::var(get_env_name("prompts_dir")) {
+            Ok(value) => PathBuf::from(value),
+            Err(_) => Self::local_path(PROMPTS_DIR_NAME),
+        }
+    }
+
+    pub fn prompt_file(name: &str) -> PathBuf { Self::prompts_dir().join(format!("{name}.md")) }
+
 
     pub fn macros_dir() -> PathBuf {
         match env::var(get_env_name("macros_dir")) {
@@ -1325,10 +1338,46 @@ impl Config {
         names
     }
 
+
     pub fn has_role(name: &str) -> bool {
         let names = Self::list_roles(true);
         names.contains(&name.to_string())
     }
+
+    pub fn all_prompts() -> Vec<Prompt> {
+        let mut prompts = vec![];
+        let names = Self::list_prompts();
+        for name in names {
+            if let Ok(content) = read_to_string(Self::prompt_file(&name)) {
+               prompts.push(Prompt::new(
+                   &name,
+                   &content
+               ));
+            }
+        }
+        prompts
+    }
+
+    pub fn list_prompts() -> Vec<String> {
+        let mut names = HashSet::new();
+        if let Ok(rd) = read_dir(Self::prompts_dir()) {
+            for entry in rd.flatten() {
+                if let Some(name) = entry
+                    .file_name()
+                    .to_str()
+                    .and_then(|v| v.strip_suffix(".md"))
+                {
+                    names.insert(name.to_string());
+                }
+            }
+        }
+        let mut names: Vec<_> = names.into_iter().collect();
+        names.sort_unstable();
+        names
+    }
+
+
+
 
     pub fn use_session(&mut self, session_name: Option<&str>) -> Result<()> {
         if self.session.is_some() {
@@ -3085,7 +3134,7 @@ async fn create_config_file(config_path: &Path) -> Result<()> {
 
     let client = Select::new("API Provider (required):", list_client_types()).prompt()?;
 
-    let mut config = serde_json::json!({});
+    let mut config = json!({});
     let (model, clients_config) = create_client_config(client).await?;
     config["model"] = model.into();
     config[CLIENTS_FIELD] = clients_config;
@@ -3226,3 +3275,5 @@ fn validate_pipe_to_command(cmd: &str) -> Result<()> {
         .map_err(|_| anyhow!("Command not found: '{binary}'"))?;
     Ok(())
 }
+
+

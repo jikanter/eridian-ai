@@ -68,6 +68,7 @@ struct Server {
     config: Config,
     models: Vec<Value>,
     roles: Vec<Role>,
+    prompts: Vec<Prompt>,
     rags: Vec<String>,
 }
 
@@ -101,6 +102,7 @@ impl Server {
         Self {
             config,
             models,
+            prompts: Config::all_prompts(),
             roles: Config::all_roles(),
             rags: Config::list_rags(),
         }
@@ -170,6 +172,8 @@ impl Server {
             self.list_models()
         } else if path == "/v1/roles" {
             self.list_roles()
+        } else if path == "/v1/prompts" {
+            self.list_prompts()
         } else if path == "/v1/rags" {
             self.list_rags()
         } else if path == "/v1/rags/search" {
@@ -178,7 +182,8 @@ impl Server {
             self.playground_page()
         } else if path == "/arena" || path == "/arena.html" {
             self.arena_page()
-        } else {
+
+    } else {
             status = StatusCode::NOT_FOUND;
             Err(anyhow!("Not Found"))
         };
@@ -224,6 +229,14 @@ impl Server {
 
     fn list_roles(&self) -> Result<AppResponse> {
         let data = json!({ "data": self.roles });
+        let res = Response::builder()
+            .header("Content-Type", "application/json; charset=utf-8")
+            .body(Full::new(Bytes::from(data.to_string())).boxed())?;
+        Ok(res)
+    }
+
+    fn list_prompts(&self) -> Result<AppResponse> {
+        let data = json!({ "data": self.prompts });
         let res = Response::builder()
             .header("Content-Type", "application/json; charset=utf-8")
             .body(Full::new(Bytes::from(data.to_string())).boxed())?;
