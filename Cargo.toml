@@ -1,6 +1,6 @@
 [package]
 name = "aichat"
-version = "0.31.0-mcp"
+version = "0.32.0-mcp"
 edition = "2021"
 authors = ["sigoden <sigoden@gmail.com>", "jikanter <jikanter@gmail.com>"]
 description = "All-in-one LLM CLI Tool"

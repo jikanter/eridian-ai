@@ -641,7 +641,7 @@ async fn process_one_record(
     abort_signal: AbortSignal,
 ) -> Result<String> {
     // Build the prompt: interpolate record fields into the template
-    let mut prompt = if prompt_template.is_empty() {
+    let prompt = if prompt_template.is_empty() {
         record.to_string()
     } else {
         let mut text = prompt_template.to_string();

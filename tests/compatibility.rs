@@ -5,7 +5,7 @@
 //! llm-functions integration or argc-based workflows.
 
 
-use serde_json::{json};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 
@@ -3239,10 +3239,8 @@ mod tool_execution {
 mod serve_prompts {
     use super::*;
     use std::fs;
-    use serde_json::Value;
-
-
-    fn fake_all_prompts(dir: &std::path::Path) -> Vec<Value> {
+    
+        fn fake_all_prompts(dir: &std::path::Path) -> Vec<Value> {
             let mut prompts = vec![];
             if let Ok(rd) = fs::read_dir(dir) {
                 for entry in rd.flatten() {
