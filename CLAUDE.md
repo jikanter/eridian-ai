@@ -1,3 +1,8 @@
+# Project Overview 
+
+AIchat is a command-line swiss army knife for ai applications.
+
+<brief:start>
 # Briefing: AIChat - A multi-target command-line for AI models.
 
 **Stack:** Rust 1.93.1, Cargo, Bash, argc
@@ -19,3 +24,4 @@
 - Introduction of new programming languages
 - Significant increase in number of dependencies
 
+</brief:end>

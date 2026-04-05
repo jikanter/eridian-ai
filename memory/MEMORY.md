@@ -1,0 +1,1 @@
+- [Cite sources in comments](feedback_cite_sources.md) — always include doc links and rationale inline in code changes
