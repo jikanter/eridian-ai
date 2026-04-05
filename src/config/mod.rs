@@ -7,8 +7,9 @@ pub mod prompt;
 pub use self::agent::{complete_agent_variables, list_agents, Agent, AgentVariables};
 pub use self::input::Input;
 pub use self::role::{
-    run_lifecycle_hooks, validate_schema, Role, RoleExample, RoleLike, RolePipelineStage,
-    CODE_ROLE, CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
+    run_lifecycle_hooks, validate_schema, validate_schema_detailed, validate_schema_traced, Role,
+    RoleExample, RoleLike, RolePipelineStage, CODE_ROLE, CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE,
+    SHELL_ROLE,
 };
 pub use self::prompt::Prompt;
 use self::session::Session;

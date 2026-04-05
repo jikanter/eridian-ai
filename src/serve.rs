@@ -55,6 +55,9 @@ pub async fn run(config: GlobalConfig, addr: Option<String>) -> Result<()> {
     let listener = TcpListener::bind(&addr).await?;
     let stop_server = server.run(listener).await?;
     println!("Chat Completions API: http://{addr}/v1/chat/completions");
+    println!("Models API:           http://{addr}/v1/models");
+    println!("Roles API:            http://{addr}/v1/roles");
+    println!("Prompts API:          http://{addr}/v1/prompts");
     println!("Embeddings API:       http://{addr}/v1/embeddings");
     println!("Rerank API:           http://{addr}/v1/rerank");
     println!("LLM Playground:       http://{addr}/playground");

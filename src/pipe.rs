@@ -3,7 +3,8 @@ use crate::client::{
     call_chat_completions, call_chat_completions_streaming, call_react, CallMetrics,
 };
 use crate::config::{
-    run_lifecycle_hooks, validate_schema, Config, GlobalConfig, Input, RoleLike, RolePipelineStage,
+    run_lifecycle_hooks, validate_schema_traced, Config, GlobalConfig, Input, RoleLike,
+    RolePipelineStage,
 };
 use crate::utils::*;
 
@@ -163,8 +164,14 @@ async fn run_stage_inner(
         config.write().set_model(model_id)?;
     }
 
+    let trace_emitter = config
+        .read()
+        .trace_config
+        .clone()
+        .map(crate::utils::trace::TraceEmitter::new);
+
     if let Some(schema) = role.input_schema() {
-        validate_schema("input", schema, input_text)?;
+        validate_schema_traced("input", schema, input_text, trace_emitter.as_ref())?;
     }
 
     let has_tools = role.use_tools().is_some();
@@ -190,7 +197,7 @@ async fn run_stage_inner(
     }
 
     if let Some(schema) = role.output_schema() {
-        validate_schema("output", schema, &output)?;
+        validate_schema_traced("output", schema, &output, trace_emitter.as_ref())?;
     }
 
     if is_last && !input.stream() {

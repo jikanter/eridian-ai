@@ -174,6 +174,9 @@ pub struct Cli {
     /// Include files, directories, or URLs
     #[clap(short = 'f', long, value_name = "FILE")]
     pub file: Vec<String>,
+    /// Strip <think>...</think> blocks from piped input
+    #[clap(long)]
+    pub strip_thinking: bool,
     /// Turn off stream mode
     #[clap(short = 'S', long)]
     pub no_stream: bool,

@@ -848,19 +848,104 @@ impl RoleLike for Role {
     }
 }
 
-pub fn validate_schema(context: &str, schema: &Value, text: &str) -> Result<()> {
-    let data: Value = serde_json::from_str(text.trim())
-        .with_context(|| format!("Schema {context} validation failed: not valid JSON"))?;
+/// A single schema violation with path information for trace diagnostics.
+#[derive(Debug, Clone)]
+pub struct SchemaViolation {
+    pub message: String,
+    pub instance_path: String,
+    pub schema_path: String,
+}
+
+/// Result of detailed schema validation — carries the raw text and violations for trace output.
+#[derive(Debug, Clone)]
+pub struct SchemaValidationResult {
+    pub direction: String,
+    pub raw_text: String,
+    pub violations: Vec<SchemaViolation>,
+}
+
+impl SchemaValidationResult {
+    pub fn is_ok(&self) -> bool {
+        self.violations.is_empty()
+    }
+
+    /// Format the terse error message (same as the old validate_schema output).
+    pub fn terse_error(&self) -> String {
+        let lines: Vec<String> = self.violations.iter().map(|v| format!("  - {}", v.message)).collect();
+        format!("Schema {} validation failed:\n{}", self.direction, lines.join("\n"))
+    }
+}
+
+/// Validate text against a JSON schema, returning rich violation details.
+/// Used by trace to show the raw output and per-violation paths.
+pub fn validate_schema_detailed(context: &str, schema: &Value, text: &str) -> Result<SchemaValidationResult> {
+    let trimmed = text.trim();
+    let data: Value = match serde_json::from_str(trimmed) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(SchemaValidationResult {
+                direction: context.to_string(),
+                raw_text: trimmed.to_string(),
+                violations: vec![SchemaViolation {
+                    message: "not valid JSON".to_string(),
+                    instance_path: String::new(),
+                    schema_path: String::new(),
+                }],
+            });
+        }
+    };
     let validator = jsonschema::validator_for(schema)
         .map_err(|e| anyhow!("Invalid {context} schema: {e}"))?;
-    let errors: Vec<String> = validator
+    let violations: Vec<SchemaViolation> = validator
         .iter_errors(&data)
-        .map(|e| format!("  - {e}"))
+        .map(|e| SchemaViolation {
+            message: e.to_string(),
+            instance_path: e.instance_path.to_string(),
+            schema_path: e.schema_path.to_string(),
+        })
         .collect();
-    if !errors.is_empty() {
-        bail!("Schema {context} validation failed:\n{}", errors.join("\n"));
+    Ok(SchemaValidationResult {
+        direction: context.to_string(),
+        raw_text: trimmed.to_string(),
+        violations,
+    })
+}
+
+pub fn validate_schema(context: &str, schema: &Value, text: &str) -> Result<()> {
+    let result = validate_schema_detailed(context, schema, text)?;
+    if !result.is_ok() {
+        if result.violations.len() == 1 && result.violations[0].message == "not valid JSON" {
+            bail!("Schema {context} validation failed: not valid JSON");
+        }
+        bail!("{}", result.terse_error());
     }
     Ok(())
+}
+
+/// Validate schema with optional trace emission. When a TraceEmitter is provided,
+/// emits a [schema] trace event (human or JSONL) before propagating any error.
+pub fn validate_schema_traced(
+    context: &str,
+    schema: &Value,
+    text: &str,
+    tracer: Option<&crate::utils::trace::TraceEmitter>,
+) -> Result<()> {
+    match tracer {
+        Some(t) => {
+            let result = validate_schema_detailed(context, schema, text)?;
+            t.emit_schema_validation(&result);
+            if !result.is_ok() {
+                if result.violations.len() == 1
+                    && result.violations[0].message == "not valid JSON"
+                {
+                    bail!("Schema {context} validation failed: not valid JSON");
+                }
+                bail!("{}", result.terse_error());
+            }
+            Ok(())
+        }
+        None => validate_schema(context, schema, text),
+    }
 }
 
 /// Phase 6B: Execute lifecycle hooks after LLM output is generated.
@@ -1667,5 +1752,112 @@ Context: {{ctx}}."#;
         assert_eq!(role.save_to(), Some("./output.md"));
         role.set_save_to(None);
         assert!(role.save_to().is_none());
+    }
+
+    #[test]
+    fn test_validate_schema_detailed_success() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+        });
+        let result = validate_schema_detailed("output", &schema, r#"{"name": "Alice"}"#).unwrap();
+        assert!(result.is_ok());
+        assert!(result.violations.is_empty());
+        assert_eq!(result.direction, "output");
+        assert_eq!(result.raw_text, r#"{"name": "Alice"}"#);
+    }
+
+    #[test]
+    fn test_validate_schema_detailed_not_json() {
+        let schema = serde_json::json!({"type": "object"});
+        let result = validate_schema_detailed("input", &schema, "not json at all").unwrap();
+        assert!(!result.is_ok());
+        assert_eq!(result.violations.len(), 1);
+        assert_eq!(result.violations[0].message, "not valid JSON");
+        assert_eq!(result.raw_text, "not json at all");
+    }
+
+    #[test]
+    fn test_validate_schema_detailed_type_mismatch_has_paths() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer" }
+            },
+            "required": ["count"]
+        });
+        let result = validate_schema_detailed("output", &schema, r#"{"count": "foo"}"#).unwrap();
+        assert!(!result.is_ok());
+        assert_eq!(result.violations.len(), 1);
+        let v = &result.violations[0];
+        assert!(!v.instance_path.is_empty(), "instance_path should be populated");
+        assert!(!v.schema_path.is_empty(), "schema_path should be populated");
+        assert!(v.message.contains("integer"), "message should mention expected type");
+    }
+
+    #[test]
+    fn test_validate_schema_detailed_nested_array_paths() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "qty": { "type": "integer" }
+                        },
+                        "required": ["name", "qty"]
+                    }
+                }
+            },
+            "required": ["items"]
+        });
+        let input = r#"{"items": [{"name": "apple", "qty": "bad"}]}"#;
+        let result = validate_schema_detailed("output", &schema, input).unwrap();
+        assert!(!result.is_ok());
+        assert_eq!(result.violations.len(), 1);
+        let v = &result.violations[0];
+        // instance_path should point into items/0/qty
+        assert!(v.instance_path.contains("0"), "path should contain array index");
+    }
+
+    #[test]
+    fn test_validate_schema_detailed_multiple_violations() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "a": { "type": "string" },
+                "b": { "type": "integer" }
+            },
+            "required": ["a", "b"]
+        });
+        let result = validate_schema_detailed("output", &schema, r#"{"a": 123, "b": "wrong"}"#).unwrap();
+        assert!(!result.is_ok());
+        assert!(result.violations.len() >= 2, "should have at least 2 violations");
+    }
+
+    #[test]
+    fn test_validate_schema_detailed_terse_error_format() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "x": { "type": "integer" } },
+            "required": ["x"]
+        });
+        let result = validate_schema_detailed("output", &schema, r#"{"x": "bad"}"#).unwrap();
+        let terse = result.terse_error();
+        assert!(terse.starts_with("Schema output validation failed:"));
+        assert!(terse.contains("  - "));
+    }
+
+    #[test]
+    fn test_validate_schema_detailed_preserves_raw_text() {
+        let schema = serde_json::json!({"type": "object"});
+        let raw = "  {\"extra\": true}  ";
+        let result = validate_schema_detailed("output", &schema, raw).unwrap();
+        assert!(result.is_ok());
+        assert_eq!(result.raw_text, raw.trim());
     }
 }

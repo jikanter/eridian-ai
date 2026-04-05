@@ -9,6 +9,7 @@ mod rag;
 mod render;
 mod repl;
 mod serve;
+mod strip_thinking;
 #[macro_use]
 mod utils;
 
@@ -21,7 +22,7 @@ use crate::client::{
 };
 use crate::config::{
     ensure_parent_exists, list_agents, load_env_file, macro_execute, run_lifecycle_hooks,
-    validate_schema, Config, GlobalConfig, Input, RoleLike, WorkingMode, CODE_ROLE,
+    validate_schema_traced, Config, GlobalConfig, Input, RoleLike, WorkingMode, CODE_ROLE,
     EXPLAIN_SHELL_ROLE, SHELL_ROLE, TEMP_SESSION_NAME,
 };
 use crate::render::render_error;
@@ -39,8 +40,8 @@ use std::{env, process, sync::Arc};
 async fn main() -> Result<()> {
     load_env_file()?;
     let cli = Cli::parse();
-    // MCP mode uses stdin as transport — don't consume it here
-    let text = if cli.mcp { None } else { cli.text()? };
+    // MCP mode and strip-thinking use stdin as transport — don't consume it here
+    let text = if cli.mcp || cli.strip_thinking { None } else { cli.text()? };
     let working_mode = if cli.mcp {
         WorkingMode::Mcp
     } else if cli.serve.is_some() {
@@ -79,6 +80,10 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
 
     if let Some(ref server_cmd) = cli.mcp_server {
         return mcp_client::run_mcp_client_command(&cli, server_cmd).await;
+    }
+
+    if cli.strip_thinking {
+        return strip_thinking::run();
     }
 
     if cli.pipe {
@@ -365,8 +370,15 @@ async fn start_directive(
     _code_mode: bool,
     abort_signal: AbortSignal,
 ) -> Result<()> {
+    // Build a trace emitter (if --trace or AICHAT_TRACE is active) for schema events
+    let trace_emitter = config
+        .read()
+        .trace_config
+        .clone()
+        .map(crate::utils::trace::TraceEmitter::new);
+
     if let Some(schema) = input.role().input_schema() {
-        validate_schema("input", schema, &input.text())?;
+        validate_schema_traced("input", schema, &input.text(), trace_emitter.as_ref())?;
     }
 
     let has_output_schema = input.role().output_schema().cloned();
@@ -418,7 +430,7 @@ async fn start_directive(
             }
         }
     } else if let Some(ref schema) = has_output_schema {
-        validate_schema("output", schema, &output)?;
+        validate_schema_traced("output", schema, &output, trace_emitter.as_ref())?;
         print!("{output}");
         std::io::Write::flush(&mut std::io::stdout())?;
         if !output.ends_with('\n') {
@@ -670,8 +682,13 @@ async fn process_one_record(
         call_react(&mut input, client.as_ref(), abort_signal).await?;
 
     // Validate and clean output
+    let trace_emitter = config
+        .read()
+        .trace_config
+        .clone()
+        .map(crate::utils::trace::TraceEmitter::new);
     let output = if let Some(schema) = input.role().output_schema() {
-        validate_schema("output", schema, &output)?;
+        validate_schema_traced("output", schema, &output, trace_emitter.as_ref())?;
         output
     } else if let Some(fmt) = config.read().output_format {
         if fmt.is_structured() {

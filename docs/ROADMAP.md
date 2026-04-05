@@ -37,7 +37,7 @@ Architecture reference: [architecture.md](./roadmap/architecture.md)
 |---|---|---|
 | Model-aware variables and conditionals | `589b9b1` | [demo](./demos/demo-model-aware.md) |
 | Composable roles (`extends`, `include`) | `cdb5d9e` | [demo](./demos/demo-composable-roles.md) |
-| Schema-aware stdin/stdout (`input_schema`, `output_schema`) | `b57668d` | [demo](./demos/demo.md) |
+| Schema-aware stdin/stdout (`input_schema`, `output_schema`) | `b57668d` | [demo](demos/demo-schema-validation.md) |
 | Role parameters (`-v key=value`) and env bridging (`{{$VAR}}`) | `1dbab28` | [analysis](./analysis/2026-03-02-role-parameters.md) |
 | Output format flag (`-o json/jsonl/tsv/csv/text`) | `e72d776` | [analysis](./analysis/2026-03-06-output-format.md) |
 | `__INPUT__` de-hoisting in extended roles | `9ce9755` | [demo](./demos/demo-dehoist-input.md) |
