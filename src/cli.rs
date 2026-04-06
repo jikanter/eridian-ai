@@ -207,6 +207,9 @@ pub struct Cli {
     /// List all roles
     #[clap(long)]
     pub list_roles: bool,
+    /// List all prompts
+    #[clap(long)]
+    pub list_prompts: bool,
     /// List all sessions
     #[clap(long)]
     pub list_sessions: bool,

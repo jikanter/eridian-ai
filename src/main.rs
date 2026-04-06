@@ -57,6 +57,7 @@ async fn main() -> Result<()> {
         || cli.sync_models
         || cli.list_models
         || cli.list_roles
+        || cli.list_prompts
         || cli.list_agents
         || cli.list_rags
         || cli.list_macros
@@ -135,6 +136,16 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         } else {
             let roles = Config::list_roles(true).join("\n");
             println!("{roles}");
+        }
+        return Ok(());
+    }
+    if cli.list_prompts {
+        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
+            let prompts = Config::all_prompts();
+            println!("{}", serde_json::to_string_pretty(&prompts)?);
+        } else {
+            let prompts = Config::list_prompts().join("\n");
+            println!("{prompts}");
         }
         return Ok(());
     }
