@@ -1304,13 +1304,15 @@ impl Config {
 
     pub fn all_roles() -> Vec<Role> {
         let mut roles: HashMap<String, Role> = Role::list_builtin_roles()
-            .iter()
-            .map(|v| (v.name().to_string(), v.clone()))
+            .into_iter()
+            .map(|v| (v.name().to_string(), v))
             .collect();
-        let names = Self::list_roles(false);
+        let names = Self::list_roles(true);
         for name in names {
-            if let Ok(role) = Role::resolve(&name) {
-                roles.insert(name, role);
+            if !roles.contains_key(&name) {
+                if let Ok(role) = Role::resolve(&name) {
+                    roles.insert(name, role);
+                }
             }
         }
         let mut roles: Vec<_> = roles.into_values().collect();
