@@ -1,6 +1,6 @@
 # AIChat Roadmap
 
-**Last updated:** 2026-03-30
+**Last updated:** 2026-04-07
 **317 tests passing (144 unit + 173 compatibility), 0 failures**
 
 ---
@@ -100,49 +100,13 @@ Architecture reference: [architecture.md](./roadmap/architecture.md)
 
 ### Phase 6: Metadata Framework Enhancements -- [detail](./roadmap/phase-6-metadata-framework.md)
 
-| Item | Description | Status | Commit |
-|---|---|---|---|
-| 5A. Remote MCP servers (HTTP/SSE) | Done | — | `endpoint:` + `headers:` fields on `McpServerConfig`. Streamable HTTP transport via `ReqwestClient` adapter (avoids request version conflict). CLI auto-detects `http://`/`https://` URLs. |
-| 5B. Lazy role discovery via MCP | Done | — | `discover_roles` meta-tool advertised when ≥8 tools. Full schemas injected on first use with `notifications/tools/list_changed`. Falls back to eager loading for small tool sets. |
-
-**5A implementation notes:**
-- `McpServerConfig.endpoint` is mutually exclusive with `command`. When set, uses rmcp's Streamable HTTP client transport.
-- `McpServerConfig.headers` supports `${VAR}` env resolution (same as `env`). `Authorization` headers are extracted as bearer tokens.
-- `ReqwestClient` wrapper in `src/mcp_client/streamable_http.rs` implements `StreamableHttpClient` for reqwest 0.12, avoiding the version conflict with rmcp's built-in reqwest 0.13 support.
-- Connection retry/backoff handled by rmcp's `ExponentialBackoff` default.
-
-**5B implementation notes:**
-- Lazy mode activates when tool count ≥ `LAZY_DISCOVERY_THRESHOLD` (8). Below that, all tools served eagerly.
-- `ServerCapabilities` advertises `list_changed: true` only in lazy mode.
-- On `discover_roles` call: returns compact one-line-per-tool index (~30 tokens/tool vs ~121 tokens/schema).
-- On first call to any tool: schema added to advertised set, `tools/list_changed` notification sent. Non-fatal if client ignores it.
-
-**Token budget comparison** (from [tool analysis](./analysis/2026-03-10-tool-analysis.md)):
-
-| Method | Per-turn cost | 20-turn session (30 roles) |
+| Item | Description | Status |
 |---|---|---|
-| Native MCP (all schemas) | ~3,630 tokens | 72,600 |
-| aichat `discover_roles` + on-demand expansion | ~67 + ~121/used tool | ~1,940 (for 5 unique tools) |
-| aichat `--list-roles` + on-demand `--describe` | ~67 + ~180/used role | ~1,940 (for 5 unique roles) |
-
----
-
-## Future Phases
-
----
-
-### Phase 6: Metadata Framework Enhancements
-
-**Status:** Design only. See [Junie metadata plan](./analysis/2026-03-10-junie-plan.md).
-
-| Item | Scope | Description |
-|---|---|---|
-| 6A. Shell-injective variables | `role.rs`, `variables.rs` | `{ shell: "git diff --cached" }` in variable defaults. Context gathered at invocation time, not authoring time. Eliminates manual piping (`git diff \| aichat -r reviewer`). [DONE] |
-| 6B. Lifecycle hooks | Main execution loop | `pipe_to: "pbcopy"` and `save_to: "./logs/{{timestamp}}.md"` directives for output routing. [DONE] |
-| 6C. Unified resource binding | Role frontmatter | `rag:` and `mcp_servers:` fields per-role, so selecting a role configures its entire tool/data environment. |
+| 6A | Shell-injective variables (`{ shell: "..." }` in variable defaults) | Done |
+| 6B | Lifecycle hooks (`pipe_to:`, `save_to:`) | Done |
+| 6C | Unified resource binding (`rag:`, `mcp_servers:` per-role) | Done |
 
 Phase 6A is the most immediately useful — it turns roles into self-contained context-gathering units that leverage existing CLI tools (`git`, `grep`, `find`) as context providers.
-
 
 **Error handling dependency:** Phase 6A requires Phase 4A (done) — role parsing now warns on malformed entries instead of silently dropping them. Shell command failures in variable defaults must follow the same pattern.
 
@@ -163,7 +127,7 @@ mcp_servers:
   - sqlite-server
 ```
 
-### Phase 7: User-Friendly Error Messages for llm-functions
+### Phase 7: User-Friendly Error Messages for llm-functions -- [detail](./roadmap/phase-7-error-messages.md)
 
 | Item | Status | Notes |
 | --- | --- | --- |
@@ -199,7 +163,7 @@ error: tool 'web_search' failed (exit code 1)
 
 **Key files:** `src/utils/command.rs` (`run_command_with_stderr`, `run_command_with_stderr_timeout`), `src/function.rs` (error-as-result, null handling, pre-flight, hints, async eval), `src/utils/exit_code.rs` (`ToolSpawnError`, `ToolExecutionError`, `ToolTimeout`), `src/client/common.rs` (retry budget in `call_react`).
 
-### Phase 7+ : Tool Timeout & Concurrent Execution
+#### Phase 7 continued: Tool Timeout & Concurrent Execution
 
 | Item | Status | Notes |
 | --- | --- | --- |
@@ -225,10 +189,6 @@ tool_timeout: 0
 // Per-tool override in functions.json
 {"name": "slow_api", "timeout": 60, ...}
 ```
-
----
-
-## Next Phases
 
 ### Phase 7.5: Macro & Agent Config Override (`.set` Expansion)
 
@@ -257,19 +217,11 @@ Phase 7.5 closes this by extending `.set` to cover the fields that currently onl
 
 | Field | Value format | Applies to | Notes |
 |---|---|---|---|
-| 7A | Stderr capture + tool error diagnostics | Done | -- |
-| 7A | Tool errors as ToolResult to LLM | Done | -- |
-| 7A | Structured null-result (replace "DONE") | Done | -- |
-| 7B | Pre-flight checks + typed error variants | Done | -- |
-| 7B | Contextual hints on all error paths | Done | -- |
-| 7C | Retry budget + loop detection | Done | -- |
-| 7C1 | Per-tool timeout | Done | -- |
-| 7D1 | Async tool execution | Done | -- |
-| 7D2 | Concurrent tool execution | Done | -- |
-| 7.5A | Extend `.set` with role-level fields | Done | -- |
-| 7.5B | Macro frontmatter assembly | Done | -- |
-| 7.5C | Agent `.set` parity | Done | -- |
-| 7.5D | Guard rails (schema meta-validation) | Done | -- |
+| `model` | Model ID string | `.prompt`, `.role`, agents | Overrides model for current session |
+| `output_schema` | Inline JSON or `@file` | `.prompt`, `.role`, agents | Meta-validated via `jsonschema::is_valid` |
+| `input_schema` | Inline JSON or `@file` | `.prompt`, `.role`, agents | Meta-validated via `jsonschema::is_valid` |
+| `pipe_to` | Shell command | `.prompt`, `.role`, agents | Target existence validated |
+| `save_to` | File path template | `.prompt`, `.role`, agents | Supports `{{timestamp}}` interpolation |
 
 ### Phase 8: Data Processing & Observability -- [detail](./roadmap/phase-8-data-observability.md)
 
