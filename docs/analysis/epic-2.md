@@ -4,6 +4,8 @@
 **Status:** Planning
 **Depends on:** Phase 8 (observability/tracing infrastructure)
 
+> **[Updated 2026-04-07]** Unified roadmap expanded Phase 10 (10D=cost-aware routing, old 10D→10E) and Phase 11 (+11D=pipeline budget propagation). Epic cross-refs: old Epic 3→**5**, old Epic 4→**9**, old Epic 5→**10**.
+
 ---
 
 ## Motivation
