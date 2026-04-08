@@ -185,7 +185,7 @@ Supports custom dark and light themes, which highlight response text and code bl
 
 ![aichat-themes](https://github.com/sigoden/aichat/assets/4012553/29fa8b79-031e-405d-9caa-70d24fa0acf8)
 
-## Documentation
+## AIChat Docs
 
 - [Chat-REPL Guide](https://github.com/sigoden/aichat/wiki/Chat-REPL-Guide)
 - [Command-Line Guide](https://github.com/sigoden/aichat/wiki/Command-Line-Guide)
@@ -197,6 +197,10 @@ Supports custom dark and light themes, which highlight response text and code bl
 - [Custom Theme](https://github.com/sigoden/aichat/wiki/Custom-Theme)
 - [Custom REPL Prompt](https://github.com/sigoden/aichat/wiki/Custom-REPL-Prompt)
 - [FAQ](https://github.com/sigoden/aichat/wiki/FAQ)
+
+## Eridian-Specific Extensions
+- [Roadmap](./docs/ROADMAP.md)
+- [Macros](./docs/macros.md)
 
 ## Why "Eridian"?
 
@@ -213,3 +217,4 @@ Copyright (c) 2023-2025 Eridian contributors. Forked from [sigoden/aichat](https
 Eridian is made available under the terms of either the MIT License or the Apache License 2.0, at your option.
 
 See the LICENSE-APACHE and LICENSE-MIT files for license details.
+
