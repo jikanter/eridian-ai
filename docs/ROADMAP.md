@@ -35,7 +35,7 @@ Roles are the fundamental unit of composition. This roadmap evolves roles from s
 | 9 | RAG Evolution | 25-27 | Planned | [epic-4.md](./analysis/epic-4.md) |
 | 10 | Entity Evolution | 28-29 | Planned | [epic-5.md](./analysis/epic-5.md) |
 
-Architecture reference: [architecture.md](./roadmap/architecture.md)
+Architecture reference: [architecture.md](architecture/architecture.md)
 
 ---
 

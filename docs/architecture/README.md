@@ -1,0 +1,1 @@
+- See [Architecture](architecture.md) project architecture.
