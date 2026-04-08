@@ -1,11 +1,6 @@
 # Briefing: AIChat - A multi-target command-line for AI models.
 
-**Stack:** Rust 1.93.1, Cargo, Bash, argc
-
-## Constraints
-
-### Hard (Non-negotiable)
-- This tool should be cost conscious. In other words, it should help the llm to accomplish a task in the least amount of tokens possible.
+- *Always* add integration tests via bats in addition to the
 
 ### Soft (Preferred)
 - This tool should function using the "one tool per job" unix ethos

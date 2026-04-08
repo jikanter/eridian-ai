@@ -19,7 +19,6 @@ extern crate log;
 use crate::cli::Cli;
 use crate::client::{
     call_chat_completions, call_chat_completions_streaming, call_react, list_models, ModelType,
-    call_chat_completions, call_chat_completions_streaming, call_react, list_models, ModelType,
 };
 use crate::config::{
     ensure_parent_exists, list_agents, load_env_file, macro_execute, run_lifecycle_hooks,

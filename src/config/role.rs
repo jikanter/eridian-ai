@@ -227,8 +227,8 @@ fn read_raw_role_content(name: &str) -> Result<String> {
         return read_to_string(&path)
             .with_context(|| format!("Failed to read role file '{}'", path.display()));
     }
-    let content = RolesAsset::get(&format!("{name}.md"))
-        .ok_or_else(|| anyhow!("Unknown role `{name}`"))?;
+    let content =
+        RolesAsset::get(&format!("{name}.md")).ok_or_else(|| anyhow!("Unknown role `{name}`"))?;
     let content = unsafe { std::str::from_utf8_unchecked(&content.data) };
     Ok(content.to_string())
 }
@@ -287,7 +287,11 @@ fn resolve_role_content(name: &str, visited: &mut Vec<String>) -> Result<RawRole
         let mut prompt_parts = include_prompts;
         if !parent.prompt.is_empty() {
             let parent_prompt = if parent_has_input {
-                parent.prompt.replace(INPUT_PLACEHOLDER, "").trim().to_string()
+                parent
+                    .prompt
+                    .replace(INPUT_PLACEHOLDER, "")
+                    .trim()
+                    .to_string()
             } else {
                 parent.prompt
             };
@@ -377,7 +381,9 @@ impl Role {
                                 "model" => role.model_id = value.as_str().map(|v| v.to_string()),
                                 "temperature" => role.temperature = value.as_f64(),
                                 "top_p" => role.top_p = value.as_f64(),
-                                "use_tools" | "tools" => role.use_tools = value.as_str().map(|v| v.to_string()),
+                                "use_tools" | "tools" => {
+                                    role.use_tools = value.as_str().map(|v| v.to_string())
+                                }
                                 "input_schema" => role.input_schema = Some(value.clone()),
                                 "output_schema" => role.output_schema = Some(value.clone()),
                                 "description" => {
@@ -437,12 +443,8 @@ impl Role {
                                     }
                                 }
                                 // Phase 6B: Lifecycle hooks
-                                "pipe_to" => {
-                                    role.pipe_to = value.as_str().map(|v| v.to_string())
-                                }
-                                "save_to" => {
-                                    role.save_to = value.as_str().map(|v| v.to_string())
-                                }
+                                "pipe_to" => role.pipe_to = value.as_str().map(|v| v.to_string()),
+                                "save_to" => role.save_to = value.as_str().map(|v| v.to_string()),
                                 // Phase 6C: Unified resource binding
                                 "mcp_servers" => {
                                     if let Some(arr) = value.as_array() {
@@ -451,23 +453,8 @@ impl Role {
                                             .filter_map(|v| v.as_str().map(|s| s.to_string()))
                                             .collect();
                                     }
-                                },
-                                // Phase 6B: Lifecycle hooks
-                            "pipe_to" => {
-                                role.pipe_to = value.as_str().map(|v| v.to_string())
-                            }
-                            "save_to" => {
-                                role.save_to = value.as_str().map(|v| v.to_string())
-                            }
-                            // Phase 6C: Unified resource binding
-                            "mcp_servers" => {
-                                if let Some(arr) = value.as_array() {
-                                    role.role_mcp_servers = arr
-                                        .iter()
-                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                        .collect();
                                 }
-                            }
+                                // Phase 6B: Lifecycle hooks
                                 _ => (),
                             }
                         }
@@ -887,14 +874,26 @@ impl SchemaValidationResult {
 
     /// Format the terse error message (same as the old validate_schema output).
     pub fn terse_error(&self) -> String {
-        let lines: Vec<String> = self.violations.iter().map(|v| format!("  - {}", v.message)).collect();
-        format!("Schema {} validation failed:\n{}", self.direction, lines.join("\n"))
+        let lines: Vec<String> = self
+            .violations
+            .iter()
+            .map(|v| format!("  - {}", v.message))
+            .collect();
+        format!(
+            "Schema {} validation failed:\n{}",
+            self.direction,
+            lines.join("\n")
+        )
     }
 }
 
 /// Validate text against a JSON schema, returning rich violation details.
 /// Used by trace to show the raw output and per-violation paths.
-pub fn validate_schema_detailed(context: &str, schema: &Value, text: &str) -> Result<SchemaValidationResult> {
+pub fn validate_schema_detailed(
+    context: &str,
+    schema: &Value,
+    text: &str,
+) -> Result<SchemaValidationResult> {
     let trimmed = text.trim();
     let data: Value = match serde_json::from_str(trimmed) {
         Ok(v) => v,
@@ -910,8 +909,8 @@ pub fn validate_schema_detailed(context: &str, schema: &Value, text: &str) -> Re
             });
         }
     };
-    let validator = jsonschema::validator_for(schema)
-        .map_err(|e| anyhow!("Invalid {context} schema: {e}"))?;
+    let validator =
+        jsonschema::validator_for(schema).map_err(|e| anyhow!("Invalid {context} schema: {e}"))?;
     let violations: Vec<SchemaViolation> = validator
         .iter_errors(&data)
         .map(|e| SchemaViolation {
@@ -951,8 +950,7 @@ pub fn validate_schema_traced(
             let result = validate_schema_detailed(context, schema, text)?;
             t.emit_schema_validation(&result);
             if !result.is_ok() {
-                if result.violations.len() == 1
-                    && result.violations[0].message == "not valid JSON"
+                if result.violations.len() == 1 && result.violations[0].message == "not valid JSON"
                 {
                     bail!("Schema {context} validation failed: not valid JSON");
                 }
@@ -1001,12 +999,20 @@ fn save_output_to_path(template: &str, output: &str) -> Result<()> {
     let path = template.replace("{{timestamp}}", &now());
     let path = std::path::Path::new(&path);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create directory for save_to: {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create directory for save_to: {}",
+                parent.display()
+            )
+        })?;
     }
     std::fs::write(path, output)
         .with_context(|| format!("Failed to write save_to: {}", path.display()))?;
-    debug!("save_to: wrote {} bytes to {}", output.len(), path.display());
+    debug!(
+        "save_to: wrote {} bytes to {}",
+        output.len(),
+        path.display()
+    );
     Ok(())
 }
 
@@ -1194,10 +1200,7 @@ Input 1
         }
 
         assert_eq!(merged.get("temperature"), Some(&serde_json::json!(0.8)));
-        assert_eq!(
-            merged.get("model"),
-            Some(&serde_json::json!("gpt-4"))
-        );
+        assert_eq!(merged.get("model"), Some(&serde_json::json!("gpt-4")));
     }
 
     #[test]
@@ -1212,7 +1215,10 @@ Input 1
         prompt_parts.push(child_prompt.to_string());
         let result = prompt_parts.join("\n\n");
 
-        assert_eq!(result, "Safety first.\n\nBe helpful.\n\nFocus on code review.");
+        assert_eq!(
+            result,
+            "Safety first.\n\nBe helpful.\n\nFocus on code review."
+        );
         // Verify ordering
         let safety_pos = result.find("Safety first.").unwrap();
         let helpful_pos = result.find("Be helpful.").unwrap();
@@ -1232,7 +1238,10 @@ Input 1
             err.contains("Circular role inheritance"),
             "Error should mention circular inheritance: {err}"
         );
-        assert!(err.contains("A -> B -> A"), "Error should show chain: {err}");
+        assert!(
+            err.contains("A -> B -> A"),
+            "Error should show chain: {err}"
+        );
     }
 
     #[test]
@@ -1438,7 +1447,11 @@ OS is {{__os__}}, translate to {{lang}}."#;
         let child_has_input = child_prompt.contains(INPUT_PLACEHOLDER);
 
         let mut prompt_parts = Vec::new();
-        let parent_cleaned = parent.prompt.replace(INPUT_PLACEHOLDER, "").trim().to_string();
+        let parent_cleaned = parent
+            .prompt
+            .replace(INPUT_PLACEHOLDER, "")
+            .trim()
+            .to_string();
         prompt_parts.push(parent_cleaned);
         prompt_parts.push(child_prompt);
         let mut combined = prompt_parts.join("\n\n");
@@ -1450,7 +1463,10 @@ OS is {{__os__}}, translate to {{lang}}."#;
         assert!(combined.ends_with(INPUT_PLACEHOLDER));
         let input_pos = combined.rfind(INPUT_PLACEHOLDER).unwrap();
         let child_pos = combined.find("Child refinement.").unwrap();
-        assert!(child_pos < input_pos, "Child instructions should precede __INPUT__");
+        assert!(
+            child_pos < input_pos,
+            "Child instructions should precede __INPUT__"
+        );
         // Only one __INPUT__ in the result
         assert_eq!(combined.matches(INPUT_PLACEHOLDER).count(), 1);
     }
@@ -1471,7 +1487,11 @@ OS is {{__os__}}, translate to {{lang}}."#;
         let child_has_input = child_prompt.contains(INPUT_PLACEHOLDER);
 
         let mut prompt_parts = Vec::new();
-        let parent_cleaned = parent.prompt.replace(INPUT_PLACEHOLDER, "").trim().to_string();
+        let parent_cleaned = parent
+            .prompt
+            .replace(INPUT_PLACEHOLDER, "")
+            .trim()
+            .to_string();
         prompt_parts.push(parent_cleaned);
         prompt_parts.push(child_prompt);
         let combined = prompt_parts.join("\n\n");
@@ -1732,7 +1752,8 @@ Context: {{ctx}}."#;
     fn test_set_output_schema() {
         let mut role = Role::new("test", "prompt");
         assert!(role.output_schema().is_none());
-        let schema = serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
         role.set_output_schema(Some(schema.clone()));
         assert_eq!(role.output_schema(), Some(&schema));
         role.set_output_schema(None);
@@ -1743,7 +1764,8 @@ Context: {{ctx}}."#;
     fn test_set_input_schema() {
         let mut role = Role::new("test", "prompt");
         assert!(role.input_schema().is_none());
-        let schema = serde_json::json!({"type": "object", "properties": {"query": {"type": "string"}}});
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"query": {"type": "string"}}});
         role.set_input_schema(Some(schema.clone()));
         assert_eq!(role.input_schema(), Some(&schema));
         role.set_input_schema(None);
@@ -1807,9 +1829,15 @@ Context: {{ctx}}."#;
         assert!(!result.is_ok());
         assert_eq!(result.violations.len(), 1);
         let v = &result.violations[0];
-        assert!(!v.instance_path.is_empty(), "instance_path should be populated");
+        assert!(
+            !v.instance_path.is_empty(),
+            "instance_path should be populated"
+        );
         assert!(!v.schema_path.is_empty(), "schema_path should be populated");
-        assert!(v.message.contains("integer"), "message should mention expected type");
+        assert!(
+            v.message.contains("integer"),
+            "message should mention expected type"
+        );
     }
 
     #[test]
@@ -1837,7 +1865,10 @@ Context: {{ctx}}."#;
         assert_eq!(result.violations.len(), 1);
         let v = &result.violations[0];
         // instance_path should point into items/0/qty
-        assert!(v.instance_path.contains("0"), "path should contain array index");
+        assert!(
+            v.instance_path.contains("0"),
+            "path should contain array index"
+        );
     }
 
     #[test]
@@ -1850,9 +1881,13 @@ Context: {{ctx}}."#;
             },
             "required": ["a", "b"]
         });
-        let result = validate_schema_detailed("output", &schema, r#"{"a": 123, "b": "wrong"}"#).unwrap();
+        let result =
+            validate_schema_detailed("output", &schema, r#"{"a": 123, "b": "wrong"}"#).unwrap();
         assert!(!result.is_ok());
-        assert!(result.violations.len() >= 2, "should have at least 2 violations");
+        assert!(
+            result.violations.len() >= 2,
+            "should have at least 2 violations"
+        );
     }
 
     #[test]
