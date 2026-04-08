@@ -1,493 +1,585 @@
-# Epic 5: Entity Evolution & Agent Dynamism
+# Epic 5: Server Pipeline Engine
 
 **Created:** 2026-03-16
+**Updated:** 2026-04-07 (renumbered from Epic 3; phases 12-14 → 16-18)
 **Status:** Planning
-**Depends on:** Phase 7.5 (macro/agent config override), Phase 8 (observability)
+**Depends on:** Phase 8A (cost accounting), Phase 9 (schema fidelity)
 
 ---
 
 ## Motivation
 
-AIChat has four entity types: Prompt, Role, Agent, and Macro. Roles are the most powerful declarative unit (20+ metadata fields, pipelines, schemas, inheritance). Agents add runtime capabilities (own tools, RAG, dynamic instructions, sessions) but lack Role features (schemas, pipelines, lifecycle hooks, MCP binding). Macros orchestrate imperatively but can't flow data between steps.
+AIChat's `--serve` mode (963 lines, `src/serve.rs`) is currently a commodity OpenAI-compatible proxy. It exposes chat completions, embeddings, rerank, model listing, and two embedded HTML UIs (playground, arena). Through this API, a consumer gets the same experience as connecting to LiteLLM or OpenRouter — none of AIChat's distinctive features (roles, pipelines, schema validation, cost database, tool ecosystem) are accessible.
 
-The critical gap is **agent composability**: agents cannot call other agents, cannot be used as pipeline stages, and cannot be invoked as tools. Complex tasks must be solved by a single monolithic agent with all tools loaded, violating the "one tool per job" principle.
+The entire role system, pipeline engine, and schema validation machinery exist in `pipe.rs`, `role.rs`, and `function.rs` but are wired only to CLI entry points (`main.rs`). The server passes messages straight through to providers without role resolution, schema enforcement, pipeline execution, or cost calculation.
 
-The second gap is **agent dynamism**: the `call_react` loop is a flat ReAct cycle with no planning, no conditional branching, no memory across invocations, and no runtime tool discovery beyond the existing `tool_search` pattern.
+This epic exposes AIChat's unique runtime capabilities over HTTP, turning the server from a proxy into a **pipeline execution engine and role-as-API gateway**.
 
-This epic addresses both gaps while preserving AIChat's core strengths: declarative composition, token efficiency, and Unix-native simplicity. The strategy is to make agents composable within existing mechanisms (pipelines, tool dispatch, macros), not to build a framework.
+### Why Not Just Integrate With OpenWebUI?
 
-### Competitive Context
+AIChat's `--serve` **already works as an OpenWebUI backend today** — it speaks OpenAI-compatible HTTP. OpenWebUI can point at `http://host:8000` and get model listing + chat completions. No code changes needed.
 
-| Capability | Claude Code | LangGraph | CrewAI | AIChat |
-|---|---|---|---|---|
-| Single-agent ReAct | Yes | Yes | Yes | Yes |
-| Multi-agent delegation | No | Yes (StateGraph) | Yes (Crew) | **No → Epic 5** |
-| Agent planning | Implicit | Yes (Plan-Execute) | Yes (goals) | **No → compose via pipeline** |
-| Agent memory | No | Checkpointing | Short-term | **No → Epic 5** |
-| Declarative pipelines | No | No (code-only) | No (code-only) | **Yes (unique)** |
-| Schema-validated I/O | No | No | No | **Yes (unique)** |
-| Token-efficient tools | No | No | No | **Yes (unique)** |
-| Cost accounting | No | No | No | **Phase 8A (planned)** |
+What OpenWebUI **cannot** see through this interface: roles, pipelines, schema validation, cost data, tool ecosystem, variables. These are AIChat-specific concepts with no OpenAI API equivalent.
 
-AIChat's strategy: don't compete on agent autonomy (LangGraph/CrewAI territory). Compete on **agent composability** — making agents first-class participants in the pipeline/tool/macro composition model that is already AIChat's strength.
+The correct architecture is **protocol compatibility without coupling**: AIChat owns the API and runtime logic; OpenWebUI (or any frontend) is an optional consumer. A client that knows about AIChat's extended endpoints gets more; a client that doesn't still works via standard OpenAI API.
+
+### What OpenWebUI Provides That AIChat Should Never Build
+
+- Multi-user authentication and authorization
+- Persistent conversation database (SQLite/PostgreSQL)
+- Rich web UI with component framework (SvelteKit)
+- Plugin marketplace / function registry
+- Document upload and management UI
+- Collaborative features, workspace management
+- Image generation, voice, web search integrations
 
 ---
 
-## Feature 1: Agent-as-Tool
+## Feature 1: Roles as Virtual Models
 
 ### Problem
 
-Agents cannot be called by other agents, by pipeline stages, or by roles. An agent with `use_tools: web_search,execute_command` cannot add `use_tools: code-reviewer-agent`. Complex tasks that should be delegated to specialist agents must be solved monolithically.
+Roles are invisible to any OpenAI-compatible consumer. OpenWebUI, LiteLLM, and any standard client see only raw models via `/v1/models`. A user with 20 carefully crafted roles gets zero value from them through the API.
 
 ### Solution
 
-Make agents callable as tools through the existing `ToolCall::eval()` dispatch. When a tool name matches a known agent, init the agent, run `call_react`, return the text output as a `ToolResult`.
+Expose roles as virtual models in the `/v1/models` listing. When `/v1/chat/completions` receives `"model": "role:classify"`, the server intercepts it, resolves the role, executes the full role machinery (variable interpolation, schema validation, pipeline stages, tool binding), and returns the result through the standard completions response format.
 
 ### Implementation
 
-In `src/function.rs`, `ToolCall::eval()` (lines 306-349) already has three dispatch paths: `tool_search`, pipeline-role, and llm-function. Add a fourth:
+**Model listing** (`src/serve.rs`, `list_models` function):
 
+Append role-based virtual models to the model list:
 ```rust
-// After check_pipeline_role (line 313-394):
-if let Some(agent_name) = self.check_agent(config) {
-    return self.eval_agent(config, &agent_name, abort_signal).await;
+// After listing real models, add roles as virtual models
+for role in &self.roles {
+    if !role.is_empty_prompt() {  // Only expose non-trivial roles
+        models.push(json!({
+            "id": format!("role:{}", role.name()),
+            "object": "model",
+            "owned_by": "aichat-role",
+            "description": role.description(),
+            "has_input_schema": role.input_schema().is_some(),
+            "has_output_schema": role.output_schema().is_some(),
+            "has_pipeline": role.pipeline().is_some(),
+        }));
+    }
 }
 ```
 
-`eval_agent`:
-1. Init Agent B via `Agent::init(config, &agent_name)`
-2. Create Input from tool call arguments: `Input::from_str(config, &args["input"], Some(agent_role))`
-3. Set up agent context (variables, functions, RAG)
-4. Call `call_react(&mut input, client, abort_signal)` with Agent B's role and tools
-5. Return output text as `ToolResult`
+**Chat completions dispatch** (`src/serve.rs`, `chat_completions` method):
 
-**Recursion prevention**: Thread a `depth: usize` parameter through `call_react`. Max depth = 3 (configurable via `react_max_depth:`). When exceeded, return an error ToolResult: "Agent delegation depth exceeded."
+Before normal model dispatch, check if the model starts with `role:`:
+```rust
+if model_id.starts_with("role:") {
+    let role_name = &model_id["role:".len()..];
+    return self.invoke_role(role_name, req_body, abort_signal).await;
+}
+```
 
-**Token isolation**: Each sub-agent gets its own context window. Agent A's messages are NOT passed to Agent B — only the tool call arguments. Agent B's system prompt + tools are its own context. This is the key cost advantage over monolithic prompts.
+The `invoke_role` method:
+1. Resolves the role via `config.retrieve_role(name)`
+2. Extracts the last user message as input text
+3. Runs through the same path as CLI: schema validation → pipeline/single-stage execution → output validation
+4. Returns standard OpenAI chat completion response format
 
-**Step budget**: Sub-agent steps count toward the parent's MAX_REACT_STEPS (shared budget) OR each agent gets its own budget (isolated budget). Isolated is safer for cost control. Configurable via `react_step_sharing: isolated | shared`.
-
-**Discovery**: Extend `tool_search` to include agent names and descriptions in its searchable index. When an agent is discovered via `tool_search`, its declaration is injected into the active tool set.
+**OpenWebUI integration effect**: Roles appear as selectable "models" in OpenWebUI's model dropdown. Selecting `role:code-reviewer` transparently executes the full role pipeline. Zero changes to OpenWebUI.
 
 ### Files to Modify
 
 | File | Change |
 |---|---|
-| `src/function.rs` | Add `check_agent()` + `eval_agent()` dispatch in `ToolCall::eval()`; extend `eval_tool_search()` to include agents |
-| `src/client/common.rs` | Add `depth` parameter to `call_react()`; enforce max depth |
-| `src/config/mod.rs` | Add `react_max_depth` config field |
+| `src/serve.rs` | Add role entries to `list_models`; add role dispatch in `chat_completions`; new `invoke_role` method |
 
 ### Effort
 
-Medium. ~150 lines. The pattern follows existing `check_pipeline_role`/`eval_pipeline_role` exactly.
+Medium. ~100-150 lines in `serve.rs`. The role execution logic already exists in `pipe.rs` and `main.rs` — the work is routing and response formatting.
 
 ### Parallelization
 
-Independent of Features 2-7. Foundation for Feature 6 (agent composition).
+Independent of Features 2-7. Can be implemented by one agent.
 
 ---
 
-## Feature 2: ReactPolicy Trait (Configurable Agent Loop Behavior)
+## Feature 2: Role Invocation Endpoint
 
 ### Problem
 
-`call_react` is a flat loop with one control mechanism: the retry budget (Phase 7C). There is no way to:
-- Stop execution when cost exceeds a budget
-- Switch to a different model after N failures
-- Inject guidance when the agent is stuck
-- Define custom termination conditions
-
-Phase 9C (schema retry), Phase 10D (model fallback), and cost guards are all specialized versions of this general need.
+The `role:name` virtual model approach (Feature 1) works through the OpenAI API contract but cannot express variables, structured input matching `input_schema`, or return pipeline trace metadata. A richer endpoint is needed for API-native consumers.
 
 ### Solution
 
-A `ReactPolicy` trait that injects deterministic checkpoints into the `call_react` loop. Zero-cost for happy-path execution. Policies compose.
+`POST /v1/roles/{name}/invoke` — a dedicated endpoint that accepts structured input, validates against schemas, executes the role (including pipeline stages), and returns output with full metadata.
 
 ### Implementation
 
-**New trait** in `src/client/common.rs`:
-
-```rust
-pub trait ReactPolicy: Send + Sync {
-    fn check(&self, context: &ReactContext) -> ReactAction;
-}
-
-pub enum ReactAction {
-    Continue,
-    InjectGuidance(String),    // Add message before next turn
-    SwitchModel(String),       // Change model for remaining steps
-    Stop(String),              // Halt with partial result + reason
-}
-
-pub struct ReactContext<'a> {
-    pub step: usize,
-    pub max_steps: usize,
-    pub total_cost_usd: f64,
-    pub total_input_tokens: usize,
-    pub total_output_tokens: usize,
-    pub consecutive_failures: usize,
-    pub last_tool_results: &'a [ToolResult],
-    pub elapsed_ms: u64,
+**Request**:
+```json
+{
+  "input": "the user input text or JSON matching input_schema",
+  "variables": {"key": "value"},
+  "model": "deepseek:deepseek-chat",
+  "stream": false,
+  "trace": true
 }
 ```
 
-**Built-in policies**:
+- `input`: Required. Text or JSON. Validated against `input_schema` if defined.
+- `variables`: Optional. Merged with role's declared variables. Shell-injective defaults execute on the server.
+- `model`: Optional. Overrides the role's model. Supports `fallback_models` (Phase 10D).
+- `stream`: Optional. Default false. When true, SSE stream with stage-boundary events.
+- `trace`: Optional. Default false. When true, include trace in response.
 
-```rust
-// Cost guard: stop when budget exceeded
-pub struct CostGuard { pub max_cost_usd: f64 }
-impl ReactPolicy for CostGuard {
-    fn check(&self, ctx: &ReactContext) -> ReactAction {
-        if ctx.total_cost_usd > self.max_cost_usd {
-            ReactAction::Stop(format!("Cost budget exceeded: ${:.4}", ctx.total_cost_usd))
-        } else { ReactAction::Continue }
-    }
+**Response** (non-streaming):
+```json
+{
+  "output": "the validated output",
+  "role": "classify",
+  "model": "deepseek:deepseek-chat",
+  "usage": {
+    "input_tokens": 892,
+    "output_tokens": 341,
+    "cost_usd": 0.0003
+  },
+  "schema_valid": true,
+  "trace": {
+    "stages": [
+      {"role": "extract", "model": "deepseek:deepseek-chat", "input_tokens": 500, "output_tokens": 200, "cost_usd": 0.0001, "latency_ms": 800},
+      {"role": "review", "model": "claude:claude-sonnet-4-6", "input_tokens": 200, "output_tokens": 141, "cost_usd": 0.012, "latency_ms": 1500}
+    ],
+    "total_cost_usd": 0.0121,
+    "total_latency_ms": 2300
+  }
 }
-
-// Stagnation detector: inject guidance after N consecutive failures
-pub struct StagnationGuard { pub max_consecutive_failures: usize }
-
-// Model escalation: switch to expensive model after failures
-pub struct ModelEscalation { pub escalation_model: String, pub trigger_failures: usize }
 ```
 
-**Integration**: In `call_react`, after `annotate_repeated_failures` (line 503-517), call `policy.check(&context)` and handle the action. Default policy is `Continue` always (zero overhead).
+**Error responses**:
+- 404: Role not found
+- 422: Input schema validation failed (structured error with field-level details, reusing Phase 4C format)
+- 500: Pipeline stage failure (includes stage traceback per Phase 4E)
 
-**Configuration**: Role/agent frontmatter `react_policy:` field:
-```yaml
-react_policy:
-  max_cost: 0.50              # CostGuard
-  stagnation_threshold: 3     # StagnationGuard
-  escalation_model: claude:claude-sonnet-4-6  # ModelEscalation after 5 failures
+**Streaming response** (SSE):
 ```
+event: stage_start
+data: {"stage": 1, "role": "extract", "model": "deepseek:deepseek-chat"}
+
+event: delta
+data: {"content": "partial output..."}
+
+event: stage_end
+data: {"stage": 1, "input_tokens": 500, "output_tokens": 200, "cost_usd": 0.0001}
+
+event: stage_start
+data: {"stage": 2, "role": "review", "model": "claude:claude-sonnet-4-6"}
+
+event: delta
+data: {"content": "more output..."}
+
+event: stage_end
+data: {"stage": 2, "input_tokens": 200, "output_tokens": 141, "cost_usd": 0.012}
+
+event: done
+data: {"total_cost_usd": 0.0121, "schema_valid": true}
+```
+
+### Schema validation integration
+
+The endpoint uses existing `validate_schema()` from `role.rs:835-848`:
+- Before LLM call: validate `input` against `input_schema` → 422 on failure
+- After LLM call: validate output against `output_schema` → retry per Phase 9C, then 500 if still invalid
 
 ### Files to Modify
 
 | File | Change |
 |---|---|
-| `src/client/common.rs` | ReactPolicy trait; policy check in `call_react` loop; built-in policies |
-| `src/config/role.rs` | Parse `react_policy:` from frontmatter |
+| `src/serve.rs` | New route handler, request parsing, response formatting, SSE stage events |
+| `src/pipe.rs` | Refactor `run_stage` to emit stage events (callback or channel) instead of printing to stdout |
 
 ### Effort
 
-Medium. ~200 lines for trait + 3 policies + integration.
+Medium-large. ~200-300 lines. The main complexity is the streaming variant with stage-boundary SSE events, which requires refactoring `pipe.rs` to emit events rather than printing directly.
 
 ### Parallelization
 
-Independent of all other features. The `call_react` insertion point is orthogonal to Feature 1's dispatch changes.
-
-### Token Impact
-
-Zero for happy-path. Policies are deterministic runtime checks, not LLM calls. CostGuard prevents runaway spending. StagnationGuard saves wasted turns.
+Depends on Feature 1 for shared role resolution logic. The streaming and non-streaming paths can be developed by separate agents.
 
 ---
 
-## Feature 3: Agent Memory (JSONL Fact Store)
+## Feature 3: Role Metadata Endpoint
 
 ### Problem
 
-Agents have no memory across invocations. Each session starts from the same instructions + tools. An agent that has processed 100 requests has learned nothing about which tools work for which queries, what the user prefers, or what common patterns exist.
+The current `/v1/roles` endpoint serializes the full `Role` struct, including the raw prompt text. This is a data leak for roles with proprietary instructions. Additionally, there is no single-role retrieval — consumers must list all roles and filter client-side.
 
 ### Solution
 
-A per-agent JSONL memory file, automatically populated from trace data, readable by `_instructions` at session start. Zero LLM calls for writes. Zero API calls for reads.
+A `RolePublicView` that exposes the API contract without leaking implementation details, plus individual role retrieval.
 
 ### Implementation
 
-**Memory file**: `<agent_data_dir>/memory.jsonl`
-
-**Write path** — at the end of each `call_react` invocation, append a summary record:
-```jsonl
-{"ts":"2026-03-16T...","type":"invocation","turns":3,"tools_used":["web_search","fs_cat"],"tools_failed":["execute_command"],"cost_usd":0.012,"success":true}
-```
-
-This piggybacks on the existing `TraceEmitter::emit_summary` (trace.rs). The delta: also write to `memory.jsonl`. ~15 lines.
-
-**Read path** — `_instructions` shell function reads memory at session start:
-```bash
-# In _instructions for an agent:
-MEMORY="$LLM_AGENT_DATA_DIR/memory.jsonl"
-if [ -f "$MEMORY" ]; then
-    echo "## Learned Knowledge (last 50 invocations)"
-    tail -50 "$MEMORY" | jq -r 'select(.type=="invocation") |
-      "- Tools: \(.tools_used | join(", ")) | Failed: \(.tools_failed // [] | join(", ")) | Cost: $\(.cost_usd)"'
-fi
-```
-
-This is a shell script, not Rust. The agent author decides what to extract from memory. AIChat only handles the write side.
-
-**Memory record types** (extensible):
-- `invocation` — per-invocation summary (automatic)
-- `tool_outcome` — per-tool success/failure/latency (automatic)
-- `correction` — user correction captured from session (future, manual)
-
-**Convenience**: New `memory:` field in AgentConfig. When `memory: true`, automatically:
-1. Set `LLM_AGENT_DATA_DIR` env var for `_instructions`
-2. Enable trace-to-memory bridging in `call_react`
-3. Add memory records to `_instructions` output if `dynamic_instructions: true`
-
-### Files to Modify
-
-| File | Change |
-|---|---|
-| `src/client/common.rs` | Append memory record at end of `call_react` |
-| `src/config/agent.rs` | Add `memory:` field to AgentConfig; set `LLM_AGENT_DATA_DIR` env var |
-| `src/utils/ledger.rs` | Reuse `append_run_log` pattern for memory file |
-
-### Effort
-
-Small. ~60 lines of Rust for the write path. The read path is shell scripts in agent `_instructions` — zero Rust.
-
-### Token Impact
-
-Write: zero (filesystem append). Read: ~50-200 tokens injected into system prompt from memory aggregation. This is a fixed cost that makes every subsequent invocation more informed.
-
----
-
-## Feature 4: Unified Entity Resolution
-
-### Problem
-
-Users must choose between `-r` (role), `-a` (agent), `--macro` (macro) before they can invoke an entity. The roadmap notes: "A user who wants to create a reusable prompt that calls tools has to choose between a Role with use_tools, an Agent with functions.json, or a Macro that sets up a Role."
-
-### Solution
-
-Unify entity resolution under `-r`. The flag resolves against a combined namespace: roles first, then agents, then macros. Explicit `-a` and `--macro` remain as overrides for name collisions.
-
-### Implementation
-
-New function `Config::resolve_entity(name)`:
+**New struct**: `RolePublicView`
 ```rust
-pub fn resolve_entity(&self, name: &str) -> Result<EntityRef> {
-    // 1. Check roles directory
-    if let Ok(role) = self.retrieve_role(name) {
-        return Ok(EntityRef::Role(role));
-    }
-    // 2. Check agents
-    if self.agent_names().contains(&name.to_string()) {
-        return Ok(EntityRef::Agent(name.to_string()));
-    }
-    // 3. Check macros
-    if self.macro_names().contains(&name.to_string()) {
-        return Ok(EntityRef::Macro(name.to_string()));
-    }
-    bail!("Entity '{}' not found (checked roles, agents, macros)", name)
+struct RolePublicView {
+    name: String,
+    description: Option<String>,
+    model_id: Option<String>,
+    input_schema: Option<Value>,
+    output_schema: Option<Value>,
+    variables: Vec<VariablePublicView>,  // name + type only, no shell commands
+    pipeline: Option<Vec<PipelineStageView>>,  // role names + models only
+    extends: Option<String>,
+    use_tools: Option<String>,
+    examples: Option<Vec<Value>>,
+}
+
+struct VariablePublicView {
+    name: String,
+    description: Option<String>,
+    has_default: bool,
+    default_type: String,  // "value" | "shell" (but NOT the shell command itself)
+}
+
+struct PipelineStageView {
+    role: String,
+    model: Option<String>,
 }
 ```
 
-In `src/main.rs`, when `-r name` is specified, call `resolve_entity(name)` and dispatch accordingly.
+**Excluded from public view**: `prompt` (proprietary instructions), `pipe_to`/`save_to` (filesystem paths), `mcp_servers` (infrastructure details), shell variable default commands.
 
-**Backward compatibility**: `-a name` always resolves as agent. `--macro name` always resolves as macro. `-r name` uses the unified resolution. No breaking change.
+**Endpoints**:
+- `GET /v1/roles` — returns list of `RolePublicView` (replaces current full serialization)
+- `GET /v1/roles/{name}` — returns single `RolePublicView`
+- `GET /v1/roles/{name}/schema` — returns `{"input_schema": ..., "output_schema": ...}` (convenience for programmatic consumers)
 
 ### Files to Modify
 
 | File | Change |
 |---|---|
-| `src/config/mod.rs` | Add `resolve_entity()` method |
-| `src/main.rs` | Use `resolve_entity()` when `-r` flag is specified |
+| `src/serve.rs` | Replace current `list_roles` serialization; add single-role and schema endpoints |
 
 ### Effort
 
-Small. ~50 lines. Zero behavioral change for existing `-a` and `--macro` users.
+Small. ~80-100 lines. Straightforward struct definition and serialization.
+
+### Parallelization
+
+Fully independent of all other features.
 
 ---
 
-## Feature 5: Configurable React Loop
+## Feature 4: Pipeline Execution Endpoint
 
 ### Problem
 
-`MAX_REACT_STEPS = 10` is hardcoded (common.rs:435). Some tasks genuinely need more turns. Some should stop earlier. There is no agent-level control.
+Pipelines — AIChat's most distinctive feature — cannot be invoked via HTTP. The `/v1/chat/completions` endpoint does not execute pipeline stages, and there is no pipeline-specific endpoint.
 
 ### Solution
 
-Expose step limit and add an explicit "finish" tool for clean termination.
+`POST /v1/pipelines/run` — accepts named or inline pipeline definitions, executes them, and returns results with per-stage trace metadata.
 
 ### Implementation
 
-**Configurable step limit** — new frontmatter field:
+**Request** (named pipeline):
+```json
+{
+  "pipeline": "extract-review-format",
+  "input": "Review this code for security issues...",
+  "variables": {"language": "rust"},
+  "stream": true
+}
+```
+
+**Request** (inline stages):
+```json
+{
+  "stages": [
+    {"role": "extract", "model": "deepseek:deepseek-chat"},
+    {"role": "review", "model": "claude:claude-sonnet-4-6"},
+    {"role": "format"}
+  ],
+  "input": "...",
+  "stream": false
+}
+```
+
+Named pipelines resolve to roles with `pipeline:` stages. Inline stages are ad-hoc — the same as CLI `--stage extract@deepseek --stage review@claude`.
+
+**Response**: Same format as Feature 2 (role invocation), with the trace envelope showing per-stage breakdown.
+
+**Implementation path**: The endpoint deserializes the request, constructs `PipelineStage` structs matching `pipe.rs`'s internal format, and calls `run_pipeline_role()` (pipe.rs:240-276) or the equivalent stage loop. The HTTP handler is thin routing; the execution engine already exists.
+
+### Files to Modify
+
+| File | Change |
+|---|---|
+| `src/serve.rs` | New route handler, request parsing |
+| `src/pipe.rs` | Expose `run_pipeline_role` or equivalent for server consumption (may need to accept a callback/channel for stage events) |
+
+### Effort
+
+Medium. ~100-150 lines. Most of the work is already done in `pipe.rs`. The inline-stages path reuses `parse_stages()`.
+
+### Parallelization
+
+Independent of Features 1, 3, 5, 6, 7. Shares the stage-event refactoring with Feature 2's streaming variant.
+
+---
+
+## Feature 5: Cost in API Responses
+
+### Problem
+
+`ModelData` carries `input_price`/`output_price`. Every API response carries `input_tokens`/`output_tokens`. The multiplication never happens in server mode. The roadmap (Phase 8A1) connects them for CLI but not for `--serve`.
+
+### Solution
+
+Add `cost_usd` to the `usage` object in every `/v1/chat/completions` response, plus `X-AIChat-Cost-USD` response header on all endpoints.
+
+### Implementation
+
+In `serve.rs`, after computing the response:
+```rust
+let cost_usd = if let (Some(input_price), Some(output_price)) =
+    (model.data.input_price, model.data.output_price)
+{
+    Some(
+        (output.input_tokens as f64 * input_price / 1_000_000.0)
+        + (output.output_tokens as f64 * output_price / 1_000_000.0)
+    )
+} else {
+    None
+};
+
+// Add to usage object
+if let Some(cost) = cost_usd {
+    usage["cost_usd"] = json!(cost);
+}
+
+// Add as response header
+if let Some(cost) = cost_usd {
+    headers.insert("X-AIChat-Cost-USD", cost.to_string().parse()?);
+}
+```
+
+Also add: `X-AIChat-Model`, `X-AIChat-Input-Tokens`, `X-AIChat-Output-Tokens`, `X-AIChat-Latency-Ms` headers. These are zero-overhead for callers that ignore them and immediately useful for callers that want accounting.
+
+### Files to Modify
+
+| File | Change |
+|---|---|
+| `src/serve.rs` | Cost multiplication in response building; response headers on all endpoints |
+
+### Effort
+
+Small. ~30-50 lines. The data exists; this is just arithmetic and serialization.
+
+### Parallelization
+
+Fully independent. Can be done in parallel with everything else. Benefits from Phase 8A1 landing first (shared cost calculation logic), but can be implemented independently.
+
+---
+
+## Feature 6: Server Hardening
+
+### Problem
+
+The server lacks basic production safety features: no authentication, no health endpoint, CORS restricted to exact localhost strings (blocks Docker bridge networks), no streaming usage reporting.
+
+### Solution
+
+Minimal additions that make the server usable beyond local development without adding platform complexity.
+
+### Implementation
+
+**6A. Configurable CORS** (~15 lines):
 ```yaml
-react_max_steps: 20  # default: 10
+# config.yaml
+serve_cors_origins:
+  - "http://localhost:3000"    # OpenWebUI dev
+  - "http://host.docker.internal:3000"
+  # or
+serve_cors_allow_all: true     # for trusted networks
 ```
 
-Read in `call_react` from the active role/agent config. Falls back to 10.
+Replace the hardcoded `is_local_origin()` check with a configurable origin list.
 
-**Finish tool** — a synthetic tool that cleanly exits the loop:
-```rust
-FunctionDeclaration {
-    name: "finish",
-    description: "Signal that the task is complete. Call this when you have the final answer.",
-    parameters: json!({"type": "object", "properties": {
-        "result": {"type": "string", "description": "The final result"}
-    }, "required": ["result"]}),
-}
-```
-
-When `call_react` sees a `finish` tool call, it extracts `result` and returns it as the output, bypassing further iterations. This gives the LLM an explicit way to say "I'm done" instead of the implicit "stop requesting tools."
-
-### Files to Modify
-
-| File | Change |
-|---|---|
-| `src/client/common.rs` | Read `react_max_steps` from config; handle `finish` tool call |
-| `src/config/role.rs` | Add `react_max_steps` to frontmatter |
-| `src/function.rs` | Add `finish` to synthetic tool set (alongside `tool_search`) |
-
-### Effort
-
-Small. ~40 lines.
-
----
-
-## Feature 6: Agent-in-Pipeline
-
-### Problem
-
-Pipeline stages can reference roles but not agents. A pipeline cannot include an agent stage that has its own tools and RAG.
-
-### Solution
-
-Allow pipeline stages to reference agent names. When `run_stage_inner` resolves a stage role, fall back to agent resolution.
-
-### Implementation
-
-In `pipe.rs:run_stage_inner()` (lines 112-186), the role resolution at line 119-122:
-```rust
-let role = config.read().retrieve_role(&stage.role_name)?;
-```
-
-Change to:
-```rust
-let role = config.read().retrieve_role(&stage.role_name)
-    .or_else(|_| {
-        // Try resolving as agent
-        let agent = Agent::init(config, &stage.role_name)?;
-        Ok(agent.to_role())
-    })?;
-```
-
-The `to_role()` method already produces a complete Role with the agent's instructions, model, tools, and config. Pipeline stages that reference agents get the agent's full capabilities.
-
+**6B. Optional bearer token auth** (~25 lines):
 ```yaml
-pipeline:
-  - role: extract              # regular role
-  - role: triage-agent         # resolves to agent, gets agent's tools + RAG
-  - role: format               # regular role
+# config.yaml
+serve_api_key: "sk-my-secret-key"
 ```
+
+When set, the server checks `Authorization: Bearer <token>` on every request. Returns 401 on mismatch. When not set, no auth (current behavior).
+
+**6C. Health endpoint** (~10 lines):
+```
+GET /health
+→ 200 {"status": "ok", "models": 42, "roles": 15}
+```
+
+**6D. Streaming usage** (~30 lines):
+
+Add `usage` to the final SSE chunk in streaming mode:
+```
+data: {"choices":[],"usage":{"prompt_tokens":892,"completion_tokens":341,"cost_usd":0.012}}
+```
+
+OpenAI's API includes this when `stream_options: {"include_usage": true}`. OpenWebUI relies on it.
+
+**6E. Hot-reload endpoint** (~20 lines):
+```
+POST /v1/reload
+→ 200 {"roles": 15, "models": 42}
+```
+
+Reloads roles and models from disk without restarting the server. Eliminates restart friction during role development.
 
 ### Files to Modify
 
 | File | Change |
 |---|---|
-| `src/pipe.rs` | Agent fallback in role resolution |
-| `src/config/agent.rs` | Ensure `Agent::init()` works without REPL context |
+| `src/serve.rs` | CORS config, auth check, health endpoint, streaming usage, reload |
+| `src/config/mod.rs` | Parse `serve_cors_origins`, `serve_api_key` config fields |
 
 ### Effort
 
-Small. ~30 lines. The `to_role()` bridge already exists.
+Small. ~100 lines total across all sub-features.
+
+### Parallelization
+
+6A-6E are all independent of each other and of other features. Can be split across up to 5 agents, though bundling them as one task for a single agent is more practical.
 
 ---
 
-## Feature 7: Agent MCP Binding
+## Feature 7: Cost Estimation Endpoint
 
 ### Problem
 
-Roles can declare `mcp_servers:` (Phase 6C) to auto-bind MCP tools. Agents cannot. An agent that needs MCP tools must wrap itself in a role, which is cumbersome and loses agent-specific features (own tools, RAG, dynamic instructions).
+There is no way to preview the cost of a role or pipeline execution before committing to it. For agents with budgets, this is a "should I even make this call?" gate.
 
 ### Solution
 
-Add `mcp_servers:` to AgentConfig. When an agent declares MCP servers, those tools are merged into the agent's function set.
+`POST /v1/estimate` — returns token and cost estimates without making any LLM call.
 
 ### Implementation
 
-In `src/config/agent.rs`, add to `AgentConfig`:
-```rust
-pub mcp_servers: Option<Vec<String>>,
-```
-
-In `Agent::to_role()` (line 347-363), after syncing model/temperature/tools, also sync `mcp_servers`:
-```rust
-if let Some(servers) = &self.config.mcp_servers {
-    role.role_mcp_servers = Some(servers.clone());
+**Request**:
+```json
+{
+  "role": "classify",
+  "input": "some text to classify",
+  "model": "claude:claude-sonnet-4-6"
 }
 ```
 
-The existing Phase 6C machinery in `Config::retrieve_role()` (lines 1106-1118) already handles `mcp_servers` → `use_tools` expansion. Since `to_role()` produces a Role that goes through `retrieve_role`, this Just Works.
+**Response**:
+```json
+{
+  "model": "claude:claude-sonnet-4-6",
+  "estimated_input_tokens": 1847,
+  "estimated_output_tokens": 500,
+  "estimated_cost_usd": 0.015,
+  "alternatives": [
+    {"model": "deepseek:deepseek-chat", "estimated_cost_usd": 0.0004},
+    {"model": "openai:gpt-4o-mini", "estimated_cost_usd": 0.002}
+  ]
+}
+```
+
+The `alternatives` field lists all configured models that support the required capabilities (function calling if role has `use_tools`, vision if input has images) sorted by estimated cost ascending. This leverages the full `models.yaml` database deterministically — zero LLM cost.
+
+**Token estimation**: Uses existing `estimate_token_length()` from `src/utils/mod.rs:75-91`. Applies to the assembled prompt (system prompt + schema suffix + input). Output tokens estimated from `max_output_tokens` or a configurable default (500).
+
+**Pipeline estimation**: For roles with `pipeline:` stages, estimate per-stage. The input to stage N+1 is assumed to be roughly the output size of stage N.
 
 ### Files to Modify
 
 | File | Change |
 |---|---|
-| `src/config/agent.rs` | Add `mcp_servers` to `AgentConfig`; sync in `to_role()` |
+| `src/serve.rs` | New endpoint handler |
+| `src/utils/mod.rs` | May need to expose `estimate_token_length` as `pub` |
 
 ### Effort
 
-Tiny. ~15 lines. Leverages existing Phase 6C infrastructure completely.
+Small-medium. ~80-120 lines. The token estimation and price multiplication are straightforward arithmetic.
+
+### Parallelization
+
+Fully independent of all other features.
 
 ---
 
-## Feature 8: Macro Output Chaining
+## Feature 8: OpenAPI Specification
 
 ### Problem
 
-Macros can sequence REPL commands but cannot pass output between steps programmatically. Each step's output goes to stdout. A macro cannot say "take the output of step 1 and feed it to step 2."
+The server has no machine-readable API description. Programmatic consumers must read source code to discover endpoints. For a tool positioning itself as "infrastructure for AI agents," a machine-readable spec is table stakes.
 
 ### Solution
 
-A `%%` variable in macros that resolves to the previous step's output (parallel to the existing `%%` for "last reply" in REPL).
+Serve an OpenAPI 3.0 spec at `GET /v1/openapi.json` that documents all endpoints, request/response schemas, and error formats.
 
 ### Implementation
 
-In `macro_execute()` (`src/config/mod.rs`, lines 2869-2903), after each step that produces output, capture the output in a `prev_output` variable:
+**Static spec**: Generate the OpenAPI JSON as a static file embedded in the binary (like `models.yaml`). It documents:
+- All `/v1/*` endpoints with request/response schemas
+- Authentication (optional bearer token)
+- Error format (Phase 4C structured errors)
+- Extended fields (`usage.cost_usd`, custom headers)
 
-```rust
-// After running each step:
-if let Some(last_reply) = config.read().last_message.as_ref() {
-    prev_output = last_reply.1.clone();  // (input, output) tuple
-}
-
-// Before interpolating the next step:
-step_text = step_text.replace("%%", &prev_output);
-```
-
-The REPL already captures `last_message` (the last assistant response). The macro runner just needs to read it between steps.
-
-```yaml
-# macros/extract-and-summarize.yaml
-variables:
-  - name: url
-steps:
-  - ".role text-extractor"
-  - ".file {{url}} -- Extract the main content"
-  - ".role summarizer"
-  - "Summarize this: %%"
-```
+**Root page**: `GET /` returns a lightweight HTML page listing all endpoints with one-line descriptions and a link to the OpenAPI spec. Replaces the current 404 on root.
 
 ### Files to Modify
 
 | File | Change |
 |---|---|
-| `src/config/mod.rs` | Capture and interpolate `%%` between macro steps |
+| `assets/openapi.json` | New file: OpenAPI 3.0 specification |
+| `src/serve.rs` | Serve the spec at `/v1/openapi.json`; root page at `/` |
 
 ### Effort
 
-Small. ~20 lines.
+Medium. The OpenAPI spec itself is ~200-300 lines of JSON. The serving code is ~20 lines.
+
+### Parallelization
+
+Fully independent. Should be done last (after other features define the endpoints it documents).
 
 ---
 
 ## Cross-Feature Dependency Graph
 
 ```
-F1 (agent-as-tool) ─────────────── Foundation for F6
-F2 (ReactPolicy) ───────────────── Independent
-F3 (agent memory) ──────────────── Independent
-F4 (unified resolution) ────────── Independent
-F5 (configurable loop) ─────────── Independent
-F6 (agent-in-pipeline) ── soft dep on F1 (for full benefit)
-F7 (agent MCP binding) ─────────── Independent (tiny)
-F8 (macro output chaining) ──────── Independent
+Feature 1 (virtual models) ─────────────── Independent
+Feature 2 (role invoke) ──── shares role resolution with F1 ──── Soft dep on F1
+Feature 3 (role metadata) ───────────────── Independent
+Feature 4 (pipeline exec) ── shares stage-event refactor with F2 ── Soft dep on F2
+Feature 5 (cost in responses) ───────────── Independent
+Feature 6 (server hardening) ────────────── Independent (6A-6E all independent)
+Feature 7 (cost estimation) ─────────────── Independent
+Feature 8 (OpenAPI spec) ──── depends on all others being defined ── Do last
 ```
 
-**Maximum parallelism: 7 independent work streams** (F1, F2, F3, F4, F5, F7, F8). F6 can start in parallel but benefits from F1.
+**Maximum parallelism**: 7 independent work streams:
+- F1 (virtual models)
+- F2 (role invocation — non-streaming)
+- F3 (role metadata / public view)
+- F5 (cost in responses)
+- F6 (server hardening bundle)
+- F7 (cost estimation)
+- F8 (OpenAPI spec — after others land)
+
+F2-streaming and F4 share a dependency on refactoring `pipe.rs` to emit stage events.
+
+**Recommended implementation order** (if sequential):
+1. F6 (hardening) — smallest, unblocks non-localhost usage
+2. F3 (metadata) — fixes the prompt leakage, adds single-role retrieval
+3. F5 (cost) — trivial arithmetic, high identity alignment
+4. F1 (virtual models) — zero-change OpenWebUI integration
+5. F2 (role invocation) — the core value endpoint
+6. F4 (pipeline execution) — builds on F2's role resolution
+7. F7 (cost estimation) — nice-to-have
+8. F8 (OpenAPI) — documents everything
 
 ---
 
@@ -495,15 +587,16 @@ F8 (macro output chaining) ──────── Independent
 
 | Proposal | Reason |
 |---|---|
-| Multi-agent orchestration framework (CrewAI-style) | Over-engineering. Agent-as-tool (F1) + pipelines + macros compose to cover every topology. |
-| LLM-driven planning step | Costs tokens upfront. Compose via pipeline: plan-role → execute-role. |
-| Merge Role and Agent into one struct | Premature. `to_role()` bridge works. llm-functions agent format is a separate authoring contract. |
-| Give agents `extends`/`include`/`pipeline` | Agent identity is directory-based. Role inheritance doesn't map. Pipelines create two orchestration models. |
-| Shared mutable state between agents | Concurrency hazard. Agents communicate through tool call/result (text in, text out). |
-| Custom ReAct loop per agent | One `call_react` with pluggable ReactPolicy is strictly better than N custom loops. |
-| Tool synthesis (LLM generates tools) | Unbounded cost. LLM calls per synthesized tool. |
-| Agent event bus / message passing | Wrong abstraction for single-shot CLI. Agent-as-tool IS the communication channel. |
-| Persistent agent processes | `call_react` is single-invocation. Long-running agents need different architecture. |
+| Multi-user auth (OAuth/LDAP) | Platform feature. Delegate to nginx/LiteLLM gateway. Static bearer token (F6B) is sufficient. |
+| Conversation persistence / database | Server is stateless by design. Callers manage message history. OpenWebUI owns persistence. |
+| Rich web UI / SPA | Violates "no desktop UI" constraint. Playground/arena frozen at current scope. |
+| WebSocket streaming | SSE already works. WebSocket adds dependency for no capability gain. |
+| Pipeline designer / role editor GUI | Roles are YAML files. Text editor is the authoring tool. |
+| Plugin / extension system | Roles + llm-functions + MCP = the extension system. No marketplace needed. |
+| Agent hosting (long-running agent sessions) | `call_react` is designed for single-invocation. Scaling to concurrent long-running agents needs fundamentally different architecture. Out of scope. |
+| LiteLLM as dependency | Compose at HTTP boundary. Already works via `openai-compatible`. |
+| MCP-over-HTTP in `--serve` | The MCP server (`--mcp`) uses stdio. MCPO bridges to HTTP. Keep them separate. |
+| Webhook/event push for pipeline stages | JSONL trace (Phase 8G) is the observability mechanism. Callers poll; server doesn't push. |
 
 ---
 
@@ -511,11 +604,27 @@ F8 (macro output chaining) ──────── Independent
 
 | Epic 5 Feature | Existing Phase | Relationship |
 |---|---|---|
-| F1 (agent-as-tool) | Phase 2A (pipeline-as-role as tool) | **Extension** — same pattern, extended to agents |
-| F2 (ReactPolicy) | Phase 7C (retry budget), Phase 9C (schema retry), Phase 10D (model fallback) | **Generalization** — ReactPolicy subsumes all three as specialized policies |
-| F3 (agent memory) | None | **New** — leverages Phase 8 trace infrastructure |
-| F4 (unified resolution) | None | **New** — UX improvement only, no architectural change |
-| F5 (configurable loop) | None | **New** — expose existing hardcoded constant |
-| F6 (agent-in-pipeline) | Phase 2A (pipeline-as-role) | **Extension** — `to_role()` bridge enables agent stages |
-| F7 (agent MCP binding) | Phase 6C (role MCP binding) | **Extension** — same `mcp_servers:` pattern on AgentConfig |
-| F8 (macro output chaining) | None | **New** — reuses existing `last_message` infrastructure |
+| F1 (virtual models) | None | **New** — no existing plan to expose roles through the model listing |
+| F2 (role invocation) | None | **New** — no existing plan for role execution endpoint |
+| F3 (role metadata) | Phase 1A (`-o json` for `--list-*` and `--info`) | **Extension** — Phase 1A added JSON output to CLI; F3 adds it to the server with a security boundary |
+| F4 (pipeline execution) | None | **New** — no existing plan for HTTP pipeline execution |
+| F5 (cost in responses) | Phase 8A1 (run log & cost accounting) | **Extension** — Phase 8A1 designs cost wiring for CLI; F5 extends to server responses |
+| F6A (CORS) | None | **New** |
+| F6B (auth) | None | **New** |
+| F6C (health) | None | **New** |
+| F6D (streaming usage) | None | **New** — fixes OpenWebUI streaming token tracking |
+| F6E (hot-reload) | None | **New** |
+| F7 (cost estimation) | None | **New** |
+| F8 (OpenAPI) | None | **New** |
+
+---
+
+## Success Metrics
+
+| Metric | Current State | Target |
+|---|---|---|
+| AIChat features accessible via HTTP | 3 (chat, embed, rerank) | 8+ (add role invoke, pipeline, batch, cost, estimate) |
+| OpenWebUI integration | Works but roles invisible | Roles appear as virtual models, cost visible in usage |
+| API discoverability | Zero (no spec, no root page) | Full OpenAPI spec at `/v1/openapi.json` |
+| Non-localhost deployability | Impossible (CORS + no auth) | Configurable CORS + bearer token |
+| Data leakage surface | Full prompt text exposed | Public view with prompt/paths/credentials hidden |
