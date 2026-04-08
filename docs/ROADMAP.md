@@ -49,8 +49,8 @@ Architecture reference: [architecture.md](./roadmap/architecture.md)
 | Role parameters (`-v key=value`) and env bridging (`{{$VAR}}`) | `1dbab28` | [analysis](./analysis/2026-03-02-role-parameters.md) |
 | Output format flag (`-o json/jsonl/tsv/csv/text`) | `e72d776` | [analysis](./analysis/2026-03-06-output-format.md) |
 | `__INPUT__` de-hoisting in extended roles | `9ce9755` | [demo](./demos/demo-dehoist-input.md) |
-| Macro system | -- | [docs](./macros.md) |
-| Semantic exit codes (11 codes, error chain walking) | -- | `src/utils/exit_code.rs` |
+| Macro system | `30dae5c` | [docs](./macros.md) |
+| Semantic exit codes (11 codes, error chain walking) | `c7d4e7e` | `src/utils/exit_code.rs` |
 
 ---
 
@@ -93,58 +93,58 @@ Architecture reference: [architecture.md](./roadmap/architecture.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
-| 4A | Stop silent data loss | Done | -- |
-| 4B | Structured error types (`AichatError`) | Done | -- |
-| 4C | Structured error output (`-o json`) | Done | -- |
-| 4D | Fix `JsonSchema` lossiness | Done | -- |
-| 4E | Pipeline stage tracebacks | Done | -- |
+| 4A | Stop silent data loss | Done | `1e5b7d2` |
+| 4B | Structured error types (`AichatError`) | Done | `1e5b7d2` |
+| 4C | Structured error output (`-o json`) | Done | `1e5b7d2` |
+| 4D | Fix `JsonSchema` lossiness | Done | `fec32e4` |
+| 4E | Pipeline stage tracebacks | Done | `fe60f03` |
 
 ### Phase 5: Remote MCP & Token-Efficient Discovery -- [detail](./roadmap/phase-5-remote-mcp.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
-| 5A | Remote MCP servers (HTTP/SSE) | Done | -- |
-| 5B | Lazy role discovery via MCP | Done | -- |
+| 5A | Remote MCP servers (HTTP/SSE) | Done | `7f500b8` |
+| 5B | Lazy role discovery via MCP | Done | `7f500b8` |
 
 ### Phase 6: Metadata Framework Enhancements -- [detail](./roadmap/phase-6-metadata-framework.md)
 
-| Item | Description | Status |
-|---|---|---|
-| 6A | Shell-injective variables (`{ shell: "git diff --cached" }`) | Done |
-| 6B | Lifecycle hooks (`pipe_to`, `save_to`) | Done |
-| 6C | Unified resource binding (`mcp_servers:` per-role) | Done |
+| Item | Description | Status | Commit |
+|---|---|---|---|
+| 6A | Shell-injective variables (`{ shell: "git diff --cached" }`) | Done | `30669d7` |
+| 6B | Lifecycle hooks (`pipe_to`, `save_to`) | Done | `30669d7` |
+| 6C | Unified resource binding (`mcp_servers:` per-role) | Done | `30669d7` |
 
 ### Phase 7: Error Messages & Tool Execution -- [detail](./roadmap/phase-7-error-messages.md)
 
-| Item | Description | Status |
-|---|---|---|
-| 7A | Stderr capture + tool error diagnostics | Done |
-| 7B | Pre-flight checks + typed error variants | Done |
-| 7C | Retry budget + loop detection | Done |
-| 7C1 | Per-tool timeout | Done |
-| 7D1 | Async tool execution | Done |
-| 7D2 | Concurrent tool execution | Done |
+| Item | Description | Status | Commit |
+|---|---|---|---|
+| 7A | Stderr capture + tool error diagnostics | Done | `d125ee0` |
+| 7B | Pre-flight checks + typed error variants | Done | `d125ee0` |
+| 7C | Retry budget + loop detection | Done | `d125ee0` |
+| 7C1 | Per-tool timeout | Done | `d125ee0` |
+| 7D1 | Async tool execution | Done | `d125ee0` |
+| 7D2 | Concurrent tool execution | Done | `d125ee0` |
 
 ### Phase 7.5: Macro & Agent Config Override -- [detail](./roadmap/phase-7.5-set-expansion.md)
 
-| Item | Description | Status |
-|---|---|---|
-| 7.5A | Extend `.set` with role-level fields | Done |
-| 7.5B | Macro frontmatter assembly | Done |
-| 7.5C | Agent `.set` parity | Done |
-| 7.5D | Guard rails (schema meta-validation) | Done |
+| Item | Description | Status | Commit |
+|---|---|---|---|
+| 7.5A | Extend `.set` with role-level fields | Done | `fe60f03` |
+| 7.5B | Macro frontmatter assembly | Done | `fe60f03` |
+| 7.5C | Agent `.set` parity | Done | `fe60f03` |
+| 7.5D | Guard rails (schema meta-validation) | Done | `fe60f03` |
 
 ### Phase 8: Data Processing & Observability -- [detail](./roadmap/phase-8-data-observability.md)
 
-| Item | Description | Status |
-|---|---|---|
-| 8A1 | Run log & cost accounting | Done |
-| 8A2 | Pipeline trace metadata | Done |
-| 8B | Batch record processing (`--each`) | Done |
-| 8C | Record field templating (`{{.field}}`) | Done |
-| 8D | Headless RAG | Done |
-| 8F | Interaction trace (`--trace`) | Done |
-| 8G | Trace JSONL (`AICHAT_TRACE=1`) | Done |
+| Item | Description | Status | Commit |
+|---|---|---|---|
+| 8A1 | Run log & cost accounting | Done | `fe60f03` |
+| 8A2 | Pipeline trace metadata | Done | `fe60f03` |
+| 8B | Batch record processing (`--each`) | Done | `fe60f03` |
+| 8C | Record field templating (`{{.field}}`) | Done | `fe60f03` |
+| 8D | Headless RAG | Done | `fe60f03` |
+| 8F | Interaction trace (`--trace`) | Done | `fe60f03` |
+| 8G | Trace JSONL (`AICHAT_TRACE=1`) | Done | `fe60f03` |
 
 ---
 
