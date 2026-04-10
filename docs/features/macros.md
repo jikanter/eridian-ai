@@ -13,6 +13,8 @@ Macros allow you to define a reusable workflow consisting of input variables and
 *   Standardizing complex prompts.
 *   Chaining multiple logic steps (e.g., "summarize this," then "translate the summary").
 *   Automating repetitive configuration changes before running a prompt.
+*   Allowing dynamic loading of files or data between steps. 
+
 
 ### 2. Structure of a Macro
 As defined in `mod.rs`, a macro is stored as a serialized object (likely YAML) containing two main fields:
@@ -61,6 +63,7 @@ aichat --macro <MACRO_NAME> "argument text"
     *   It executes the step using `run_repl_command`.
 
 #### Listing Macros
+
 According to `cli.rs`, you can view available macros using:
 ```shell script
 aichat --list-macros
@@ -68,7 +71,19 @@ aichat --list-macros
 
 
 ### 4. Technical Summary
+
 *   **Storage:** File-based (YAML).
 *   **Parsing:** Uses `serde_yaml` for loading.
 *   **Interpolation:** variable substitution happens at runtime before the command is sent to the REPL processor.
 *   **Concurrency:** The execution is asynchronous (`async fn macro_execute`) and supports abort signals.
+
+### 5. Open Questions
+
+- What visibility do I get between macro steps? 
+- Macro steps are limited to repl commands - See [Macro Definition](https://github.com/sigoden/aichat/wiki/Macro-Guide#macro-definition). So I suppose
+the question is would it be useful to start extending the language here in any way? Right now I think the answer is no as I rarely use the repl form of commands any way, 
+and ultimately it seems like macros are not as good of a fit as shell scripts are for automating processes - especially if we are thinking about integrating 
+with data orchestration tools like airflow or dagu. 
+- Where I do see macro value in the future is in agent interaction 
+
+### 6. Ideas
