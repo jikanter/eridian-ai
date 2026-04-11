@@ -44,6 +44,8 @@ pub struct Role {
     prompt: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tags: Option<Vec<String>>,
     #[serde(
         rename(serialize = "model", deserialize = "model"),
         skip_serializing_if = "Option::is_none"
@@ -389,6 +391,15 @@ impl Role {
                                 "description" => {
                                     role.description = value.as_str().map(|v| v.to_string())
                                 }
+                                "tags" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.tags = Some(
+                                            arr.iter()
+                                                .filter_map(|v| v.as_str().map(String::from))
+                                                .collect()
+                                        );
+                                    }
+                                }
                                 "examples" => {
                                     if let Some(arr) = value.as_array() {
                                         role.examples = Some(
@@ -495,6 +506,9 @@ impl Role {
         let mut meta = serde_json::Map::new();
         if let Some(desc) = &self.description {
             meta.insert("description".into(), Value::String(desc.clone()));
+        }
+        if let Some(tags) = &self.tags {
+            meta.insert("tags".into(), serde_json::to_value(tags).unwrap_or_default());
         }
         if let Some(model) = self.model_id() {
             meta.insert("model".into(), Value::String(model.to_string()));
@@ -634,6 +648,10 @@ impl Role {
 
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
+    }
+
+    pub fn tags(&self) -> Option<&[String]> {
+        self.tags.as_deref()
     }
 
     pub fn description_or_derived(&self) -> String {

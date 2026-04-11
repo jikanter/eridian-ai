@@ -936,11 +936,20 @@ Check the weather."#;
         assert_eq!(derive_description(""), "");
     }
 
+
+
     #[test]
     fn test_description_truncates_at_100_chars() {
         let long_prompt = "A".repeat(200);
         let desc = derive_description(&long_prompt);
         assert!(desc.len() <= 101); // 100 + optional '.'
+    }
+
+    #[test]
+    fn test_include_tags() {
+        let content = "---\ntags: [inf-12345]\n---\n";
+        let parts = parse_frontmatter(content);
+        assert_eq!(parts.tags, vec!["inf-12345".to_string()]);
     }
 
     #[test]
@@ -973,6 +982,7 @@ Check the weather."#;
         prompt: String,
         extends: Option<String>,
         includes: Vec<String>,
+        tags: Vec<String>,
         variables: Vec<Value>,
     }
 
@@ -983,6 +993,7 @@ Check the weather."#;
         let mut extends = None;
         let mut includes = Vec::new();
         let mut variables = Vec::new();
+        let mut tags = Vec::new();
 
         if let Ok(Some(caps)) = re.captures(content) {
             if let (Some(meta_val), Some(prompt_val)) = (caps.get(1), caps.get(2)) {
@@ -1005,6 +1016,13 @@ Check the weather."#;
                                         variables = arr.clone();
                                     }
                                 }
+                                "tags" => {
+                                    if let Some(arr) = val.as_array() {
+                                        tags = arr.iter()
+                                        .filter_map(|v| v.as_str().map(String::from))
+                                        .collect();
+                                    }
+                                }
                                 _ => { metadata.insert(key.clone(), val.clone()); }
                             }
                         }
@@ -1013,7 +1031,7 @@ Check the weather."#;
             }
         }
 
-        ParsedFrontmatter { metadata, prompt, extends, includes, variables }
+        ParsedFrontmatter { metadata, tags, prompt, extends, includes, variables }
     }
 
     fn derive_description(prompt: &str) -> String {
