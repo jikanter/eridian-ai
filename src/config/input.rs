@@ -140,6 +140,10 @@ impl Input {
         self.text.is_empty() && self.medias.is_empty()
     }
 
+    pub fn has_images(&self) -> bool {
+        !self.medias.is_empty()
+    }
+
     pub fn data_urls(&self) -> HashMap<String, String> {
         self.data_urls.clone()
     }
@@ -175,7 +179,11 @@ impl Input {
         if self.role().has_output_schema() || self.has_structured_output_format() {
             return false;
         }
-        self.config.read().stream && !self.role().model().no_stream()
+        let cfg = self.config.read();
+        if cfg.strip_thinking {
+            return false;
+        }
+        cfg.stream && !self.role().model().no_stream()
     }
 
     pub fn continue_output(&self) -> Option<&str> {
@@ -251,6 +259,14 @@ impl Input {
         model.guard_max_input_tokens(&messages)?;
         let (temperature, top_p) = (self.role().temperature(), self.role().top_p());
         let functions = self.config.read().select_functions(self.role());
+
+        // Phase 9D: Pre-flight capability check — fail now instead of wasting a round-trip
+        super::preflight::validate_model_capabilities(
+            model,
+            self.role(),
+            functions.as_deref(),
+            self.has_images(),
+        )?;
 
         // Phase 1C: Initialize deferred tool state when tool_search was returned
         if let Some(ref fns) = functions {

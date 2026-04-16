@@ -93,8 +93,13 @@ pub fn strip_thinking_filter(reader: impl Read, writer: impl Write) -> Result<()
     Ok(())
 }
 
-pub fn run() -> Result<()> {
-    strip_thinking_filter(io::stdin().lock(), io::stdout().lock())
+/// Strip `<think>…</think>` blocks from an in-memory string.
+/// Uses the byte-level filter so it matches blocks at any position.
+pub fn strip_thinking_str(input: &str) -> String {
+    let mut out = Vec::with_capacity(input.len());
+    strip_thinking_filter(input.as_bytes(), &mut out)
+        .expect("in-memory I/O cannot fail");
+    String::from_utf8(out).expect("filter preserves UTF-8")
 }
 
 #[cfg(test)]

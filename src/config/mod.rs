@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod input;
+pub mod preflight;
 pub mod role;
 pub mod session;
 pub mod prompt;
@@ -192,6 +193,8 @@ pub struct Config {
     #[serde(skip)]
     pub show_cost: bool,
     #[serde(skip)]
+    pub strip_thinking: bool,
+    #[serde(skip)]
     pub run_log: Option<String>,
     #[serde(skip)]
     pub trace_config: Option<trace::TraceConfig>,
@@ -310,6 +313,7 @@ impl Default for Config {
             mcp_max_connections: default_mcp_max_connections(),
 
             show_cost: false,
+            strip_thinking: false,
             run_log: None,
             trace_config: None,
 

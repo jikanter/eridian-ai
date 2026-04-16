@@ -612,6 +612,8 @@ pub async fn call_chat_completions(
             if !text.is_empty() {
                 if extract_code {
                     text = extract_code_block(&strip_think_tag(&text)).to_string();
+                } else if client.global_config().read().strip_thinking {
+                    text = crate::strip_thinking::strip_thinking_str(&text);
                 }
                 if print {
                     client.global_config().read().print_markdown(&text)?;

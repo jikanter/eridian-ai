@@ -52,6 +52,15 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
         bail!("Pipeline has no stages");
     }
 
+    // Phase 9D: pre-flight validate every stage's role/model before any LLM call
+    {
+        let stage_tuples: Vec<(String, Option<String>)> = stages
+            .iter()
+            .map(|s| (s.role_name.clone(), s.model_id.clone()))
+            .collect();
+        crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
+    }
+
     let mut input_text = match text {
         Some(t) => t,
         None if !cli.file.is_empty() => {

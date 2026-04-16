@@ -455,5 +455,30 @@ _die() {
     exit 1
 }
 
+# @cmd Validate brief format in markdown files
+# @arg files+
+brief-format() {
+    local exit_code=0
+    for file in "${argc_files[@]}"; do
+        if [[ ! -f "$file" ]]; then
+            echo "error: file not found: $file"
+            exit_code=1
+            continue
+        fi
+        
+        # We want to find lines that start with 1-6 '#' followed immediately by a non-space, non-# character.
+        # This is invalid markdown per some specs and project guidelines.
+        local invalid_headers
+        invalid_headers=$(grep -nE '^#{1,6}[^# ]' "$file" | grep -vE '(#\[|#!)' || true)
+        
+        if [[ -n "$invalid_headers" ]]; then
+            echo "Invalid briefing format in $file:"
+            echo "$invalid_headers"
+            exit_code=1
+        fi
+    done
+    return $exit_code
+}
+
 # See more details at https://github.com/sigoden/argc
 eval "$(argc --argc-eval "$0" "$@")"

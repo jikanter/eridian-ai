@@ -391,6 +391,7 @@ fn is_config_error(msg: &str) -> bool {
         || msg.contains("Failed to load session")
         || msg.contains("Failed to load macro")
         || msg.contains("Circular role inheritance")
+        || msg.starts_with("Preflight:")
 }
 
 fn is_usage_error(msg: &str) -> bool {

@@ -40,8 +40,8 @@ use std::{env, process, sync::Arc};
 async fn main() -> Result<()> {
     load_env_file()?;
     let cli = Cli::parse();
-    // MCP mode and strip-thinking use stdin as transport — don't consume it here
-    let text = if cli.mcp || cli.strip_thinking { None } else { cli.text()? };
+    // MCP mode uses stdin as transport — don't consume it here
+    let text = if cli.mcp { None } else { cli.text()? };
     let working_mode = if cli.mcp {
         WorkingMode::Mcp
     } else if cli.serve.is_some() {
@@ -81,10 +81,6 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
 
     if let Some(ref server_cmd) = cli.mcp_server {
         return mcp_client::run_mcp_client_command(&cli, server_cmd).await;
-    }
-
-    if cli.strip_thinking {
-        return strip_thinking::run();
     }
 
     if cli.pipe {
@@ -289,6 +285,9 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
     }
     if cli.no_stream {
         config.write().stream = false;
+    }
+    if cli.strip_thinking {
+        config.write().strip_thinking = true;
     }
     if let Some(fmt) = cli.output_format {
         config.write().output_format = Some(fmt);
