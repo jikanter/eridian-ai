@@ -18,6 +18,12 @@ pub const CREATE_TITLE_ROLE: &str = "%create-title%";
 
 pub const INPUT_PLACEHOLDER: &str = "__INPUT__";
 
+/// Leading text of the schema suffix injected into the system message when a
+/// role has `output_schema`. Exposed so the Phase 9A/9B native-structured-output
+/// path can strip the redundant suffix before sending it to the provider.
+pub const OUTPUT_SCHEMA_SUFFIX_MARKER: &str =
+    "You MUST respond with valid JSON conforming to this JSON Schema:";
+
 #[derive(Embed)]
 #[folder = "assets/roles/"]
 struct RolesAsset;
@@ -756,12 +762,12 @@ impl Role {
             let system_text = if let Some(schema) = &self.output_schema {
                 let schema_str = serde_json::to_string_pretty(schema).unwrap_or_default();
                 let suffix = format!(
-                    "\n\nYou MUST respond with valid JSON conforming to this JSON Schema:\n```json\n{schema_str}\n```\nDo not include any text outside the JSON object."
+                    "{OUTPUT_SCHEMA_SUFFIX_MARKER}\n```json\n{schema_str}\n```\nDo not include any text outside the JSON object."
                 );
                 if system.is_empty() {
                     suffix.trim_start().to_string()
                 } else {
-                    format!("{system}{suffix}")
+                    format!("{system}\n\n{suffix}")
                 }
             } else {
                 system.to_string()

@@ -325,6 +325,7 @@ fn build_chat_completions_body(data: ChatCompletionsData, model: &Model) -> Resu
         top_p,
         functions,
         stream: _,
+        output_schema: _,
     } = data;
 
     let system_message = extract_system_message(&mut messages);

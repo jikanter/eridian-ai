@@ -339,6 +339,7 @@ impl Server {
             top_p,
             functions,
             stream,
+            output_schema: None,
         };
 
         if stream {

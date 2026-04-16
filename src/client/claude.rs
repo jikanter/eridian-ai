@@ -9,6 +9,12 @@ use serde_json::{json, Value};
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 
+/// Name of the synthetic tool injected for Phase 9B native structured output.
+/// Claude guarantees schema conformance when the model is forced to call a tool
+/// whose input_schema IS the role's output_schema. The result is extracted from
+/// the tool call's `input` and surfaced as plain text output.
+pub const CLAUDE_STRUCTURED_OUTPUT_TOOL: &str = "structured_output";
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ClaudeConfig {
     pub name: Option<String>,
@@ -92,7 +98,9 @@ pub async fn claude_chat_completions_streaming(
                         data["content_block"]["name"].as_str(),
                         data["content_block"]["id"].as_str(),
                     ) {
-                        if !function_name.is_empty() {
+                        if !function_name.is_empty()
+                            && function_name != CLAUDE_STRUCTURED_OUTPUT_TOOL
+                        {
                             let arguments: Value =
                                 function_arguments.parse().with_context(|| {
                                     format!("Tool call '{function_name}' have non-JSON arguments '{function_arguments}'")
@@ -121,7 +129,12 @@ pub async fn claude_chat_completions_streaming(
                         !function_name.is_empty(),
                         data["delta"]["partial_json"].as_str(),
                     ) {
-                        function_arguments.push_str(partial_json);
+                        // Phase 9B: structured_output tool's partial args stream as text.
+                        if function_name == CLAUDE_STRUCTURED_OUTPUT_TOOL {
+                            handler.text(partial_json)?;
+                        } else {
+                            function_arguments.push_str(partial_json);
+                        }
                     }
                 }
                 "content_block_stop" => {
@@ -129,7 +142,9 @@ pub async fn claude_chat_completions_streaming(
                         handler.text("\n</think>\n\n")?;
                         reasoning_state = 0;
                     }
-                    if !function_name.is_empty() {
+                    if !function_name.is_empty()
+                        && function_name != CLAUDE_STRUCTURED_OUTPUT_TOOL
+                    {
                         let arguments: Value = if function_arguments.is_empty() {
                             json!({})
                         } else {
@@ -171,6 +186,7 @@ pub fn claude_build_chat_completions_body(
         top_p,
         functions,
         stream,
+        output_schema,
     } = data;
 
     let system_message = extract_system_message(&mut messages);
@@ -290,17 +306,41 @@ pub fn claude_build_chat_completions_body(
     if stream {
         body["stream"] = true.into();
     }
-    if let Some(functions) = functions {
-        body["tools"] = functions
-            .iter()
-            .map(|v| {
-                json!({
-                    "name": v.name,
-                    "description": v.description,
-                    "input_schema": v.parameters,
+    let mut tools: Vec<Value> = functions
+        .map(|fns| {
+            fns.iter()
+                .map(|v| {
+                    json!({
+                        "name": v.name,
+                        "description": v.description,
+                        "input_schema": v.parameters,
+                    })
                 })
-            })
-            .collect();
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Phase 9B: tool-use-as-structured-output. When the model declares
+    // `supports_response_format_json_schema` and the role has an `output_schema`,
+    // inject a synthetic tool whose input_schema IS the output schema and force
+    // the model to call it. The tool call's input becomes the JSON output.
+    let use_native_schema = model.data().supports_response_format_json_schema
+        && output_schema.is_some();
+    if use_native_schema {
+        let schema = output_schema.expect("guarded above");
+        tools.push(json!({
+            "name": CLAUDE_STRUCTURED_OUTPUT_TOOL,
+            "description": "Return the structured output conforming to the required schema.",
+            "input_schema": schema,
+        }));
+        body["tool_choice"] = json!({
+            "type": "tool",
+            "name": CLAUDE_STRUCTURED_OUTPUT_TOOL,
+        });
+    }
+
+    if !tools.is_empty() {
+        body["tools"] = Value::Array(tools);
     }
     Ok(body)
 }
@@ -331,11 +371,22 @@ pub fn claude_extract_chat_completions(data: &Value) -> Result<ChatCompletionsOu
                         item.get("input"),
                         item["id"].as_str(),
                     ) {
-                        tool_calls.push(ToolCall::new(
-                            name.to_string(),
-                            input.clone(),
-                            Some(id.to_string()),
-                        ));
+                        // Phase 9B: the synthetic structured_output tool's args ARE
+                        // the output. Surface them as text instead of as a tool_call.
+                        if name == CLAUDE_STRUCTURED_OUTPUT_TOOL {
+                            let json_text = serde_json::to_string(input)
+                                .unwrap_or_else(|_| input.to_string());
+                            if !text.is_empty() {
+                                text.push_str("\n\n");
+                            }
+                            text.push_str(&json_text);
+                        } else {
+                            tool_calls.push(ToolCall::new(
+                                name.to_string(),
+                                input.clone(),
+                                Some(id.to_string()),
+                            ));
+                        }
                     }
                 }
                 _ => {}
@@ -358,4 +409,151 @@ pub fn claude_extract_chat_completions(data: &Value) -> Result<ChatCompletionsOu
         output_tokens: data["usage"]["output_tokens"].as_u64(),
     };
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::{Message, MessageContent, MessageRole};
+    use crate::function::FunctionDeclaration;
+
+    /// Named constant so tests and implementation stay in lockstep.
+    const SCHEMA_TOOL_NAME: &str = "structured_output";
+
+    fn claude_model(native_schema: bool) -> Model {
+        let mut m = Model::new("claude", "claude-test");
+        m.data_mut().supports_function_calling = true;
+        m.data_mut().supports_response_format_json_schema = native_schema;
+        m.data_mut().max_output_tokens = Some(4096);
+        m.data_mut().require_max_tokens = true;
+        m
+    }
+
+    fn user_msg(text: &str) -> Message {
+        Message::new(MessageRole::User, MessageContent::Text(text.into()))
+    }
+
+    fn sample_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"},
+                "confidence": {"type": "number"}
+            },
+            "required": ["answer", "confidence"]
+        })
+    }
+
+    fn data_with_schema(schema: Option<Value>, functions: Option<Vec<FunctionDeclaration>>)
+        -> ChatCompletionsData
+    {
+        ChatCompletionsData {
+            messages: vec![user_msg("hi")],
+            temperature: None,
+            top_p: None,
+            functions,
+            stream: false,
+            output_schema: schema,
+        }
+    }
+
+    #[test]
+    fn body_injects_synthetic_tool_when_native_schema_active() {
+        let model = claude_model(true);
+        let schema = sample_schema();
+        let data = data_with_schema(Some(schema.clone()), None);
+        let body = claude_build_chat_completions_body(data, &model).unwrap();
+
+        let tools = body["tools"].as_array().expect("tools array present");
+        assert_eq!(tools.len(), 1, "exactly the synthetic tool is injected");
+        assert_eq!(tools[0]["name"], SCHEMA_TOOL_NAME);
+        assert_eq!(tools[0]["input_schema"], schema);
+
+        assert_eq!(body["tool_choice"]["type"], "tool");
+        assert_eq!(body["tool_choice"]["name"], SCHEMA_TOOL_NAME);
+    }
+
+    #[test]
+    fn body_does_not_inject_tool_when_capability_off() {
+        let model = claude_model(false);
+        let data = data_with_schema(Some(sample_schema()), None);
+        let body = claude_build_chat_completions_body(data, &model).unwrap();
+
+        assert!(body.get("tools").is_none(), "no tools key without functions/schema");
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn body_does_not_inject_tool_when_schema_missing() {
+        let model = claude_model(true);
+        let data = data_with_schema(None, None);
+        let body = claude_build_chat_completions_body(data, &model).unwrap();
+        assert!(body.get("tools").is_none());
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
+    fn body_merges_synthetic_tool_with_existing_functions() {
+        let model = claude_model(true);
+        let existing = vec![FunctionDeclaration {
+            name: "get_weather".into(),
+            description: "lookup weather".into(),
+            parameters: json!({"type": "object", "properties": {}}),
+            agent: false,
+            source: Default::default(),
+            examples: None,
+            timeout: None,
+        }];
+        let data = data_with_schema(Some(sample_schema()), Some(existing));
+        let body = claude_build_chat_completions_body(data, &model).unwrap();
+
+        let tools = body["tools"].as_array().expect("tools array present");
+        assert_eq!(tools.len(), 2, "existing tool + synthetic tool");
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"get_weather"));
+        assert!(names.contains(&SCHEMA_TOOL_NAME));
+        assert_eq!(body["tool_choice"]["name"], SCHEMA_TOOL_NAME);
+    }
+
+    #[test]
+    fn extract_returns_structured_output_tool_args_as_text() {
+        let response = json!({
+            "id": "msg_test",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_01",
+                    "name": SCHEMA_TOOL_NAME,
+                    "input": {"answer": "42", "confidence": 0.9}
+                }
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 20}
+        });
+
+        let out = claude_extract_chat_completions(&response).unwrap();
+        assert!(out.tool_calls.is_empty(), "synthetic tool shouldn't surface as a tool_call");
+        let parsed: Value = serde_json::from_str(&out.text).expect("text is valid JSON");
+        assert_eq!(parsed["answer"], "42");
+        assert_eq!(parsed["confidence"], 0.9);
+    }
+
+    #[test]
+    fn extract_preserves_real_tool_calls_alongside_plain_text() {
+        // Non-structured_output tool_use must still propagate to tool_calls.
+        let response = json!({
+            "id": "msg_other",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_02",
+                    "name": "get_weather",
+                    "input": {"city": "SF"}
+                }
+            ],
+            "usage": {"input_tokens": 5, "output_tokens": 10}
+        });
+        let out = claude_extract_chat_completions(&response).unwrap();
+        assert_eq!(out.tool_calls.len(), 1);
+        assert_eq!(out.tool_calls[0].name, "get_weather");
+    }
 }

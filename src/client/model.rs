@@ -318,6 +318,8 @@ pub struct ModelData {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub supports_function_calling: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_response_format_json_schema: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     no_stream: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     no_system_message: bool,

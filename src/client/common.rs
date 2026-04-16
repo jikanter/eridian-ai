@@ -291,6 +291,9 @@ pub struct ChatCompletionsData {
     pub top_p: Option<f64>,
     pub functions: Option<Vec<FunctionDeclaration>>,
     pub stream: bool,
+    /// Role's `output_schema`, passed through so providers can opt into native
+    /// structured output (Phase 9A/9B). `None` when the role declared no schema.
+    pub output_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default)]

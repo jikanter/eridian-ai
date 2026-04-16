@@ -268,6 +268,14 @@ impl Input {
         stream: bool,
     ) -> Result<ChatCompletionsData> {
         let mut messages = self.build_messages()?;
+        // Phase 9B: when the provider will enforce the schema natively
+        // (Claude tool-use-as-schema, OpenAI `response_format`), strip the
+        // prompt-injected schema suffix so we don't pay for it twice.
+        if self.role().has_output_schema()
+            && model.data().supports_response_format_json_schema
+        {
+            strip_output_schema_suffix(&mut messages);
+        }
         patch_messages(&mut messages, model);
         model.guard_max_input_tokens(&messages)?;
         let (temperature, top_p) = (self.role().temperature(), self.role().top_p());
@@ -291,12 +299,15 @@ impl Input {
             }
         }
 
+        let output_schema = self.role().output_schema().cloned();
+
         Ok(ChatCompletionsData {
             messages,
             temperature,
             top_p,
             functions,
             stream,
+            output_schema,
         })
     }
 
@@ -590,6 +601,34 @@ fn is_image(path: &str) -> bool {
         .unwrap_or_default()
 }
 
+/// Remove the schema-injected suffix (starting at `OUTPUT_SCHEMA_SUFFIX_MARKER`)
+/// from the system message. Leaves the rest of the prompt intact. If stripping
+/// leaves the system message empty, the message itself is removed so empty
+/// `system: ""` never reaches the provider.
+fn strip_output_schema_suffix(messages: &mut Vec<Message>) {
+    use crate::config::role::OUTPUT_SCHEMA_SUFFIX_MARKER;
+    let mut clear_index: Option<usize> = None;
+    for (i, msg) in messages.iter_mut().enumerate() {
+        if msg.role == MessageRole::System {
+            if let MessageContent::Text(ref mut text) = msg.content {
+                if let Some(pos) = text.find(OUTPUT_SCHEMA_SUFFIX_MARKER) {
+                    text.truncate(pos);
+                    let trimmed = text.trim_end().to_string();
+                    if trimmed.is_empty() {
+                        clear_index = Some(i);
+                    } else {
+                        *text = trimmed;
+                    }
+                }
+            }
+            break;
+        }
+    }
+    if let Some(i) = clear_index {
+        messages.remove(i);
+    }
+}
+
 fn inject_system_suffix(messages: &mut [Message], suffix: &str) -> bool {
     for msg in messages.iter_mut() {
         if msg.role == MessageRole::System {
@@ -619,4 +658,57 @@ fn read_media_to_data_url(image_path: &str) -> Result<String> {
     let data_url = format!("data:{mime_type};base64,{encoded_image}");
 
     Ok(data_url)
+}
+
+#[cfg(test)]
+mod schema_suffix_tests {
+    use super::*;
+
+    #[test]
+    fn strips_suffix_and_keeps_original_system_prompt() {
+        let mut messages = vec![
+            Message::new(
+                MessageRole::System,
+                MessageContent::Text(
+                    "Be concise.\n\nYou MUST respond with valid JSON conforming to this JSON Schema:\n```json\n{\"type\":\"object\"}\n```\nDo not include any text outside the JSON object.".into(),
+                ),
+            ),
+            Message::new(MessageRole::User, MessageContent::Text("hi".into())),
+        ];
+        strip_output_schema_suffix(&mut messages);
+        assert_eq!(messages.len(), 2);
+        if let MessageContent::Text(t) = &messages[0].content {
+            assert_eq!(t, "Be concise.");
+        } else {
+            panic!("system message must stay text");
+        }
+    }
+
+    #[test]
+    fn removes_system_message_entirely_when_only_suffix_was_present() {
+        let mut messages = vec![
+            Message::new(
+                MessageRole::System,
+                MessageContent::Text(
+                    "You MUST respond with valid JSON conforming to this JSON Schema:\n```json\n{}\n```\nDo not include any text outside the JSON object.".into(),
+                ),
+            ),
+            Message::new(MessageRole::User, MessageContent::Text("hi".into())),
+        ];
+        strip_output_schema_suffix(&mut messages);
+        assert_eq!(messages.len(), 1, "empty system is dropped");
+        assert_eq!(messages[0].role, MessageRole::User);
+    }
+
+    #[test]
+    fn noop_when_no_suffix_present() {
+        let mut messages = vec![
+            Message::new(MessageRole::System, MessageContent::Text("Be concise.".into())),
+        ];
+        strip_output_schema_suffix(&mut messages);
+        assert_eq!(messages.len(), 1);
+        if let MessageContent::Text(t) = &messages[0].content {
+            assert_eq!(t, "Be concise.");
+        }
+    }
 }

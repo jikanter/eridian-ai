@@ -237,6 +237,7 @@ pub fn openai_build_chat_completions_body(data: ChatCompletionsData, model: &Mod
         top_p,
         functions,
         stream,
+        output_schema: _,
     } = data;
 
     let messages_len = messages.len();

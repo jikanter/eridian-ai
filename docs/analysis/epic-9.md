@@ -1,7 +1,7 @@
-# Epic 9: RAG Evolution — Structured Retrieval & Composability
+# Epic 9: RAG Evolution — Moving from RAG to grounded graphs
 
 **Created:** 2026-03-16
-**Updated:** 2026-04-07 (renumbered from Epic 4; phases 15-17 → 25-27)
+**Updated:** 2026-04-16 (renumbered from Epic 4; phases 15-17 → 25-27)
 **Status:** Planning
 **Depends on:** Phase 8D (headless RAG), Phase 11C (budget-aware RAG)
 
