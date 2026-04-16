@@ -6,6 +6,9 @@ use anyhow::{bail, Result};
 
 /// Pre-flight validation of model capabilities against what the role/input requires.
 /// Runs before any API call; all checks are deterministic and zero-token.
+/// This can be thought of as the beginnings of our 'aichat' compiler, allowing us to look forward
+/// at the target model before submitting the data to the backend.
+/// I have an exploration of this idea in docs/analysis/2026-04-16-model-aware-compilation.md
 ///
 /// Returns `Err` for hard mismatches (tools vs. non-function-calling model, images vs.
 /// non-vision model). The caller should surface the error as a config error.

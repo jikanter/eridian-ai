@@ -144,6 +144,19 @@ impl Input {
         !self.medias.is_empty()
     }
 
+    /// Phase 9D: Pre-flight capability check. Resolves the model+functions and validates
+    /// they are compatible with the role and input. Cheap; safe to call before `dry_run`
+    /// short-circuits so misconfigs surface even when no LLM call would be made.
+    pub fn preflight(&self, model: &Model) -> Result<()> {
+        let functions = self.config.read().select_functions(self.role());
+        super::preflight::validate_model_capabilities(
+            model,
+            self.role(),
+            functions.as_deref(),
+            self.has_images(),
+        )
+    }
+
     pub fn data_urls(&self) -> HashMap<String, String> {
         self.data_urls.clone()
     }
@@ -259,14 +272,6 @@ impl Input {
         model.guard_max_input_tokens(&messages)?;
         let (temperature, top_p) = (self.role().temperature(), self.role().top_p());
         let functions = self.config.read().select_functions(self.role());
-
-        // Phase 9D: Pre-flight capability check — fail now instead of wasting a round-trip
-        super::preflight::validate_model_capabilities(
-            model,
-            self.role(),
-            functions.as_deref(),
-            self.has_images(),
-        )?;
 
         // Phase 1C: Initialize deferred tool state when tool_search was returned
         if let Some(ref fns) = functions {

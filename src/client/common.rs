@@ -66,6 +66,9 @@ pub trait Client: Sync + Send {
     }
 
     async fn chat_completions(&self, input: Input) -> Result<ChatCompletionsOutput> {
+        // Phase 9D: capability preflight runs before the dry-run short-circuit so
+        // misconfigs surface at config time, not at API time.
+        input.preflight(self.model())?;
         if self.global_config().read().dry_run {
             let content = input.echo_messages();
             return Ok(ChatCompletionsOutput::new(&content));
@@ -86,6 +89,10 @@ pub trait Client: Sync + Send {
         let input = input.clone();
         tokio::select! {
             ret = async {
+                // Phase 9D: capability preflight runs before the dry-run short-circuit so
+                // misconfigs surface at config time, not at API time. Inside the select arm
+                // so the surrounding handler.done() still fires on early Err.
+                input.preflight(self.model())?;
                 if self.global_config().read().dry_run {
                     let content = input.echo_messages();
                     handler.text(&content)?;

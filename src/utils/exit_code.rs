@@ -283,6 +283,11 @@ pub fn classify_error(err: &anyhow::Error) -> ExitCode {
         if is_aborted(&msg) {
             return ExitCode::Aborted;
         }
+        // Phase 9D: preflight messages contain "does not support" which would otherwise
+        // be classified as a model error. Check the explicit prefix first.
+        if msg.starts_with("Preflight:") {
+            return ExitCode::ConfigError;
+        }
         if is_schema_error(&msg) {
             return ExitCode::SchemaError;
         }
@@ -507,6 +512,43 @@ mod tests {
         let inner = anyhow!("Unknown role `test`");
         let wrapped = inner.context("Failed to set up role");
         assert_eq!(classify_error(&wrapped), ExitCode::ConfigError);
+    }
+
+    // Phase 9D regression: preflight messages contain the substring "does not support"
+    // which is also matched by `is_model_error`. The classifier must hit the
+    // "Preflight:" prefix branch first so capability mismatches are reported as
+    // ConfigError (3), not ModelError (7).
+    #[test]
+    fn test_classify_preflight_tools() {
+        let err = anyhow!(
+            "Preflight: role 'r' requires tool calling but model 'm' does not support it."
+        );
+        assert_eq!(classify_error(&err), ExitCode::ConfigError);
+    }
+
+    #[test]
+    fn test_classify_preflight_vision() {
+        let err = anyhow!(
+            "Preflight: input contains images but model 'm' does not support vision."
+        );
+        assert_eq!(classify_error(&err), ExitCode::ConfigError);
+    }
+
+    #[test]
+    fn test_classify_preflight_wrapped_in_call_completions_context() {
+        // The Client trait wraps errors with "Failed to call chat-completions api".
+        // Chain-walk must still find the inner Preflight: cause.
+        let inner = anyhow!("Preflight: role 'r' requires tool calling but model 'm' does not support it.");
+        let wrapped = inner.context("Failed to call chat-completions api");
+        assert_eq!(classify_error(&wrapped), ExitCode::ConfigError);
+    }
+
+    #[test]
+    fn test_classify_non_preflight_does_not_support_still_model_error() {
+        // Other errors that legitimately contain "does not support" (e.g. provider
+        // errors about an unsupported feature) must keep classifying as ModelError.
+        let err = anyhow!("The provider does not support function calling for this model");
+        assert_eq!(classify_error(&err), ExitCode::ModelError);
     }
 
     #[test]
