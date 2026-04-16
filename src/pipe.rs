@@ -189,24 +189,80 @@ async fn run_stage_inner(
 
     config.write().before_chat_completion(&input)?;
 
-    // Phase 0B: Use call_react when the stage role has tools
-    let (output, tool_results, metrics) = if has_tools {
-        call_react(&mut input, client.as_ref(), abort_signal).await?
-    } else if input.stream() && is_last {
-        call_chat_completions_streaming(&input, client.as_ref(), abort_signal).await?
+    // Phase 9C: schema retry budget for this stage. Short-circuits to 0 when
+    // the provider enforces the schema natively (Phase 9A/9B).
+    let native_structured = role.has_output_schema()
+        && role.model().data().supports_response_format_json_schema;
+    let max_schema_retries = if role.has_output_schema() && !native_structured {
+        role.schema_retries().unwrap_or(1)
     } else {
-        call_chat_completions(&input, false, false, client.as_ref(), abort_signal).await?
+        0
     };
+    let original_input = input.clone();
+
+    // Phase 0B: Use call_react when the stage role has tools
+    let (mut output, mut tool_results, mut metrics) = if has_tools {
+        call_react(&mut input, client.as_ref(), abort_signal.clone()).await?
+    } else if input.stream() && is_last {
+        call_chat_completions_streaming(&input, client.as_ref(), abort_signal.clone()).await?
+    } else {
+        call_chat_completions(&input, false, false, client.as_ref(), abort_signal.clone()).await?
+    };
+
+    // Phase 9C: retry loop on output schema failure.
+    if let Some(schema) = role.output_schema() {
+        if max_schema_retries > 0 {
+            let mut attempt: usize = 0;
+            loop {
+                match validate_schema_traced("output", schema, &output, trace_emitter.as_ref()) {
+                    Ok(()) => break,
+                    Err(e) if attempt < max_schema_retries => {
+                        attempt += 1;
+                        let retry_prompt = format!(
+                            "Your previous output failed schema validation:\n{e}\n\nPlease regenerate your response to conform to the required schema. Return ONLY valid JSON."
+                        );
+                        let mut retry_input = original_input
+                            .clone()
+                            .with_retry_prompt(&output, &retry_prompt);
+                        let (new_output, new_tool_results, new_metrics) = if has_tools {
+                            call_react(
+                                &mut retry_input,
+                                client.as_ref(),
+                                abort_signal.clone(),
+                            )
+                            .await?
+                        } else {
+                            // Never stream during retry: even on the last
+                            // stage, the first (failed) output was already
+                            // emitted path-suppressed because output_schema
+                            // forces stream() == false.
+                            call_chat_completions(
+                                &retry_input,
+                                false,
+                                false,
+                                client.as_ref(),
+                                abort_signal.clone(),
+                            )
+                            .await?
+                        };
+                        output = new_output;
+                        tool_results = new_tool_results;
+                        metrics.merge(&new_metrics);
+                        input = retry_input;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        } else {
+            validate_schema_traced("output", schema, &output, trace_emitter.as_ref())?;
+        }
+    }
 
     // Only save to message history for the last stage
     if is_last {
         config
             .write()
             .after_chat_completion(&input, &output, &tool_results)?;
-    }
-
-    if let Some(schema) = role.output_schema() {
-        validate_schema_traced("output", schema, &output, trace_emitter.as_ref())?;
     }
 
     if is_last && !input.stream() {

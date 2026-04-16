@@ -78,6 +78,10 @@ pub struct Role {
     #[serde(skip_serializing_if = "Option::is_none")]
     save_to: Option<String>,
 
+    // Phase 9C: Schema validation retry loop
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_retries: Option<usize>,
+
     // Phase 6C: Unified resource binding
     #[serde(
         rename(serialize = "mcp_servers", deserialize = "mcp_servers"),
@@ -462,6 +466,10 @@ impl Role {
                                 // Phase 6B: Lifecycle hooks
                                 "pipe_to" => role.pipe_to = value.as_str().map(|v| v.to_string()),
                                 "save_to" => role.save_to = value.as_str().map(|v| v.to_string()),
+                                // Phase 9C: Schema validation retry loop
+                                "schema_retries" => {
+                                    role.schema_retries = value.as_u64().map(|v| v as usize)
+                                }
                                 // Phase 6C: Unified resource binding
                                 "mcp_servers" => {
                                     if let Some(arr) = value.as_array() {
@@ -545,6 +553,9 @@ impl Role {
         }
         if let Some(save_to) = &self.save_to {
             meta.insert("save_to".into(), Value::String(save_to.clone()));
+        }
+        if let Some(n) = self.schema_retries {
+            meta.insert("schema_retries".into(), serde_json::json!(n));
         }
         if !self.role_mcp_servers.is_empty() {
             meta.insert(
@@ -701,6 +712,13 @@ impl Role {
         self.save_to.as_deref()
     }
 
+    /// Phase 9C: Maximum number of schema validation retries on output failure.
+    /// `None` means unset (consumer applies its default, typically 1).
+    /// `Some(0)` means fail fast (no retries). `Some(n)` means up to n retries.
+    pub fn schema_retries(&self) -> Option<usize> {
+        self.schema_retries
+    }
+
     pub fn set_output_schema(&mut self, value: Option<Value>) {
         self.output_schema = value;
     }
@@ -821,6 +839,19 @@ impl Role {
                     );
                 }
             }
+        }
+
+        // Phase 9C: schema validation retry — replay the failed assistant
+        // output and a corrective user turn before any continue_output.
+        if let Some((failed_output, retry_prompt)) = input.retry_feedback() {
+            messages.push(Message::new(
+                MessageRole::Assistant,
+                MessageContent::Text(failed_output.to_string()),
+            ));
+            messages.push(Message::new(
+                MessageRole::User,
+                MessageContent::Text(retry_prompt.to_string()),
+            ));
         }
 
         if let Some(text) = input.continue_output() {
@@ -1934,5 +1965,110 @@ Context: {{ctx}}."#;
         let result = validate_schema_detailed("output", &schema, raw).unwrap();
         assert!(result.is_ok());
         assert_eq!(result.raw_text, raw.trim());
+    }
+
+    // ---- Phase 9C: Schema validation retry loop ----
+
+    #[test]
+    fn test_schema_retries_default_none() {
+        // No frontmatter field -> None, consumer applies its own default
+        let content = "---\nmodel: gpt-4\n---\nPrompt.";
+        let role = Role::new("no-retries", content);
+        assert_eq!(role.schema_retries(), None);
+    }
+
+    #[test]
+    fn test_schema_retries_parsed_from_frontmatter() {
+        let content = r#"---
+schema_retries: 2
+---
+Prompt."#;
+        let role = Role::new("with-retries", content);
+        assert_eq!(role.schema_retries(), Some(2));
+    }
+
+    #[test]
+    fn test_schema_retries_zero_means_fail_fast() {
+        let content = r#"---
+schema_retries: 0
+---
+Prompt."#;
+        let role = Role::new("zero-retries", content);
+        assert_eq!(role.schema_retries(), Some(0));
+    }
+
+    #[test]
+    fn test_schema_retries_in_export() {
+        let content = r#"---
+schema_retries: 3
+---
+Prompt."#;
+        let role = Role::new("export-retries", content);
+        let exported = role.export();
+        assert!(exported.contains("schema_retries"));
+        assert!(exported.contains("3"));
+    }
+
+    #[test]
+    fn test_build_messages_appends_retry_feedback() {
+        // Role::build_messages is the point that actually injects the retry
+        // turn pair — this covers the wiring from Input -> messages.
+        // Use an Input shape that goes through from_str, then attach feedback.
+        let content = "---\nmodel: gpt-4\n---\nYou are helpful.";
+        let role = Role::new("retry-test", content);
+
+        // Build a synthetic input by hand — we can't call from_str without a
+        // full config, but we can construct just the pieces build_messages
+        // reads: role() is self, message_content() is a text part, and
+        // retry_feedback() drives the injection.
+        // Easier: call Role::build_messages directly with a minimal Input.
+        // We construct the Input via from_str in a Config-using test elsewhere.
+        // Here: directly assert that when retry_feedback is set, two extra
+        // messages are appended (Assistant failed_output + User retry_prompt).
+
+        // Build messages without retry (baseline count).
+        let config = crate::config::Config::default();
+        let global: crate::config::GlobalConfig =
+            std::sync::Arc::new(parking_lot::RwLock::new(config));
+        let input = crate::config::Input::from_str(&global, "hello", Some(role.clone()));
+        let baseline = role.build_messages(&input);
+        let baseline_count = baseline.len();
+
+        let input = input.with_retry_prompt(
+            "{\"broken\": true",
+            "Your previous output failed schema validation. Please retry.",
+        );
+        let messages = role.build_messages(&input);
+        assert_eq!(messages.len(), baseline_count + 2);
+        // Last two messages must be Assistant(failed) + User(retry_prompt)
+        let a = &messages[messages.len() - 2];
+        let u = &messages[messages.len() - 1];
+        assert!(matches!(a.role, crate::client::MessageRole::Assistant));
+        assert!(matches!(u.role, crate::client::MessageRole::User));
+        if let crate::client::MessageContent::Text(t) = &a.content {
+            assert!(t.contains("broken"));
+        } else {
+            panic!("failed assistant message must be text");
+        }
+        if let crate::client::MessageContent::Text(t) = &u.content {
+            assert!(t.contains("failed schema validation"));
+        } else {
+            panic!("retry user message must be text");
+        }
+    }
+
+    #[test]
+    fn test_schema_retries_roundtrip() {
+        let content = r#"---
+schema_retries: 2
+output_schema:
+  type: object
+---
+Prompt."#;
+        let role = Role::new("roundtrip", content);
+        assert_eq!(role.schema_retries(), Some(2));
+        let exported = role.export();
+        let round = Role::new("roundtrip", &exported);
+        assert_eq!(round.schema_retries(), Some(2));
     }
 }

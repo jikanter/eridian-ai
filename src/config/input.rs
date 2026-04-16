@@ -31,6 +31,11 @@ pub struct Input {
     rag_name: Option<String>,
     with_session: bool,
     with_agent: bool,
+    /// Phase 9C: retry feedback — assistant's previous failed output and a
+    /// corrective user message to append before resending. When set,
+    /// `build_messages` appends an Assistant message with `failed_output`
+    /// followed by a User message with `retry_prompt`.
+    retry_feedback: Option<(String, String)>,
 }
 
 impl Input {
@@ -51,6 +56,7 @@ impl Input {
             rag_name: None,
             with_session,
             with_agent,
+            retry_feedback: None,
         }
     }
 
@@ -118,6 +124,7 @@ impl Input {
             rag_name: None,
             with_session,
             with_agent,
+            retry_feedback: None,
         })
     }
 
@@ -209,6 +216,19 @@ impl Input {
             None => output.to_string(),
         };
         self.continue_output = Some(output);
+    }
+
+    /// Phase 9C: Attach an assistant's failed output + corrective user prompt
+    /// to be replayed on the next call. Consumed by `build_messages`.
+    pub fn with_retry_prompt(mut self, failed_output: &str, retry_prompt: &str) -> Self {
+        self.retry_feedback = Some((failed_output.to_string(), retry_prompt.to_string()));
+        self
+    }
+
+    pub fn retry_feedback(&self) -> Option<(&str, &str)> {
+        self.retry_feedback
+            .as_ref()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
     }
 
     pub fn regenerate(&self) -> bool {

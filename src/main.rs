@@ -397,8 +397,58 @@ async fn start_directive(
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
-    let (output, tool_results, metrics) =
+
+    // Phase 9C: Schema validation retry budget. Short-circuit to 0 when the
+    // provider is enforcing the schema natively (Phase 9A/9B) — a retry in
+    // that regime can't buy us anything.
+    let native_structured = has_output_schema.is_some()
+        && input
+            .role()
+            .model()
+            .data()
+            .supports_response_format_json_schema;
+    let max_schema_retries = if has_output_schema.is_some() && !is_dry_run && !native_structured {
+        input.role().schema_retries().unwrap_or(1)
+    } else {
+        0
+    };
+    let original_input = input.clone();
+
+    let (mut output, mut tool_results, mut metrics) =
         call_react(&mut input, client.as_ref(), abort_signal.clone()).await?;
+
+    // Retry loop: on output schema validation failure, re-send the original
+    // prompt with the failed assistant output + a corrective user turn.
+    let mut schema_retry_attempts: usize = 0;
+    if let Some(ref schema) = has_output_schema {
+        if !is_dry_run && max_schema_retries > 0 {
+            loop {
+                match validate_schema_traced("output", schema, &output, trace_emitter.as_ref()) {
+                    Ok(()) => break,
+                    Err(e) if schema_retry_attempts < max_schema_retries => {
+                        schema_retry_attempts += 1;
+                        let retry_prompt = format!(
+                            "Your previous output failed schema validation:\n{e}\n\nPlease regenerate your response to conform to the required schema. Return ONLY valid JSON."
+                        );
+                        let mut retry_input = original_input
+                            .clone()
+                            .with_retry_prompt(&output, &retry_prompt);
+                        let (new_output, new_tool_results, new_metrics) = call_react(
+                            &mut retry_input,
+                            client.as_ref(),
+                            abort_signal.clone(),
+                        )
+                        .await?;
+                        output = new_output;
+                        tool_results = new_tool_results;
+                        metrics.merge(&new_metrics);
+                        input = retry_input;
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
 
     // Cost display on stderr if --cost flag is set
     if config.read().show_cost {
@@ -422,6 +472,7 @@ async fn start_directive(
             "output_tokens": metrics.output_tokens,
             "cost_usd": metrics.cost_usd,
             "latency_ms": metrics.latency_ms,
+            "schema_retries": schema_retry_attempts,
         });
         if let Err(e) = crate::utils::ledger::append_run_log(&log_path, &record) {
             warn!("Failed to write run log: {e}");
@@ -440,7 +491,13 @@ async fn start_directive(
             }
         }
     } else if let Some(ref schema) = has_output_schema {
-        validate_schema_traced("output", schema, &output, trace_emitter.as_ref())?;
+        // Retry loop above handles retries; when retries were enabled the
+        // output is either valid or we already returned the error. When
+        // max_schema_retries == 0 (native structured output, or user disabled),
+        // do the validation here and propagate failures as before.
+        if max_schema_retries == 0 {
+            validate_schema_traced("output", schema, &output, trace_emitter.as_ref())?;
+        }
         print!("{output}");
         std::io::Write::flush(&mut std::io::stdout())?;
         if !output.ends_with('\n') {
