@@ -61,7 +61,7 @@ EOF
 }
 
 @test "pipeline: json output contains trace" {
-  run ./target/debug/aichat --pipe --stage stage-a --json --dry-run "test"
+  run ./target/debug/aichat --pipe --stage stage-a --output-format json --dry-run "test"
   [ "$status" -eq 0 ]
   [[ "$output" == *"trace"* ]]
   [[ "$output" == *"stages"* ]]
