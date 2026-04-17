@@ -269,6 +269,20 @@ impl AichatError {
     }
 }
 
+/// Phase 10C: Decide whether a pipeline-stage failure is transient enough to
+/// retry. True for network/API/model/schema errors (may clear on a second try);
+/// false for config/auth/usage/tool/abort/general (retrying cannot fix these).
+///
+/// Consumers ordinarily classify the *inner* error returned by
+/// `run_stage_inner` — not an already-wrapped `AichatError::PipelineStage`,
+/// whose fast-path classification would erase the original cause.
+pub fn is_retryable_stage_error(err: &anyhow::Error) -> bool {
+    matches!(
+        classify_error(err),
+        ExitCode::NetworkError | ExitCode::ApiError | ExitCode::ModelError | ExitCode::SchemaError
+    )
+}
+
 /// Inspect an `anyhow::Error` chain and return the most specific exit code.
 pub fn classify_error(err: &anyhow::Error) -> ExitCode {
     // Fast path: check for typed AichatError first
@@ -721,6 +735,53 @@ mod tests {
     }
 
     // --- Phase 8 tests ---
+
+    // --- Phase 10C tests ---
+
+    #[test]
+    fn test_is_retryable_api_and_network() {
+        assert!(is_retryable_stage_error(&anyhow!(
+            "Invalid response data: rate limit (status: 429)"
+        )));
+        assert!(is_retryable_stage_error(&anyhow!(
+            "Invalid response data: server error (status: 500)"
+        )));
+        assert!(is_retryable_stage_error(&anyhow!("Failed to build client")));
+        assert!(is_retryable_stage_error(&anyhow!(
+            "dns error: resolve host failed"
+        )));
+    }
+
+    #[test]
+    fn test_is_retryable_model_and_schema() {
+        assert!(is_retryable_stage_error(&anyhow!(
+            "Schema output validation failed: missing field"
+        )));
+        assert!(is_retryable_stage_error(&anyhow!(
+            "Exceed max_input_tokens limit"
+        )));
+    }
+
+    #[test]
+    fn test_not_retryable_config_auth_abort() {
+        assert!(!is_retryable_stage_error(&anyhow!("Unknown role `foo`")));
+        assert!(!is_retryable_stage_error(&anyhow!(
+            "Invalid response data: {{}} (status: 401)"
+        )));
+        assert!(!is_retryable_stage_error(&anyhow!("Aborted!")));
+        assert!(!is_retryable_stage_error(&anyhow!(
+            "Preflight: role 'r' requires tool calling but model 'm' does not support it."
+        )));
+    }
+
+    #[test]
+    fn test_not_retryable_usage_tool_general() {
+        assert!(!is_retryable_stage_error(&anyhow!("No input")));
+        assert!(!is_retryable_stage_error(&anyhow!("Tool call exit with 1")));
+        assert!(!is_retryable_stage_error(&anyhow!(
+            "something completely unexpected"
+        )));
+    }
 
     #[test]
     fn test_classify_typed_tool_timeout() {

@@ -82,6 +82,10 @@ pub struct Role {
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_retries: Option<usize>,
 
+    // Phase 10C: Pipeline stage retry on transient failures
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage_retries: Option<usize>,
+
     // Phase 6C: Unified resource binding
     #[serde(
         rename(serialize = "mcp_servers", deserialize = "mcp_servers"),
@@ -470,6 +474,10 @@ impl Role {
                                 "schema_retries" => {
                                     role.schema_retries = value.as_u64().map(|v| v as usize)
                                 }
+                                // Phase 10C: Pipeline stage retry
+                                "stage_retries" => {
+                                    role.stage_retries = value.as_u64().map(|v| v as usize)
+                                }
                                 // Phase 6C: Unified resource binding
                                 "mcp_servers" => {
                                     if let Some(arr) = value.as_array() {
@@ -556,6 +564,9 @@ impl Role {
         }
         if let Some(n) = self.schema_retries {
             meta.insert("schema_retries".into(), serde_json::json!(n));
+        }
+        if let Some(n) = self.stage_retries {
+            meta.insert("stage_retries".into(), serde_json::json!(n));
         }
         if !self.role_mcp_servers.is_empty() {
             meta.insert(
@@ -717,6 +728,13 @@ impl Role {
     /// `Some(0)` means fail fast (no retries). `Some(n)` means up to n retries.
     pub fn schema_retries(&self) -> Option<usize> {
         self.schema_retries
+    }
+
+    /// Phase 10C: Maximum number of pipeline stage retries on transient failure
+    /// (classified via `is_retryable_stage_error`). `None` means unset (consumer
+    /// applies its default, typically 1). `Some(0)` means fail fast.
+    pub fn stage_retries(&self) -> Option<usize> {
+        self.stage_retries
     }
 
     pub fn set_output_schema(&mut self, value: Option<Value>) {
@@ -2007,6 +2025,59 @@ Prompt."#;
         let exported = role.export();
         assert!(exported.contains("schema_retries"));
         assert!(exported.contains("3"));
+    }
+
+    // ---- Phase 10C: Pipeline stage retry ----
+
+    #[test]
+    fn test_stage_retries_default_none() {
+        let content = "---\nmodel: gpt-4\n---\nPrompt.";
+        let role = Role::new("no-stage-retries", content);
+        assert_eq!(role.stage_retries(), None);
+    }
+
+    #[test]
+    fn test_stage_retries_parsed_from_frontmatter() {
+        let content = r#"---
+stage_retries: 2
+---
+Prompt."#;
+        let role = Role::new("with-stage-retries", content);
+        assert_eq!(role.stage_retries(), Some(2));
+    }
+
+    #[test]
+    fn test_stage_retries_zero_means_fail_fast() {
+        let content = r#"---
+stage_retries: 0
+---
+Prompt."#;
+        let role = Role::new("zero-stage-retries", content);
+        assert_eq!(role.stage_retries(), Some(0));
+    }
+
+    #[test]
+    fn test_stage_retries_in_export() {
+        let content = r#"---
+stage_retries: 3
+---
+Prompt."#;
+        let role = Role::new("export-stage-retries", content);
+        let exported = role.export();
+        assert!(exported.contains("stage_retries"));
+        assert!(exported.contains("3"));
+    }
+
+    #[test]
+    fn test_stage_retries_coexists_with_schema_retries() {
+        let content = r#"---
+schema_retries: 2
+stage_retries: 1
+---
+Prompt."#;
+        let role = Role::new("both-retries", content);
+        assert_eq!(role.schema_retries(), Some(2));
+        assert_eq!(role.stage_retries(), Some(1));
     }
 
     #[test]

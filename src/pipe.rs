@@ -134,28 +134,59 @@ async fn run_stage(
     is_last: bool,
     abort_signal: AbortSignal,
 ) -> Result<(String, CallMetrics)> {
-    // Phase 0C: Save model state for restoration after stage
-    let saved_model_id = config.read().current_model().id();
+    // Phase 10C: stage retry budget. Peek at the role once to read
+    // `stage_retries`; if the role doesn't load, fall through to a single
+    // attempt so the config error surfaces on the first call.
+    let max_stage_retries = config
+        .read()
+        .retrieve_role(&stage.role_name)
+        .ok()
+        .and_then(|r| r.stage_retries())
+        .unwrap_or(1);
 
-    let result = run_stage_inner(config, stage, input_text, is_last, abort_signal).await;
+    let mut attempt: usize = 0;
+    loop {
+        // Phase 0C: save model state per attempt — the inner may have mutated
+        // it even on failure, and we want a clean slate for each retry.
+        let saved_model_id = config.read().current_model().id();
 
-    // Phase 0C: Restore model state regardless of success/failure
-    if let Err(e) = config.write().set_model(&saved_model_id) {
-        debug!("Failed to restore model after pipeline stage: {e}");
+        let result =
+            run_stage_inner(config, stage, input_text, is_last, abort_signal.clone()).await;
+
+        // Phase 0C: Restore model state regardless of success/failure.
+        if let Err(e) = config.write().set_model(&saved_model_id) {
+            debug!("Failed to restore model after pipeline stage: {e}");
+        }
+
+        match result {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < max_stage_retries && is_retryable_stage_error(&e) => {
+                warn!(
+                    "Pipeline stage {}/{} (role '{}') failed on attempt {}/{}, retrying: {}",
+                    stage_index + 1,
+                    stage_count,
+                    stage.role_name,
+                    attempt + 1,
+                    max_stage_retries + 1,
+                    e
+                );
+                attempt += 1;
+                continue;
+            }
+            Err(e) => {
+                let model_id = stage.model_id.clone().unwrap_or_else(|| {
+                    config.read().current_model().id()
+                });
+                return Err(anyhow::Error::new(AichatError::PipelineStage {
+                    stage: stage_index + 1,
+                    total: stage_count,
+                    role_name: stage.role_name.clone(),
+                    model_id: Some(model_id),
+                    message: e.to_string(),
+                }));
+            }
+        }
     }
-
-    result.map_err(|e| {
-        let model_id = stage.model_id.clone().unwrap_or_else(|| {
-            config.read().current_model().id()
-        });
-        anyhow::Error::new(AichatError::PipelineStage {
-            stage: stage_index + 1,
-            total: stage_count,
-            role_name: stage.role_name.clone(),
-            model_id: Some(model_id),
-            message: e.to_string(),
-        })
-    })
 }
 
 async fn run_stage_inner(

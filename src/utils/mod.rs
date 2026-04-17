@@ -18,7 +18,7 @@ pub use self::abort_signal::*;
 pub use self::clipboard::set_text;
 pub use self::command::*;
 pub use self::crypto::*;
-pub use self::exit_code::{classify_error, AichatError, ExitCode};
+pub use self::exit_code::{classify_error, is_retryable_stage_error, AichatError, ExitCode};
 pub use self::html_to_md::*;
 pub use self::input::*;
 pub use self::loader::*;
