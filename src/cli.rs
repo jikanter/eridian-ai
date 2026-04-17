@@ -225,6 +225,18 @@ pub struct Cli {
     /// List all macros
     #[clap(long)]
     pub list_macros: bool,
+    /// Phase 25B: compile source files into a knowledge base (requires -f)
+    #[clap(long = "knowledge-compile", value_name = "KB_NAME")]
+    pub knowledge_compile: Option<String>,
+    /// Phase 25E: list all compiled knowledge bases
+    #[clap(long = "knowledge-list")]
+    pub knowledge_list: bool,
+    /// Phase 25E: show stats (fact count, tag distribution, per-source coverage) for a KB
+    #[clap(long = "knowledge-stat", value_name = "KB_NAME")]
+    pub knowledge_stat: Option<String>,
+    /// Phase 25E: show a single fact; format is `KB_NAME:FACT_ID` (e.g. `docs:fact-abc123`)
+    #[clap(long = "knowledge-show", value_name = "KB:ID")]
+    pub knowledge_show: Option<String>,
     /// Input text
     #[clap(trailing_var_arg = true)]
     text: Vec<String>,

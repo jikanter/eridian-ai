@@ -2,7 +2,9 @@ mod cache;
 mod cli;
 mod client;
 mod config;
+mod context_budget;
 mod function;
+mod knowledge;
 mod mcp;
 mod mcp_client;
 mod pipe;
@@ -63,7 +65,11 @@ async fn main() -> Result<()> {
         || cli.list_rags
         || cli.list_macros
         || cli.list_sessions
-        || cli.list_tools;
+        || cli.list_tools
+        // Phase 25E: read-only knowledge ops don't need the heavy config setup.
+        || cli.knowledge_list
+        || cli.knowledge_stat.is_some()
+        || cli.knowledge_show.is_some();
     setup_logger(working_mode.is_serve() || working_mode.is_mcp())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
     let output_format = cli.output_format;
@@ -161,6 +167,21 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         println!("{macros}");
         return Ok(());
     }
+    // Phase 25E: knowledge subsystem CLI dispatch. These flags short-circuit
+    // the main interactive path. Compile is the only one that talks to an LLM.
+    if cli.knowledge_list {
+        return knowledge::run_list();
+    }
+    if let Some(ref kb) = cli.knowledge_stat {
+        return knowledge::run_stat(kb);
+    }
+    if let Some(ref spec) = cli.knowledge_show {
+        return knowledge::run_show(spec);
+    }
+    if let Some(ref kb_name) = cli.knowledge_compile {
+        return knowledge::run_compile(&config, kb_name, &cli.file).await;
+    }
+
     if cli.list_tools {
         // --list-tools without --mcp-server: list tools from config-based MCP servers
         let cfg = config.read();

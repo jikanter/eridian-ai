@@ -98,6 +98,15 @@ impl Input {
                 bail!("No last reply found");
             }
         }
+        let (role, with_session, with_agent) = resolve_role(&config.read(), role);
+
+        // Phase 11A/B: when multiple files were loaded and the user supplied a
+        // query, rank files by BM25 relevance and greedily pack the top-scoring
+        // subset into the model's input budget. Single-file or no-query cases
+        // fall through to the uniform concatenation path below — same behavior
+        // as before this phase.
+        let documents = maybe_select_by_budget(documents, raw_text, &role);
+
         let documents_len = documents.len();
         for (kind, path, contents) in documents {
             if documents_len == 1 && raw_text.is_empty() {
@@ -108,7 +117,6 @@ impl Input {
                 ));
             }
         }
-        let (role, with_session, with_agent) = resolve_role(&config.read(), role);
         Ok(Self {
             config: config.clone(),
             text: texts.join("\n"),
@@ -473,6 +481,70 @@ impl Input {
             MessageContent::Array(list)
         }
     }
+}
+
+/// Phase 11A/B integration glue. Given the raw `-f` document list, decide
+/// whether BM25 file ranking + budget-aware selection should kick in. It does
+/// only when all of: (a) multiple files were loaded, (b) the user supplied a
+/// query to rank against, (c) the role's model advertises a known
+/// `max_input_tokens`, and (d) the total concatenated tokens would exceed the
+/// files budget. Otherwise the documents list is passed through unchanged.
+fn maybe_select_by_budget(
+    documents: Vec<(&'static str, String, String)>,
+    raw_text: &str,
+    role: &Role,
+) -> Vec<(&'static str, String, String)> {
+    use crate::context_budget::{
+        format_selection_summary, rank_files, select_within_budget, ContextBudget,
+        DEFAULT_OUTPUT_RESERVE, FILES_SAFETY_MARGIN,
+    };
+
+    if documents.len() <= 1 || raw_text.trim().is_empty() {
+        return documents;
+    }
+    let max_input = match role.model().max_input_tokens() {
+        Some(v) => v,
+        None => return documents,
+    };
+
+    let budget = ContextBudget::new(max_input, DEFAULT_OUTPUT_RESERVE);
+    let files_budget = budget.remaining(FILES_SAFETY_MARGIN);
+
+    let total_estimate: usize = documents
+        .iter()
+        .map(|(_, _, c)| crate::utils::estimate_token_length(c))
+        .sum();
+    if total_estimate <= files_budget {
+        // Plenty of room; no ranking needed — preserves existing behavior.
+        return documents;
+    }
+
+    // Build (path, content) pairs for ranking. Preserve the `kind` to restore
+    // the full triple after selection.
+    let mut kinds: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
+    let files: Vec<(String, String)> = documents
+        .into_iter()
+        .map(|(kind, path, content)| {
+            kinds.insert(path.clone(), kind);
+            (path, content)
+        })
+        .collect();
+
+    let ranked = rank_files(files, raw_text);
+    let outcome = select_within_budget(ranked, files_budget);
+    if let Some(summary) = format_selection_summary(&outcome) {
+        eprintln!("{summary}");
+    }
+
+    outcome
+        .selected
+        .into_iter()
+        .map(|rc| {
+            let kind = kinds.get(&rc.path).copied().unwrap_or("FILE");
+            (kind, rc.path, rc.content)
+        })
+        .collect()
 }
 
 fn resolve_role(config: &Config, role: Option<Role>) -> (Role, bool, bool) {
