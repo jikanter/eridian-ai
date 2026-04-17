@@ -237,7 +237,7 @@ pub fn openai_build_chat_completions_body(data: ChatCompletionsData, model: &Mod
         top_p,
         functions,
         stream,
-        output_schema: _,
+        output_schema,
     } = data;
 
     let messages_len = messages.len();
@@ -348,6 +348,26 @@ pub fn openai_build_chat_completions_body(data: ChatCompletionsData, model: &Mod
             })
             .collect();
     }
+
+    // Phase 9A: provider-native structured output. When the model declares
+    // `supports_response_format_json_schema` and the role has an `output_schema`,
+    // use OpenAI's `response_format: json_schema` so conformance is enforced by
+    // the API rather than by a prompt-injected instruction. The prompt suffix is
+    // stripped upstream in `Input::prepare_completion_data` to avoid paying for
+    // it twice.
+    if let Some(schema) = output_schema {
+        if model.data().supports_response_format_json_schema {
+            body["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "output",
+                    "strict": true,
+                    "schema": schema,
+                }
+            });
+        }
+    }
+
     body
 }
 
@@ -412,5 +432,102 @@ fn normalize_function_id(value: &str) -> Option<String> {
         None
     } else {
         Some(value.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::{Message, MessageContent, MessageRole};
+    use crate::function::FunctionDeclaration;
+
+    fn openai_model(native_schema: bool) -> Model {
+        let mut m = Model::new("openai", "gpt-test");
+        m.data_mut().supports_function_calling = true;
+        m.data_mut().supports_response_format_json_schema = native_schema;
+        m
+    }
+
+    fn user_msg(text: &str) -> Message {
+        Message::new(MessageRole::User, MessageContent::Text(text.into()))
+    }
+
+    fn sample_schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"},
+                "confidence": {"type": "number"}
+            },
+            "required": ["answer", "confidence"]
+        })
+    }
+
+    fn data_with_schema(
+        schema: Option<Value>,
+        functions: Option<Vec<FunctionDeclaration>>,
+    ) -> ChatCompletionsData {
+        ChatCompletionsData {
+            messages: vec![user_msg("hi")],
+            temperature: None,
+            top_p: None,
+            functions,
+            stream: false,
+            output_schema: schema,
+        }
+    }
+
+    #[test]
+    fn body_injects_response_format_when_native_schema_active() {
+        let model = openai_model(true);
+        let schema = sample_schema();
+        let data = data_with_schema(Some(schema.clone()), None);
+        let body = openai_build_chat_completions_body(data, &model);
+
+        let rf = body.get("response_format").expect("response_format present");
+        assert_eq!(rf["type"], "json_schema");
+        assert_eq!(rf["json_schema"]["name"], "output");
+        assert_eq!(rf["json_schema"]["strict"], true);
+        assert_eq!(rf["json_schema"]["schema"], schema);
+    }
+
+    #[test]
+    fn body_omits_response_format_when_capability_off() {
+        let model = openai_model(false);
+        let data = data_with_schema(Some(sample_schema()), None);
+        let body = openai_build_chat_completions_body(data, &model);
+        assert!(
+            body.get("response_format").is_none(),
+            "no response_format when model doesn't support it"
+        );
+    }
+
+    #[test]
+    fn body_omits_response_format_when_schema_missing() {
+        let model = openai_model(true);
+        let data = data_with_schema(None, None);
+        let body = openai_build_chat_completions_body(data, &model);
+        assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn body_preserves_tools_alongside_response_format() {
+        let model = openai_model(true);
+        let existing = vec![FunctionDeclaration {
+            name: "get_weather".into(),
+            description: "lookup weather".into(),
+            parameters: json!({"type": "object", "properties": {}}),
+            agent: false,
+            source: Default::default(),
+            examples: None,
+            timeout: None,
+        }];
+        let data = data_with_schema(Some(sample_schema()), Some(existing));
+        let body = openai_build_chat_completions_body(data, &model);
+
+        assert!(body.get("response_format").is_some());
+        let tools = body["tools"].as_array().expect("tools array present");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["function"]["name"], "get_weather");
     }
 }

@@ -7,4 +7,4 @@ we could help the tool both generate the schema and/or check the schema for cons
 
 My gut tells me we would need to at least maintain a cache of the model cards to save round-trips to the huggingface 
 api. And then those model cards would necessarily require some kind of compilation step to make them usable for this 
-purpose.
+purpose. One idea is this could potentially be done via the cache we are building in [phase 10B](../roadmap/phase-10-resilience.md)
