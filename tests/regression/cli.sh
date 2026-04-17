@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 
 # Regression tests for Command-Line features described in Command-Line-Guide.md
+load common.bash
 
 @test "cli: --version prints version" {
   run ./target/debug/aichat --version
@@ -31,16 +32,16 @@
 }
 
 @test "cli: --dry-run 'hello' works" {
-  run ./target/debug/aichat --dry-run "hello"
+  run_aichat --dry-run "hello"
   [ "$status" -eq 0 ]
 }
 
 @test "cli: -c --dry-run (code mode) works" {
-  run ./target/debug/aichat -c --dry-run "fibonacci in js"
+  run_aichat -c --dry-run "fibonacci in js"
   [ "$status" -eq 0 ]
 }
 
 @test "cli: --no-stream works with --dry-run" {
-  run ./target/debug/aichat --no-stream --dry-run "test"
+  run_aichat --no-stream --dry-run "test"
   [ "$status" -eq 0 ]
 }

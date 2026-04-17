@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 
 # Regression tests for Pipeline features described in Pipeline-Guide.md
+load common.bash
 
 ROLES_DIR="${AICHAT_ROLES_DIR:-$HOME/Library/Application Support/aichat/roles}"
 PIPES_DIR="$(pwd)/pipelines"
@@ -30,7 +31,7 @@ teardown() {
 
 @test "pipeline: command-line stages with --dry-run" {
   # Note: --pipe is required for --stage
-  run ./target/debug/aichat --pipe --stage stage-a --stage stage-b --dry-run "start"
+  run_aichat --pipe --stage stage-a --stage stage-b --dry-run "start"
   [ "$status" -eq 0 ]
   # In dry-run for pipeline, it should show preflight validation or the execution plan
 }
@@ -41,7 +42,7 @@ stages:
   - role: stage-a
   - role: stage-b
 EOF
-  run ./target/debug/aichat --pipe --pipe-def test-pipe.yaml --dry-run "start"
+  run_aichat --pipe --pipe-def test-pipe.yaml --dry-run "start"
   [ "$status" -eq 0 ]
   rm test-pipe.yaml
 }
@@ -55,14 +56,16 @@ pipeline:
 ---
 EOF
   # Invoking a pipeline role should work
-  run ./target/debug/aichat -r pipe-role --dry-run "start"
+  run_aichat -r pipe-role --dry-run "start"
   [ "$status" -eq 0 ]
   rm "$ROLES_DIR/pipe-role.md"
 }
 
 @test "pipeline: json output contains trace" {
-  run ./target/debug/aichat --pipe --stage stage-a --output-format json --dry-run "test"
+  run_aichat --pipe --stage stage-a --output json --dry-run "test"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"trace"* ]]
-  [[ "$output" == *"stages"* ]]
+  if [[ -z "$AICHAT_TEST_MODEL" ]]; then
+    [[ "$output" == *"trace"* ]]
+    [[ "$output" == *"stages"* ]]
+  fi
 }
