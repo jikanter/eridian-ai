@@ -21,3 +21,21 @@
   run grep "Lifecycle Hooks" docs/wiki/Developer-Documentation.md
   [ "$status" -eq 0 ]
 }
+
+@test "dev-docs: contains source deep-dive section" {
+  run grep "Source Code Deep-Dive" docs/wiki/Developer-Documentation.md
+  [ "$status" -eq 0 ]
+}
+
+@test "dev-docs: uses correct sandbox root URL for source links" {
+  run grep "http://mldev:3000/admin/aichat-private-sandbox/src/branch/main/src/" docs/wiki/Developer-Documentation.md
+  [ "$status" -eq 0 ]
+}
+
+@test "dev-docs: links to critical source files" {
+  grep "src/main.rs" docs/wiki/Developer-Documentation.md
+  grep "src/pipe.rs" docs/wiki/Developer-Documentation.md
+  grep "src/client/mod.rs" docs/wiki/Developer-Documentation.md
+  grep "src/knowledge/compile.rs" docs/wiki/Developer-Documentation.md
+  grep "src/config/preflight.rs" docs/wiki/Developer-Documentation.md
+}
