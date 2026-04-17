@@ -1797,7 +1797,6 @@ impl Config {
     /// Phase 27C: render the last knowledge retrieval's per-binding events
     /// plus a short content preview for each fact. Returns a friendly
     /// message when no retrieval has happened this session.
-    #[allow(dead_code)] // re-exported via REPL command dispatch
     pub fn knowledge_sources(config: &GlobalConfig) -> String {
         let cfg = config.read();
         let events = &cfg.last_knowledge_events;

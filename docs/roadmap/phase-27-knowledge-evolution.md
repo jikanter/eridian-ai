@@ -1,6 +1,6 @@
 # Phase 27: Knowledge Evolution, Attribution & Trace
 
-**Status:** Planned
+**Status:** Done
 **Epic:** 9 — Knowledge Evolution (was: RAG Evolution)
 **Design:** [epic-9.md](../analysis/epic-9.md)
 
@@ -16,10 +16,10 @@
 
 | Item | Status | Notes |
 |---|---|---|
-| 27A. Append/patch-only mutation API | — | `src/knowledge/store.rs` exposes only `append_fact`, `patch_fact`, `deprecate_fact` — no `replace_all` or `truncate`. Every mutation records a revision entry in `revisions.jsonl` (id, op, timestamp, reason). Directly enforces ACE's anti-collapse prescription: no iterative rewrites that erode detail. Deprecated facts remain queryable via `--include-deprecated`. ~120 lines. |
-| 27B. ACE generation/reflection/curation | — | New `src/knowledge/evolve.rs` + subcommands. `knowledge reflect <kb>`: run the Reflector role over retrieval failures/misses logged in 27C traces; emit candidate patches. `knowledge curate <kb>`: run the Curator role over the candidate set; append accepted facts via 27A's API. Both roles are user-customizable via role frontmatter (`ace_role: reflector | curator`). The Generator role is already implicit in 25B compilation. ~200 lines. |
-| 27C. Trace integration | — | Extend `src/utils/trace.rs` with `emit_knowledge_query()`: records KB name, query, tag filter, candidate count, seed fact IDs, expanded fact IDs, post-RRF ranks. Integrates with Phase 8F `--trace`. Extends `.sources knowledge` REPL command with content previews (first 200 chars per fact). ~80 lines. |
-| 27D. Attributed output (per-fact citations) | — | `src/config/input.rs` + `src/client/common.rs`. When `attributed_output: true` in role frontmatter, the retrieved facts are prefixed with inline markers (`[[fact-id]]`) the LLM is instructed to carry through. Post-processing annotates the final output with provenance tables. No additional LLM call — uses the deterministic source anchors from 25A. ~120 lines. |
+| 27A. Append/patch-only mutation API | Done | `src/knowledge/store.rs` exposes `append_fact`, `append_fact_with_reason`, `patch_fact`, `deprecate_fact` — no `replace_all`/`truncate`. Every mutation records a `RevisionEntry { id, op, timestamp, reason }` in `revisions.jsonl`. Deprecated facts stay on disk and surface again via `QueryOptions.include_deprecated`/`RetrievalOptions.include_deprecated`. 6 unit tests. |
+| 27B. ACE reflect/curate subcommands | Done | New `src/knowledge/evolve.rs` + `--knowledge-reflect <kb>` / `--knowledge-curate <kb>` CLI flags. Reflector emits a `CandidateSet` JSON (append/patch/deprecate) validated against a schema. Curator consumes candidates (user-supplied via `--knowledge-candidates` or auto-generated) and accepts/rejects each; accepted entries commit through the 27A mutation API. `--knowledge-trace` lets users feed retrieval-failure JSONL to the Reflector. User-defined roles named `*-reflector` or `*-curator` override the defaults. 6 unit tests. |
+| 27C. Trace integration | Done | `KnowledgeQueryEvent` + `TraceEmitter::emit_knowledge_query()` in `src/utils/trace.rs`. `retrieve_from_bindings_traced()` threads a `TraceEmitter` through per-binding retrieval. `Input::use_knowledge()` emits events when `--trace`/`AICHAT_TRACE` is active and caches last events/hits on `Config` for `.sources knowledge` REPL command (with fact-description previews, 200-char cap). 1 unit test + covered by existing retrieve tests. |
+| 27D. Attributed output (per-fact citations) | Done | `Role::attributed_output` frontmatter field (default false). `format_hits_for_attributed_injection()` in `src/knowledge/query.rs` surfaces `[[fact-id]]` markers with carry-through instructions. `annotate_output_with_provenance()` walks the LLM response, collects unique cited ids in order, and appends a deterministic `Sources:` table citing path + line range. No extra LLM call. 4 unit tests. |
 
 **Parallelization:**
 - 27A lands first (mutation discipline gates everything else).
