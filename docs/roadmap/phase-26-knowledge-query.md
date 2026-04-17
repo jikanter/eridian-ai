@@ -1,6 +1,6 @@
 # Phase 26: Knowledge Query & Composability
 
-**Status:** Planned
+**Status:** Done
 **Epic:** 9 — Knowledge Evolution (was: RAG Evolution)
 **Design:** [epic-9.md](../analysis/epic-9.md)
 
@@ -15,12 +15,12 @@
 
 | Item | Status | Notes |
 |---|---|---|
-| 26A. Tag-filter + BM25 query core | — | New `src/knowledge/query.rs`. Pipeline: `tags? → BM25(facts) → topN seeds`. Tag filter is AND of `(namespace:value)` predicates (e.g. `kind:rule AND topic:retrieval`); narrows candidate set *before* BM25 ranks, cutting work. Returns `Vec<FactHit { fact, score, source }>`. Budget-aware (accepts max tokens; truncates at EDP boundary). ~180 lines. |
-| 26B. Explicit-edge graph walk | — | New `src/knowledge/graph.rs`. 1-hop expansion from seed facts along edges declared at compile time (markdown link target, shared source file, shared canonical entity). Expansion is capped at 2× seed count; re-ranked via RRF against original query. Primary retrieval path per GraphRAG research (not an afterthought). ~140 lines. |
-| 26C. Role `knowledge:` frontmatter field | — | `src/config/role.rs`. New `knowledge: Option<KnowledgeBinding>` field; serde-untagged to accept `String`, `Vec<String>`, or full `Vec<{name, tags?, weight?}>`. Same pattern as Phase 6C `mcp_servers:`. Unlocks KB in roles, pipelines, CLI. ~80 lines. |
-| 26D. Pipeline + CLI integration | — | `src/config/input.rs` gains `use_knowledge()` (replaces `use_embeddings()`). Called in `src/pipe.rs:run_stage_inner()` before each LLM call. `src/cli.rs` accepts `--knowledge <kb>` flags (repeatable). Composes with `-f`, `-r`, `--stage`, `--each`. CLI requires KB to exist (no interactive creation). ~100 lines. |
-| 26E. Search-only & LLM-tool modes | — | `--knowledge-search "query"` bypasses the LLM, prints ranked facts (text or `-o json`). `knowledge_mode: tool` suppresses auto-injection and exposes a synthetic `search_knowledge` tool (query + optional tags); LLM decides when to invoke. Follows Phase 1C `tool_search` pattern exactly. Extends `src/function.rs` dispatch. ~160 lines. |
-| 26F. Multi-KB search via RRF | — | When a role or CLI references multiple KBs, query each independently and fuse via existing `reciprocal_rank_fusion()`. Weights per KB supported. Cross-KB safe (RRF uses ranks, not raw BM25 scores). ~60 lines (RRF already exists from old RAG). |
+| 26A. Tag-filter + BM25 query core | Done | `src/knowledge/query.rs`. `filter_by_tags` (AND-joined predicates) → `bm25_rank` (top-K) → `apply_budget` (EDP-boundary truncation). `FactHit { fact, score, source }`. `format_hits_for_injection` + `hits_to_json` formatting helpers. 16 unit tests. |
+| 26B. Explicit-edge graph walk | Done | `src/knowledge/graph.rs`. `one_hop_neighbors` (dedup, excludes seeds), `reciprocal_rank_fusion` (RRF k=60, weighted), `expand_and_fuse` (cap = 2× seed count, seeds weighted 1.5× expansion's 1.0×). Primary retrieval path. 11 unit tests. |
+| 26C. Role `knowledge:` frontmatter field | Done | `src/config/role.rs`. `KnowledgeBinding { name, tags, weight }`. Parses String / Vec&lt;String&gt; / Vec&lt;Object&gt; frontmatter shapes. Exports in the most compact round-trippable form. Plus `knowledge_mode: Option<String>` for 26E switching. 9 unit tests. |
+| 26D. Pipeline + CLI integration | Done | `Input::use_knowledge()` (sync — retrieval is local disk I/O). Wired into `main.rs` non-pipeline path and `pipe.rs:run_stage_inner`. Phase 10B cache key updated to hash *post-injection* text so KB changes invalidate cached stages. `--knowledge <name>` CLI flag (repeatable) merges with role bindings at retrieval time. `src/knowledge/retrieve.rs` is the orchestrator. |
+| 26E. Search-only & LLM-tool modes | Done | `--knowledge-search "query"` + `--knowledge <kb>` (repeatable) prints ranked facts as text (default) or JSON (`-o json`). `knowledge_mode: tool` on a role suppresses auto-injection and exposes a synthetic `search_knowledge` tool via `select_functions`; tool calls dispatch to `ToolCall::eval_search_knowledge` and return JSON hits. |
+| 26F. Multi-KB search via RRF | Done | Folded into 26D's `retrieve_from_bindings`. Each binding runs its own tag+BM25+graph-expand pipeline; results fuse via `reciprocal_rank_fusion` weighted by `binding.weight`. Same-id facts across KBs dedupe via the per-id best-score map. 5 unit tests. |
 
 **Parallelization:**
 - 26C is the foundation — 26D, 26E, 26F depend on it.
