@@ -1,8 +1,12 @@
 # Phase 16: Server — Hardening & Knowledge Exposure
 
-**Status:** Planned
+**Status:** Deferred (2026-04-17)
 **Epic:** 5 — Server Pipeline Engine
 **Design:** [epic-5.md](../analysis/epic-5.md)
+
+> **[DEFERRED 2026-04-17]** Epic 5 (Phases 16, 17, 18) is explicitly parked
+> while Epic 9 (Knowledge Evolution) is in flight. The server surface is
+> stable at its current feature set; returning to it is a future-session decision.
 
 ---
 

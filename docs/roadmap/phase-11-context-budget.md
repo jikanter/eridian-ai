@@ -1,6 +1,6 @@
 # Phase 11: Runtime Intelligence — Context Budget
 
-**Status:** Planned
+**Status:** Done
 **Epic:** 2 — Runtime Intelligence
 **Design:** [epic-2.md](../analysis/epic-2.md)
 
@@ -8,16 +8,11 @@
 
 | Item | Status | Notes |
 |---|---|---|
-| 11A. Context budget allocator core | — | New `src/context_budget.rs`. Calculates: `remaining = max_input_tokens - output_reserve - fixed_allocations`. Fixed = system prompt + schema + user message (always included). Remaining fills greedily by priority. Replaces hard error in `guard_max_input_tokens()` with intelligent truncation + stderr warning. |
-| 11B. BM25-ranked file inclusion | — | When `-f` includes multiple files/directory, score each file against user query via `bm25` crate (already in deps). Include files in descending relevance order until budget exhausted. Produces `RankedContent { path, content, relevance_score, token_estimate }`. Emits selection summary on stderr. |
-| 11C. Budget-aware RAG | — | Pass remaining token budget to `Config::search_rag()`. Compute `top_k = remaining / avg_chunk_tokens` instead of fixed k. Requires modifying `Rag::search()` signature to accept budget parameter. |
+| 11A. Context budget allocator core | Done | New `src/context_budget.rs`. Calculates: `remaining = max_input_tokens - output_reserve - fixed_allocations`. `ContextBudget::new` + `.remaining()` (saturating). Defaults: 4096 output reserve, 2048 safety margin for fixed allocations. |
+| 11B. BM25-ranked file inclusion | Done | Same module. `rank_files` + `select_within_budget` + `format_selection_summary`. Wired into `Input::from_files` — kicks in only when `-f` loads multiple files, a query is present, and the total would exceed the files budget. Skipped files logged to stderr; cuts at file boundaries (never slices mid-file). |
+| 11C. Budget-aware RAG | Superseded | **Not shipping.** The legacy `src/rag/` module is slated for deprecation when Phase 25A (Knowledge Compilation) lands, so widening `Rag::search()` would be throwaway work. The budget plumbing from 11A is instead consumed directly by [Phase 26A](./phase-26-knowledge-query.md) (tag-filter + BM25 query core), which is budget-aware from day one. |
 
-**Parallelization:** 11A, 11B, 11C are independently implementable:
-- **Agent A**: Core `ContextBudget` struct + integration in `Input::prepare_completion_data()`
-- **Agent B**: BM25 file ranking module (standalone, returns ranked file list)
-- **Agent C**: Budget-aware RAG (modify `search_rag` to accept budget)
-
-All three merge into `prepare_completion_data()` where the budget allocator orchestrates them.
+**Parallelization:** 11A and 11B shipped together as one module (`src/context_budget.rs`); 11B consumes the `ContextBudget` helper from 11A.
 
 **Config:**
 ```yaml

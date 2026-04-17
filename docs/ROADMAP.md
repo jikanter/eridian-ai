@@ -487,6 +487,10 @@ JSON Schema containment check: verify that a document conforming to output_schem
 
 *Renumbered from original Epic 3. Exposes AIChat's unique runtime capabilities over HTTP, turning the server from a proxy into a pipeline execution engine.*
 
+> **[DEFERRED 2026-04-17]** Phases 16, 17, and 18 are parked while Epic 9
+> (Knowledge Evolution) is in flight. The existing `--serve` behavior is
+> unchanged; expanding the server surface is a future-session decision.
+
 ### Phase 16: Server Hardening
 
 | Item | Description | Status |

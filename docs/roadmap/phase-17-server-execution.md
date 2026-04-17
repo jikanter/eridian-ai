@@ -1,8 +1,12 @@
 # Phase 17: Server — Role & Pipeline Execution
 
-**Status:** Planned
+**Status:** Deferred (2026-04-17)
 **Epic:** 5 — Server Pipeline Engine
 **Design:** [epic-5.md](../analysis/epic-5.md)
+
+> **[DEFERRED 2026-04-17]** Epic 5 (Phases 16, 17, 18) is explicitly parked
+> while Epic 9 (Knowledge Evolution) is in flight. Returning to the server
+> execution surface is a future-session decision.
 
 ---
 

@@ -452,7 +452,7 @@ impl ContextBudget {
 
 **BM25 ranking for file contents**: The `bm25` crate is already a dependency. When `-f` includes multiple files or a directory, score each file (or file section) against the user's query text. Include files in descending score order until the budget is exhausted.
 
-**Budget-aware RAG**: Pass remaining budget to `Config::search_rag()` (`src/config/mod.rs:1573-1586`) so it can compute `top_k = remaining_budget / avg_chunk_tokens` instead of using a fixed k.
+**Budget-aware RAG**: ~~Pass remaining budget to `Config::search_rag()`~~ — **Superseded 2026-04-17.** The legacy `src/rag/` path is being deprecated in favor of Phase 25 (Knowledge Compilation), so widening `Rag::search()` would be throwaway work. [Phase 26A](../roadmap/phase-26-knowledge-query.md) consumes the `ContextBudget` helper from this phase directly and is budget-aware from day one. See [phase-11](../roadmap/phase-11-context-budget.md) for the supersession note.
 
 **Config**:
 ```yaml
@@ -478,10 +478,10 @@ Large. ~400-500 lines. The BM25 ranking is the most complex part — it requires
 
 ### Parallelization
 
-**Independent** of Features 1-4 and 6. However, the BM25 file ranking sub-component and the budget allocation core can be developed by separate agents:
-- **Agent A**: `ContextBudget` struct, allocation algorithm, integration in `input.rs`
-- **Agent B**: BM25 file ranking (scoring files against query, producing `RankedContent` list)
-- **Agent C**: Budget-aware RAG (modifying `search_rag` to accept a token budget)
+**Independent** of Features 1-4 and 6. The allocator core and BM25 file ranking shipped together in `src/context_budget.rs`:
+- **Agent A**: `ContextBudget` struct + integration in `Input::from_files` (shipped as [Phase 11A](../roadmap/phase-11-context-budget.md))
+- **Agent B**: BM25 file ranking (`rank_files` + `select_within_budget`, shipped as [Phase 11B](../roadmap/phase-11-context-budget.md))
+- ~~Agent C: Budget-aware RAG~~ — superseded; see note above.
 
 ### Token Impact
 

@@ -29,7 +29,7 @@
 
 **Dependencies (external):**
 - **Phase 25 (knowledge compilation)** — hard dependency. This phase queries the artifacts Phase 25 produces. Cannot begin until 25A/25B/25D land.
-- **Phase 11C (budget-aware RAG)** — soft dependency. 26A should respect a caller-supplied token budget; 11C provides the budget plumbing. If 11C isn't landed, 26A falls back to a fixed top-k.
+- **Phase 11A (context budget allocator)** — hard dependency for 26A's budget-aware truncation. The `ContextBudget` helper from `src/context_budget.rs` supplies the remaining-tokens number that 26A respects at retrieval time (replaces the "Phase 11C" role the old plan had — 11C was superseded; see [phase-11](./phase-11-context-budget.md)).
 - **Phase 1C (deferred tool loading)** — pattern reference for 26E's synthetic `search_knowledge` tool; no code dependency, but the shape is borrowed directly.
 - **Phase 8D (headless RAG)** — fixes the "RAG bails in CLI mode" issue; 26D inherits the same fix in knowledge-flavored form.
 
