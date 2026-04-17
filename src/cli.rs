@@ -266,43 +266,47 @@ pub struct Cli {
 
 impl Cli {
     pub fn text(&self) -> Result<Option<String>> {
-        let mut stdin_text = String::new();
-        if !self.each && !stdin().is_terminal() {
-            let _ = stdin()
-                .read_to_string(&mut stdin_text)
+        // When a positional prompt is supplied, it is authoritative — skip stdin
+        // entirely. Previously we drained stdin and concatenated, which blocked
+        // forever on inherited-but-never-closing stdin (e.g. a shell loop where
+        // the caller's stdin is not a TTY). See `resolve_prompt` for the pure
+        // logic this wraps.
+        let stdin_text = if self.text.is_empty() && !self.each && !stdin().is_terminal() {
+            let mut buf = String::new();
+            stdin()
+                .read_to_string(&mut buf)
                 .context("Invalid stdin pipe")?;
+            buf
+        } else {
+            String::new()
         };
-        match self.text.is_empty() {
-            true => {
-                if stdin_text.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(stdin_text))
-                }
-            }
-            false => {
-                if self.macro_name.is_some() {
-                    let text = self
-                        .text
-                        .iter()
-                        .map(|v| shell_words::quote(v))
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    if stdin_text.is_empty() {
-                        Ok(Some(text))
-                    } else {
-                        Ok(Some(format!("{text} -- {stdin_text}")))
-                    }
-                } else {
-                    let text = self.text.join(" ");
-                    if stdin_text.is_empty() {
-                        Ok(Some(text))
-                    } else {
-                        Ok(Some(format!("{text}\n{stdin_text}")))
-                    }
-                }
-            }
+        Ok(resolve_prompt(
+            &self.text,
+            &stdin_text,
+            self.macro_name.is_some(),
+        ))
+    }
+}
+
+/// Pure prompt resolution: given positional text args and any stdin content,
+/// decide the final prompt. Positional args win; stdin is only used when there
+/// are no positional args.
+fn resolve_prompt(text_args: &[String], stdin_text: &str, is_macro: bool) -> Option<String> {
+    if text_args.is_empty() {
+        if stdin_text.is_empty() {
+            return None;
         }
+        return Some(stdin_text.to_string());
+    }
+    if is_macro {
+        let text = text_args
+            .iter()
+            .map(|v| shell_words::quote(v))
+            .collect::<Vec<_>>()
+            .join(" ");
+        Some(text)
+    } else {
+        Some(text_args.join(" "))
     }
 }
 
@@ -387,5 +391,57 @@ mod tests {
         assert!(OutputFormat::Tsv.system_prompt_suffix().is_some());
         assert!(OutputFormat::Csv.system_prompt_suffix().is_some());
         assert!(OutputFormat::Text.system_prompt_suffix().is_none());
+    }
+
+    fn s(v: &str) -> String {
+        v.to_string()
+    }
+
+    #[test]
+    fn test_resolve_prompt_text_only() {
+        let args = vec![s("hello"), s("world")];
+        assert_eq!(resolve_prompt(&args, "", false), Some(s("hello world")));
+    }
+
+    #[test]
+    fn test_resolve_prompt_stdin_only() {
+        assert_eq!(
+            resolve_prompt(&[], "piped content", false),
+            Some(s("piped content"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_prompt_empty() {
+        assert_eq!(resolve_prompt(&[], "", false), None);
+    }
+
+    #[test]
+    fn test_resolve_prompt_text_wins_over_stdin() {
+        // Key regression fix: when positional text is supplied, stdin is
+        // ignored — no silent concatenation, no blocking on open-but-idle fds.
+        let args = vec![s("Squat")];
+        assert_eq!(
+            resolve_prompt(&args, "surprise stdin content", false),
+            Some(s("Squat"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_prompt_macro_shell_quotes() {
+        let args = vec![s("hello world"), s("plain")];
+        assert_eq!(
+            resolve_prompt(&args, "", true),
+            Some(s("'hello world' plain"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_prompt_macro_ignores_stdin() {
+        let args = vec![s("run")];
+        assert_eq!(
+            resolve_prompt(&args, "should be ignored", true),
+            Some(s("run"))
+        );
     }
 }
