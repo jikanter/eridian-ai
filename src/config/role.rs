@@ -28,6 +28,85 @@ pub const OUTPUT_SCHEMA_SUFFIX_MARKER: &str =
 #[folder = "assets/roles/"]
 struct RolesAsset;
 
+/// Phase 26C: One knowledge-base reference declared on a role. Multiple
+/// bindings fuse via RRF at query time (Phase 26F).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KnowledgeBinding {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default = "default_binding_weight", skip_serializing_if = "is_default_weight")]
+    pub weight: f32,
+}
+
+fn default_binding_weight() -> f32 {
+    1.0
+}
+
+fn is_default_weight(w: &f32) -> bool {
+    (*w - 1.0).abs() < f32::EPSILON
+}
+
+fn is_false_ref(b: &bool) -> bool {
+    !*b
+}
+
+impl KnowledgeBinding {
+    pub fn simple(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            tags: Vec::new(),
+            weight: 1.0,
+        }
+    }
+}
+
+/// Phase 26C: parse the flexible `knowledge:` frontmatter into a list of
+/// bindings. Accepts three shapes:
+/// - `knowledge: my-kb` (string → single binding)
+/// - `knowledge: [kb-a, kb-b]` (list of strings → multiple simple bindings)
+/// - `knowledge: [{name: kb-a, tags: [...], weight: 1.5}, ...]` (full form)
+pub(crate) fn parse_knowledge_frontmatter_value(v: &Value) -> Vec<KnowledgeBinding> {
+    if let Some(name) = v.as_str() {
+        return vec![KnowledgeBinding::simple(name)];
+    }
+    if let Some(arr) = v.as_array() {
+        let mut out = Vec::new();
+        for item in arr {
+            if let Some(name) = item.as_str() {
+                out.push(KnowledgeBinding::simple(name));
+            } else if item.is_object() {
+                if let Ok(b) = serde_json::from_value::<KnowledgeBinding>(item.clone()) {
+                    out.push(b);
+                }
+            }
+        }
+        return out;
+    }
+    Vec::new()
+}
+
+pub(crate) fn knowledge_bindings_to_export(bindings: &[KnowledgeBinding]) -> Value {
+    // Prefer the most compact round-trippable form:
+    // - one binding, no tags, default weight → a bare string
+    // - many simple bindings, no tags, default weight → list of strings
+    // - anything else → list of objects
+    let all_simple = bindings
+        .iter()
+        .all(|b| b.tags.is_empty() && is_default_weight(&b.weight));
+    if all_simple {
+        if bindings.len() == 1 {
+            return Value::String(bindings[0].name.clone());
+        }
+        let names: Vec<Value> = bindings
+            .iter()
+            .map(|b| Value::String(b.name.clone()))
+            .collect();
+        return Value::Array(names);
+    }
+    serde_json::json!(bindings)
+}
+
 static RE_METADATA: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)-{3,}\s*(.*?)\s*-{3,}\s*(.*)").unwrap());
 
@@ -98,6 +177,28 @@ pub struct Role {
         skip_serializing_if = "Vec::is_empty"
     )]
     role_mcp_servers: Vec<String>,
+
+    // Phase 26C: Knowledge-base bindings. Parsed from flexible frontmatter:
+    //   knowledge: my-kb
+    //   knowledge: [kb-a, kb-b]
+    //   knowledge:
+    //     - name: kb-a
+    //       tags: [kind:rule]
+    //       weight: 1.5
+    #[serde(default, skip_serializing_if = "Vec::is_empty", skip_deserializing)]
+    knowledge_bindings: Vec<KnowledgeBinding>,
+
+    /// Phase 26E: inject (default) auto-attaches retrieved facts to the
+    /// user message; tool exposes `search_knowledge` for the LLM to call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    knowledge_mode: Option<String>,
+
+    /// Phase 27D: when true, retrieved facts are prefixed with
+    /// `[[fact-id]]` markers and the LLM is instructed to carry them
+    /// through. The driver post-processes the response into a provenance
+    /// table. Default false keeps the role behavior backward-compatible.
+    #[serde(default, skip_serializing_if = "is_false_ref")]
+    attributed_output: bool,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     extends: Option<String>,
@@ -501,6 +602,20 @@ impl Role {
                                             .collect();
                                     }
                                 }
+                                // Phase 26C: Knowledge-base binding(s)
+                                "knowledge" => {
+                                    role.knowledge_bindings =
+                                        parse_knowledge_frontmatter_value(value);
+                                }
+                                "knowledge_mode" => {
+                                    role.knowledge_mode =
+                                        value.as_str().map(|v| v.to_string())
+                                }
+                                // Phase 27D: per-fact citation markers in LLM output
+                                "attributed_output" => {
+                                    role.attributed_output =
+                                        value.as_bool().unwrap_or(false);
+                                }
                                 // Phase 6B: Lifecycle hooks
                                 _ => (),
                             }
@@ -593,6 +708,18 @@ impl Role {
                 "mcp_servers".into(),
                 serde_json::json!(self.role_mcp_servers),
             );
+        }
+        if !self.knowledge_bindings.is_empty() {
+            meta.insert(
+                "knowledge".into(),
+                knowledge_bindings_to_export(&self.knowledge_bindings),
+            );
+        }
+        if let Some(mode) = &self.knowledge_mode {
+            meta.insert("knowledge_mode".into(), Value::String(mode.clone()));
+        }
+        if self.attributed_output {
+            meta.insert("attributed_output".into(), Value::Bool(true));
         }
         if let Some(extends) = &self.extends {
             meta.insert("extends".into(), serde_json::json!(extends));
@@ -762,6 +889,25 @@ impl Role {
     /// fallbacks — the error propagates after primary retries exhaust.
     pub fn fallback_models(&self) -> &[String] {
         &self.fallback_models
+    }
+
+    /// Phase 26C: Knowledge-base bindings declared by this role.
+    pub fn knowledge_bindings(&self) -> &[KnowledgeBinding] {
+        &self.knowledge_bindings
+    }
+
+    /// Phase 26E: "inject" (default) or "tool". When `tool`, the
+    /// `search_knowledge` synthetic tool is exposed instead of
+    /// auto-injecting retrieved facts into the user message.
+    pub fn knowledge_mode(&self) -> Option<&str> {
+        self.knowledge_mode.as_deref()
+    }
+
+    /// Phase 27D: whether to surface per-fact `[[fact-id]]` citation
+    /// markers in injected context and post-process the model output into
+    /// a provenance table.
+    pub fn attributed_output(&self) -> bool {
+        self.attributed_output
     }
 
     pub fn set_output_schema(&mut self, value: Option<Value>) {
@@ -2157,6 +2303,119 @@ Prompt."#;
             !exported.contains("fallback_models"),
             "empty fallback list must not round-trip as an empty key"
         );
+    }
+
+    // ---- Phase 26C: Knowledge-base bindings ----
+
+    #[test]
+    fn test_knowledge_bindings_default_empty() {
+        let content = "---\nmodel: a\n---\nPrompt.";
+        let role = Role::new("no-kb", content);
+        assert!(role.knowledge_bindings().is_empty());
+        assert!(role.knowledge_mode().is_none());
+    }
+
+    #[test]
+    fn test_knowledge_binding_from_bare_string() {
+        let content = "---\nknowledge: my-docs\n---\nPrompt.";
+        let role = Role::new("single", content);
+        assert_eq!(role.knowledge_bindings().len(), 1);
+        assert_eq!(role.knowledge_bindings()[0].name, "my-docs");
+        assert!(role.knowledge_bindings()[0].tags.is_empty());
+        assert!((role.knowledge_bindings()[0].weight - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_knowledge_bindings_from_string_list() {
+        let content = r#"---
+knowledge:
+  - kb-a
+  - kb-b
+---
+Prompt."#;
+        let role = Role::new("multi-strings", content);
+        let ids: Vec<_> = role
+            .knowledge_bindings()
+            .iter()
+            .map(|b| b.name.as_str())
+            .collect();
+        assert_eq!(ids, vec!["kb-a", "kb-b"]);
+    }
+
+    #[test]
+    fn test_knowledge_bindings_from_object_list() {
+        let content = r#"---
+knowledge:
+  - name: kb-a
+    tags: [kind:rule, topic:retrieval]
+    weight: 1.5
+  - name: kb-b
+---
+Prompt."#;
+        let role = Role::new("full-form", content);
+        let b = role.knowledge_bindings();
+        assert_eq!(b.len(), 2);
+        assert_eq!(b[0].name, "kb-a");
+        assert_eq!(b[0].tags, vec!["kind:rule", "topic:retrieval"]);
+        assert!((b[0].weight - 1.5).abs() < f32::EPSILON);
+        assert_eq!(b[1].name, "kb-b");
+        assert!(b[1].tags.is_empty());
+        assert!((b[1].weight - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_knowledge_mode_parsed() {
+        let content = "---\nknowledge: my-kb\nknowledge_mode: tool\n---\nPrompt.";
+        let role = Role::new("tool-mode", content);
+        assert_eq!(role.knowledge_mode(), Some("tool"));
+    }
+
+    #[test]
+    fn test_knowledge_exports_compact_when_simple() {
+        // Single simple binding exports as bare string.
+        let content = "---\nknowledge: my-kb\n---\nPrompt.";
+        let role = Role::new("simple-single", content);
+        let exported = role.export();
+        assert!(exported.contains("knowledge: my-kb"));
+        assert!(!exported.contains("- name:"));
+    }
+
+    #[test]
+    fn test_knowledge_exports_list_when_multiple_simple() {
+        let content = r#"---
+knowledge:
+  - a
+  - b
+---
+Prompt."#;
+        let role = Role::new("simple-list", content);
+        let exported = role.export();
+        assert!(exported.contains("knowledge:"));
+        // Simple strings survive as a flat list.
+        assert!(!exported.contains("name: a"));
+    }
+
+    #[test]
+    fn test_knowledge_exports_object_form_when_tags_or_weight_set() {
+        let content = r#"---
+knowledge:
+  - name: kb-a
+    tags: [kind:rule]
+---
+Prompt."#;
+        let role = Role::new("object-form", content);
+        let exported = role.export();
+        assert!(exported.contains("name: kb-a"));
+        assert!(exported.contains("tags:"));
+        assert!(exported.contains("kind:rule"));
+    }
+
+    #[test]
+    fn test_knowledge_empty_list_not_exported() {
+        let content = "---\nmodel: a\n---\nPrompt.";
+        let role = Role::new("no-kb", content);
+        let exported = role.export();
+        assert!(!exported.contains("knowledge:"));
     }
 
     #[test]

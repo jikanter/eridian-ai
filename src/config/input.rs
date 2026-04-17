@@ -265,6 +265,65 @@ impl Input {
         Ok(())
     }
 
+    /// Phase 26D: retrieve from the role's + CLI's knowledge bindings and
+    /// append the formatted hits to the user message. No-op when:
+    /// - the role is in `knowledge_mode: tool` (26E handles it via a tool),
+    /// - there are no bindings,
+    /// - the prompt text is empty.
+    ///
+    /// Phase 27C: when `--trace` / `AICHAT_TRACE` is active, per-binding
+    /// retrieval events are emitted on the TraceEmitter. The events are
+    /// also cached on the Config for `.sources knowledge` in the REPL.
+    pub fn use_knowledge(&mut self) -> Result<()> {
+        if self.text.is_empty() {
+            return Ok(());
+        }
+        if self.role.knowledge_mode() == Some("tool") {
+            return Ok(());
+        }
+
+        // Merge role-declared + CLI-supplied bindings; dedupe by name.
+        let mut bindings: Vec<KnowledgeBinding> = self.role.knowledge_bindings().to_vec();
+        for name in self.config.read().cli_knowledge_bindings.clone() {
+            if !bindings.iter().any(|b| b.name == name) {
+                bindings.push(KnowledgeBinding::simple(name));
+            }
+        }
+        if bindings.is_empty() {
+            return Ok(());
+        }
+
+        let model_max = self.role.model().max_input_tokens();
+        let budget = crate::knowledge::query::default_budget_for(model_max);
+        let trace_emitter = self
+            .config
+            .read()
+            .trace_config
+            .clone()
+            .map(crate::utils::trace::TraceEmitter::new);
+        let (hits, events) = crate::knowledge::retrieve::retrieve_from_bindings_traced(
+            &bindings,
+            &self.text,
+            &crate::knowledge::retrieve::RetrievalOptions::new_for_injection(budget),
+            trace_emitter.as_ref(),
+        )?;
+        // Stash last retrieval events + hits for REPL `.sources knowledge`.
+        self.config.write().last_knowledge_events = events;
+        self.config.write().last_knowledge_hits = hits.clone();
+        if hits.is_empty() {
+            return Ok(());
+        }
+        let attributed = self.role.attributed_output();
+        let context = if attributed {
+            crate::knowledge::query::format_hits_for_attributed_injection(&hits)
+        } else {
+            crate::knowledge::query::format_hits_for_injection(&hits)
+        };
+        let base = self.patched_text.clone().unwrap_or_else(|| self.text.clone());
+        self.patched_text = Some(format!("{base}{context}"));
+        Ok(())
+    }
+
     pub fn rag_name(&self) -> Option<&str> {
         self.rag_name.as_deref()
     }

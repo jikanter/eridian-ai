@@ -8,9 +8,9 @@ pub mod prompt;
 pub use self::agent::{complete_agent_variables, list_agents, Agent, AgentVariables};
 pub use self::input::Input;
 pub use self::role::{
-    run_lifecycle_hooks, validate_schema, validate_schema_detailed, validate_schema_traced, Role,
-    RoleExample, RoleLike, RolePipelineStage, CODE_ROLE, CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE,
-    SHELL_ROLE,
+    run_lifecycle_hooks, validate_schema, validate_schema_detailed, validate_schema_traced,
+    KnowledgeBinding, Role, RoleExample, RoleLike, RolePipelineStage, CODE_ROLE,
+    CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
 };
 pub use self::prompt::Prompt;
 use self::session::Session;
@@ -141,6 +141,11 @@ pub struct Config {
     /// Phase 10A: HTTP retry policy applied to all provider calls.
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Phase 26D: knowledge-base bindings declared on the command line
+    /// via `--knowledge <name>` (repeatable). Merged with the active
+    /// role's declared bindings at retrieval time.
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub cli_knowledge_bindings: Vec<String>,
     pub stream: bool,
     pub save: bool,
     pub keybindings: String,
@@ -241,6 +246,16 @@ pub struct Config {
     pub mcp_pool: Option<Arc<McpConnectionPool>>,
     #[serde(skip)]
     pub deferred_tools: Option<DeferredToolState>,
+
+    /// Phase 27C: last per-binding retrieval events, stashed by
+    /// `Input::use_knowledge()`. Consumed by `.sources knowledge` in the REPL.
+    #[serde(skip)]
+    pub last_knowledge_events: Vec<trace::KnowledgeQueryEvent>,
+    /// Phase 27C: the fused hit set from the last retrieval, kept for the
+    /// REPL preview so the user can see the descriptions that were actually
+    /// injected.
+    #[serde(skip)]
+    pub last_knowledge_hits: Vec<crate::knowledge::query::FactHit>,
 }
 
 /// State for deferred tool loading (Phase 1C).
@@ -270,6 +285,17 @@ fn default_mcp_max_connections() -> usize {
     10
 }
 
+/// Short preview used by `.sources knowledge` to keep each fact to one line.
+fn truncate_preview(s: &str, max: usize) -> String {
+    let collapsed = s.trim().replace('\n', " ");
+    if collapsed.chars().count() <= max {
+        collapsed
+    } else {
+        let cut: String = collapsed.chars().take(max).collect();
+        format!("{cut}...")
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -281,6 +307,7 @@ impl Default for Config {
             no_cache: false,
             cache_ttl_secs: default_cache_ttl_secs(),
             retry: RetryConfig::default(),
+            cli_knowledge_bindings: Vec::new(),
             stream: true,
             save: false,
             keybindings: "emacs".into(),
@@ -350,6 +377,8 @@ impl Default for Config {
             agent: None,
             mcp_pool: None,
             deferred_tools: None,
+            last_knowledge_events: Vec::new(),
+            last_knowledge_hits: Vec::new(),
         }
     }
 }
@@ -1765,6 +1794,43 @@ impl Config {
         }
     }
 
+    /// Phase 27C: render the last knowledge retrieval's per-binding events
+    /// plus a short content preview for each fact. Returns a friendly
+    /// message when no retrieval has happened this session.
+    #[allow(dead_code)] // re-exported via REPL command dispatch
+    pub fn knowledge_sources(config: &GlobalConfig) -> String {
+        let cfg = config.read();
+        let events = &cfg.last_knowledge_events;
+        let hits = &cfg.last_knowledge_hits;
+        if events.is_empty() {
+            return "No knowledge retrieval on record for this session.".to_string();
+        }
+        let mut out = String::new();
+        for ev in events {
+            out.push_str(&format!(
+                "knowledge base: {}\n  query: {}\n  tag filter: {}\n  candidates: {}  seeds: {}  expanded: {}  final: {}\n",
+                ev.kb,
+                truncate_preview(&ev.query, 120),
+                if ev.tag_filter.is_empty() { "-".to_string() } else { ev.tag_filter.join(",") },
+                ev.candidate_count,
+                ev.seed_ids.len(),
+                ev.expanded_ids.len(),
+                ev.final_ids.len(),
+            ));
+        }
+        if !hits.is_empty() {
+            out.push_str("\nfacts:\n");
+            for h in hits {
+                out.push_str(&format!(
+                    "  [[{}]] {}\n",
+                    h.fact.id,
+                    truncate_preview(&h.fact.description, 200),
+                ));
+            }
+        }
+        out
+    }
+
     pub fn rag_info(&self) -> Result<String> {
         if let Some(rag) = &self.rag {
             rag.export()
@@ -2109,6 +2175,22 @@ impl Config {
                         .filter(|v| !tool_names.contains(&v.name)),
                 );
                 functions = agent_functions;
+            }
+
+            // Phase 26E: append the synthetic `search_knowledge` tool when
+            // the role requests tool-mode retrieval. Kept outside the
+            // use_tools/agent branches so a role with ONLY
+            // `knowledge_mode: tool` (no regular tools) still gets it.
+            if role.knowledge_mode() == Some("tool") {
+                let has_kb = !role.knowledge_bindings().is_empty()
+                    || !self.cli_knowledge_bindings.is_empty();
+                if has_kb
+                    && !functions
+                        .iter()
+                        .any(|f| f.name == crate::function::SEARCH_KNOWLEDGE_NAME)
+                {
+                    functions.push(FunctionDeclaration::search_knowledge());
+                }
             }
         };
         if functions.is_empty() {

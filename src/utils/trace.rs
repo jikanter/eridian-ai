@@ -5,6 +5,23 @@ use crate::function::ToolResult;
 use std::io::Write;
 use std::path::PathBuf;
 
+/// Phase 27C: one knowledge retrieval event per binding resolved during a
+/// single call to `retrieve_from_bindings`. The `seed_ids` are the BM25
+/// top-K result from Phase 26A; `expanded_ids` are the additional ids
+/// brought in by Phase 26B's graph walk before RRF fusion; `final_ids` is
+/// the post-fusion ordered list that will actually be shown to the LLM.
+#[derive(Debug, Clone)]
+pub struct KnowledgeQueryEvent {
+    pub kb: String,
+    pub query: String,
+    pub tag_filter: Vec<String>,
+    pub candidate_count: usize,
+    pub seed_ids: Vec<String>,
+    pub expanded_ids: Vec<String>,
+    pub final_ids: Vec<String>,
+    pub final_scores: Vec<f32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct TraceConfig {
     pub human_trace: bool,
@@ -141,6 +158,42 @@ impl TraceEmitter {
                 "cost_usd": metrics.cost_usd,
                 "latency_ms": metrics.latency_ms,
                 "model": metrics.model_id,
+            });
+            self.write_jsonl(&obj);
+        }
+    }
+
+    /// Phase 27C: emit a trace line for one knowledge retrieval event
+    /// (per-binding). Renders compactly in human mode; full detail in JSONL.
+    pub fn emit_knowledge_query(&self, event: &KnowledgeQueryEvent) {
+        if self.config.human_trace {
+            let filter = if event.tag_filter.is_empty() {
+                "-".to_string()
+            } else {
+                event.tag_filter.join(",")
+            };
+            eprintln!(
+                "[knowledge] {}  tags={}  cand={}  seeds={}  exp={}  final={}",
+                event.kb,
+                filter,
+                event.candidate_count,
+                event.seed_ids.len(),
+                event.expanded_ids.len(),
+                event.final_ids.len(),
+            );
+        }
+
+        if self.config.jsonl_trace {
+            let obj = serde_json::json!({
+                "type": "knowledge_query",
+                "kb": event.kb,
+                "query": truncate(&event.query, self.config.truncate_at),
+                "tag_filter": event.tag_filter,
+                "candidate_count": event.candidate_count,
+                "seed_ids": event.seed_ids,
+                "expanded_ids": event.expanded_ids,
+                "final_ids": event.final_ids,
+                "final_scores": event.final_scores,
             });
             self.write_jsonl(&obj);
         }

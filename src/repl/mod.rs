@@ -32,7 +32,7 @@ use std::{env, process};
 
 const MENU_NAME: &str = "completion_menu";
 
-static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
+static REPL_COMMANDS: LazyLock<[ReplCommand; 37]> = LazyLock::new(|| {
     [
         ReplCommand::new(".help", "Show this help guide", AssertState::pass()),
         ReplCommand::new(".info", "Show system info", AssertState::pass()),
@@ -150,6 +150,11 @@ static REPL_COMMANDS: LazyLock<[ReplCommand; 36]> = LazyLock::new(|| {
             ".sources rag",
             "Show citation sources used in last query",
             AssertState::True(StateFlags::RAG),
+        ),
+        ReplCommand::new(
+            ".sources knowledge",
+            "Show knowledge retrieval events and fact previews from the last query",
+            AssertState::pass(),
         ),
         ReplCommand::new(
             ".info rag",
@@ -577,8 +582,11 @@ pub async fn run_repl_command(
                     let output = Config::rag_sources(config)?;
                     println!("{output}");
                 }
+                Some("knowledge") => {
+                    println!("{}", Config::knowledge_sources(config));
+                }
                 _ => {
-                    println!(r#"Usage: .sources rag"#)
+                    println!(r#"Usage: .sources rag | knowledge"#)
                 }
             },
             ".macro" => match split_first_arg(args) {

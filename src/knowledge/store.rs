@@ -33,6 +33,7 @@ use super::tags::TagSchema;
 pub const MANIFEST_FILE: &str = "manifest.yaml";
 pub const FACTS_FILE: &str = "facts.jsonl";
 pub const EDGES_FILE: &str = "edges.jsonl";
+pub const REVISIONS_FILE: &str = "revisions.jsonl";
 pub const SCHEMA_FILE: &str = "knowledge.yaml";
 pub const CURRENT_VERSION: u32 = 1;
 
@@ -108,6 +109,41 @@ pub struct EdgeEntry {
     pub kind: EdgeKind,
 }
 
+/// Phase 27A: append-only revision log entry. Every mutation through the
+/// store API records a line in `revisions.jsonl`. The log is advisory — the
+/// authoritative state is still `facts.jsonl` — but gives `knowledge reflect`
+/// and auditing tools a full history without iterating snapshots.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RevisionEntry {
+    pub id: FactId,
+    pub op: RevisionOp,
+    pub timestamp: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevisionOp {
+    Append,
+    Patch,
+    Deprecate,
+}
+
+/// Phase 27A: patch payload. Every field is optional — only set ones
+/// override. Patching an id to a different entity/description is not
+/// allowed (the id is content-addressable; changing those fields would
+/// yield a different fact). Use `deprecate_fact` + `append_fact` instead.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FactPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<crate::knowledge::tags::Tag>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct KnowledgeStore {
     pub dir: PathBuf,
@@ -115,6 +151,10 @@ pub struct KnowledgeStore {
     pub schema: TagSchema,
     pub facts: Vec<EntityDescriptionPair>,
     pub edges: Vec<EdgeEntry>,
+    /// Phase 27A: append-only revision log. Shared across processes via
+    /// `save()` write-to-tmp + rename. Load reads the whole file into memory
+    /// (KBs have thousands of revisions at most, not millions).
+    pub revisions: Vec<RevisionEntry>,
 }
 
 impl KnowledgeStore {
@@ -137,6 +177,7 @@ impl KnowledgeStore {
             schema: TagSchema::default(),
             facts: Vec::new(),
             edges: Vec::new(),
+            revisions: Vec::new(),
         };
         store.save()?;
         Ok(store)
@@ -159,6 +200,7 @@ impl KnowledgeStore {
         let schema = read_schema(&dir.join(SCHEMA_FILE))?;
         let facts = read_jsonl_facts(&dir.join(FACTS_FILE))?;
         let edges = read_jsonl_edges(&dir.join(EDGES_FILE))?;
+        let revisions = read_jsonl_revisions(&dir.join(REVISIONS_FILE))?;
 
         Ok(Self {
             dir,
@@ -166,6 +208,7 @@ impl KnowledgeStore {
             schema,
             facts,
             edges,
+            revisions,
         })
     }
 
@@ -198,6 +241,13 @@ impl KnowledgeStore {
             Ok(())
         })?;
 
+        atomic_write(&self.dir.join(REVISIONS_FILE), |w| {
+            for rev in &self.revisions {
+                writeln!(w, "{}", serde_json::to_string(rev)?)?;
+            }
+            Ok(())
+        })?;
+
         if !self.schema.is_empty() {
             atomic_write(&self.dir.join(SCHEMA_FILE), |w| {
                 w.write_all(serde_yaml::to_string(&self.schema)?.as_bytes())?;
@@ -209,8 +259,18 @@ impl KnowledgeStore {
     }
 
     /// Append a fact. Validates against the tag schema (if one is loaded) and
-    /// rejects duplicates by id.
+    /// rejects duplicates by id. Records an `append` revision entry.
     pub fn append_fact(&mut self, fact: EntityDescriptionPair) -> Result<()> {
+        self.append_fact_with_reason(fact, None)
+    }
+
+    /// Append a fact with an optional human-readable reason — curated
+    /// additions from Phase 27B log the Curator's rationale here.
+    pub fn append_fact_with_reason(
+        &mut self,
+        fact: EntityDescriptionPair,
+        reason: Option<String>,
+    ) -> Result<()> {
         if !self.schema.is_empty() {
             for tag in &fact.tags {
                 self.schema
@@ -221,10 +281,75 @@ impl KnowledgeStore {
         if self.facts.iter().any(|f| f.id == fact.id) {
             bail!("Fact id {} already present in KB", fact.id);
         }
+        let id = fact.id.clone();
         self.facts.push(fact);
         self.manifest.fact_count = self.facts.len();
         self.manifest.touch();
+        self.record_revision(id, RevisionOp::Append, reason);
         Ok(())
+    }
+
+    /// Phase 27A: mutate an existing fact's description and/or tags. The id
+    /// never changes — it's content-addressable on `(entity, description,
+    /// path, byte_start)`, and patches deliberately preserve the anchor so
+    /// history-tracking stays meaningful. Records a `patch` revision entry.
+    pub fn patch_fact(&mut self, id: &FactId, patch: FactPatch) -> Result<()> {
+        if let Some(ref tags) = patch.tags {
+            if !self.schema.is_empty() {
+                for tag in tags {
+                    self.schema
+                        .validate(tag)
+                        .with_context(|| format!("Tag validation failed for fact {id}"))?;
+                }
+            }
+        }
+        let fact = self
+            .facts
+            .iter_mut()
+            .find(|f| &f.id == id)
+            .ok_or_else(|| anyhow::anyhow!("No fact with id {id}"))?;
+        if let Some(desc) = patch.description {
+            fact.description = desc;
+        }
+        if let Some(tags) = patch.tags {
+            fact.tags = tags;
+        }
+        self.manifest.touch();
+        self.record_revision(id.clone(), RevisionOp::Patch, patch.reason);
+        Ok(())
+    }
+
+    /// Phase 27A: mark a fact as superseded. It stays on disk (ACE anti-
+    /// collapse: no iterative rewrites that erode detail); default retrieval
+    /// skips it, but callers that pass `include_deprecated=true` will still
+    /// see it. Records a `deprecate` revision entry.
+    pub fn deprecate_fact(&mut self, id: &FactId, reason: Option<String>) -> Result<()> {
+        let fact = self
+            .facts
+            .iter_mut()
+            .find(|f| &f.id == id)
+            .ok_or_else(|| anyhow::anyhow!("No fact with id {id}"))?;
+        if fact.deprecated {
+            bail!("Fact {id} already deprecated");
+        }
+        fact.deprecated = true;
+        self.manifest.touch();
+        self.record_revision(id.clone(), RevisionOp::Deprecate, reason);
+        Ok(())
+    }
+
+    fn record_revision(&mut self, id: FactId, op: RevisionOp, reason: Option<String>) {
+        self.revisions.push(RevisionEntry {
+            id,
+            op,
+            timestamp: Utc::now().to_rfc3339(),
+            reason,
+        });
+    }
+
+    /// Return only live (non-deprecated) facts. Default query path.
+    pub fn live_facts(&self) -> impl Iterator<Item = &EntityDescriptionPair> {
+        self.facts.iter().filter(|f| !f.deprecated)
     }
 
     /// Append an edge. Silently skips if the exact `(from, to, kind)` triple
@@ -358,6 +483,25 @@ fn read_jsonl_edges(path: &Path) -> Result<Vec<EdgeEntry>> {
         edges.push(edge);
     }
     Ok(edges)
+}
+
+fn read_jsonl_revisions(path: &Path) -> Result<Vec<RevisionEntry>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let file = fs::File::open(path)
+        .with_context(|| format!("Failed to open {}", path.display()))?;
+    let mut out = Vec::new();
+    for (i, line) in BufReader::new(file).lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let rev: RevisionEntry = serde_json::from_str(&line)
+            .with_context(|| format!("Malformed JSONL at {}:{}", path.display(), i + 1))?;
+        out.push(rev);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -673,6 +817,128 @@ mod tests {
 
         let err = KnowledgeStore::load(&path).unwrap_err();
         assert!(err.to_string().contains("version"));
+    }
+
+    // ============================================================================
+    // Phase 27A: revision log, patch, deprecate
+    // ============================================================================
+
+    #[test]
+    fn append_fact_records_revision_entry() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("kb");
+        let mut store = KnowledgeStore::create(&path, "kb").unwrap();
+        let edp = sample_edp("a.md", "alpha", vec![]);
+        let id = edp.id.clone();
+        store.append_fact(edp).unwrap();
+
+        assert_eq!(store.revisions.len(), 1);
+        assert_eq!(store.revisions[0].id, id);
+        assert_eq!(store.revisions[0].op, RevisionOp::Append);
+        assert!(store.revisions[0].reason.is_none());
+    }
+
+    #[test]
+    fn patch_fact_updates_description_and_logs_revision() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("kb");
+        let mut store = KnowledgeStore::create(&path, "kb").unwrap();
+        let edp = sample_edp("a.md", "alpha", vec![]);
+        let id = edp.id.clone();
+        store.append_fact(edp).unwrap();
+
+        store
+            .patch_fact(
+                &id,
+                FactPatch {
+                    description: Some("patched description".into()),
+                    tags: None,
+                    reason: Some("curator review".into()),
+                },
+            )
+            .unwrap();
+
+        let fact = store.facts.iter().find(|f| f.id == id).unwrap();
+        assert_eq!(fact.description, "patched description");
+        assert_eq!(store.revisions.len(), 2);
+        assert_eq!(store.revisions[1].op, RevisionOp::Patch);
+        assert_eq!(store.revisions[1].reason.as_deref(), Some("curator review"));
+    }
+
+    #[test]
+    fn patch_fact_rejects_unknown_id() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("kb");
+        let mut store = KnowledgeStore::create(&path, "kb").unwrap();
+        let err = store
+            .patch_fact(
+                &FactId::from_raw("fact-doesnotexist"),
+                FactPatch::default(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("No fact with id"));
+    }
+
+    #[test]
+    fn deprecate_fact_hides_it_from_live_facts_but_keeps_it_on_disk() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("kb");
+        let mut store = KnowledgeStore::create(&path, "kb").unwrap();
+        let edp = sample_edp("a.md", "alpha", vec![]);
+        let id = edp.id.clone();
+        store.append_fact(edp).unwrap();
+
+        store.deprecate_fact(&id, Some("obsolete".into())).unwrap();
+
+        // The fact is still in the store but flagged.
+        assert_eq!(store.facts.len(), 1);
+        assert!(store.facts[0].deprecated);
+        // live_facts() skips it.
+        assert_eq!(store.live_facts().count(), 0);
+        // Revision recorded.
+        assert_eq!(store.revisions.last().unwrap().op, RevisionOp::Deprecate);
+    }
+
+    #[test]
+    fn deprecate_fact_is_idempotent_guard() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("kb");
+        let mut store = KnowledgeStore::create(&path, "kb").unwrap();
+        let edp = sample_edp("a.md", "alpha", vec![]);
+        let id = edp.id.clone();
+        store.append_fact(edp).unwrap();
+        store.deprecate_fact(&id, None).unwrap();
+        let err = store.deprecate_fact(&id, None).unwrap_err();
+        assert!(err.to_string().contains("already deprecated"));
+    }
+
+    #[test]
+    fn save_load_roundtrip_persists_revisions_and_deprecated_flag() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("kb");
+        let mut store = KnowledgeStore::create(&path, "kb").unwrap();
+        let edp = sample_edp("a.md", "alpha", vec![]);
+        let id = edp.id.clone();
+        store.append_fact(edp).unwrap();
+        store
+            .patch_fact(
+                &id,
+                FactPatch {
+                    description: Some("patched".into()),
+                    tags: None,
+                    reason: None,
+                },
+            )
+            .unwrap();
+        store.deprecate_fact(&id, Some("test".into())).unwrap();
+        store.save().unwrap();
+
+        let loaded = KnowledgeStore::load(&path).unwrap();
+        assert_eq!(loaded.revisions.len(), 3);
+        assert_eq!(loaded.revisions[0].op, RevisionOp::Append);
+        assert_eq!(loaded.revisions[1].op, RevisionOp::Patch);
+        assert_eq!(loaded.revisions[2].op, RevisionOp::Deprecate);
+        assert!(loaded.facts[0].deprecated);
     }
 
     #[test]

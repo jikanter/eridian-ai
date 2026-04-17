@@ -265,6 +265,11 @@ async fn run_stage_inner(
 
     let has_tools = role.use_tools().is_some();
     let mut input = Input::from_str(config, input_text, Some(role.clone()));
+
+    // Phase 26D: inject knowledge-base context per stage. No-op unless this
+    // stage's role declares `knowledge:` or the user passed `--knowledge`.
+    input.use_knowledge()?;
+
     let client = input.create_client()?;
 
     // Phase 10B: content-addressable stage output cache. Skips when caching is
@@ -274,10 +279,12 @@ async fn run_stage_inner(
         && !config.read().dry_run
         && !has_tools;
     let cache_key = if cache_enabled {
+        // Hash the post-injection text so a change in the knowledge context
+        // (new bindings, recompiled KB) invalidates the cache entry.
         Some(StageCache::key(
             &stage.role_name,
             &client.model().id(),
-            input_text,
+            &input.text(),
         ))
     } else {
         None

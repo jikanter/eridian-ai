@@ -225,6 +225,12 @@ pub struct Cli {
     /// List all macros
     #[clap(long)]
     pub list_macros: bool,
+    /// Phase 26D: attach a knowledge base to this invocation (repeatable)
+    #[clap(long = "knowledge", value_name = "KB_NAME")]
+    pub knowledge: Vec<String>,
+    /// Phase 26E: bypass the LLM, search the named KB(s) for the given query
+    #[clap(long = "knowledge-search", value_name = "QUERY")]
+    pub knowledge_search: Option<String>,
     /// Phase 25B: compile source files into a knowledge base (requires -f)
     #[clap(long = "knowledge-compile", value_name = "KB_NAME")]
     pub knowledge_compile: Option<String>,
@@ -237,6 +243,22 @@ pub struct Cli {
     /// Phase 25E: show a single fact; format is `KB_NAME:FACT_ID` (e.g. `docs:fact-abc123`)
     #[clap(long = "knowledge-show", value_name = "KB:ID")]
     pub knowledge_show: Option<String>,
+    /// Phase 27B: run the Reflector role over a KB, emit candidate patches (JSON)
+    #[clap(long = "knowledge-reflect", value_name = "KB_NAME")]
+    pub knowledge_reflect: Option<String>,
+    /// Phase 27B: run the Curator role over candidates and apply accepted ones
+    #[clap(long = "knowledge-curate", value_name = "KB_NAME")]
+    pub knowledge_curate: Option<String>,
+    /// Phase 27B: path to a JSON candidate set (use with --knowledge-curate)
+    #[clap(
+        long = "knowledge-candidates",
+        value_name = "FILE",
+        requires = "knowledge_curate"
+    )]
+    pub knowledge_candidates: Option<String>,
+    /// Phase 27B: path to a JSONL trace file (use with --knowledge-reflect or --knowledge-curate)
+    #[clap(long = "knowledge-trace", value_name = "FILE")]
+    pub knowledge_trace: Option<String>,
     /// Input text
     #[clap(trailing_var_arg = true)]
     text: Vec<String>,

@@ -12,9 +12,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use indexmap::IndexMap;
 
-use crate::config::{Config, GlobalConfig};
+use crate::cli::OutputFormat;
+use crate::config::{Config, GlobalConfig, KnowledgeBinding};
 
 use super::compile::{compile_files, CompileOptions};
+use super::query::{format_hits_for_injection, hits_to_json};
+use super::retrieve::{retrieve_from_bindings, RetrievalOptions};
 use super::store::KnowledgeStore;
 
 pub const KB_SUBDIR: &str = "kb";
@@ -137,6 +140,45 @@ pub fn run_stat(kb_name: &str) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// `--knowledge-search <query>`: bypass the LLM and retrieve facts from the
+/// KB(s) named via `--knowledge` (each repeatable). Prints matches as plain
+/// text by default, or JSON when `-o json` is set. Deterministic output.
+pub fn run_search(
+    kb_names: &[String],
+    query_text: &str,
+    output_format: Option<OutputFormat>,
+) -> Result<()> {
+    if kb_names.is_empty() {
+        bail!("--knowledge-search requires at least one --knowledge <KB_NAME>");
+    }
+    let bindings: Vec<KnowledgeBinding> = kb_names
+        .iter()
+        .map(|n| KnowledgeBinding::simple(n))
+        .collect();
+
+    // Search-only: no token budget (caller wants to see all the matches).
+    let hits = retrieve_from_bindings(
+        &bindings,
+        query_text,
+        &RetrievalOptions {
+            top_k: None,
+            token_budget: None,
+            graph_expand: true,
+            include_deprecated: false,
+        },
+    )?;
+
+    match output_format {
+        Some(OutputFormat::Json) => {
+            println!("{}", serde_json::to_string_pretty(&hits_to_json(&hits))?);
+        }
+        _ => {
+            print!("{}", format_hits_for_injection(&hits));
+        }
+    }
     Ok(())
 }
 

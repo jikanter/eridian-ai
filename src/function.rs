@@ -241,6 +241,7 @@ impl FunctionDeclaration {
 
 
 pub const TOOL_SEARCH_NAME: &str = "tool_search";
+pub const SEARCH_KNOWLEDGE_NAME: &str = "search_knowledge";
 
 impl FunctionDeclaration {
     /// Creates the tool_search meta-function for deferred tool loading.
@@ -254,6 +255,36 @@ impl FunctionDeclaration {
                     "query": {
                         "type": "string",
                         "description": "Keyword to search for relevant tools. Use descriptive terms like 'file', 'web', 'database'."
+                    }
+                },
+                "required": ["query"]
+            }),
+            agent: false,
+            source: ToolSource::default(),
+            examples: None,
+            timeout: None,
+        }
+    }
+
+    /// Phase 26E: synthetic `search_knowledge` tool. Injected when the active
+    /// role sets `knowledge_mode: tool` — in that mode facts are NOT
+    /// auto-attached to the user message; instead the LLM decides when to
+    /// search by calling this tool.
+    pub fn search_knowledge() -> Self {
+        Self {
+            name: SEARCH_KNOWLEDGE_NAME.to_string(),
+            description: "Search the configured knowledge base(s) for atomic facts relevant to a query. Returns entity-description pairs with provenance. Pass an optional `tags` array of `namespace:value` predicates to narrow the candidate set.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural-language query. BM25 ranks facts against this text."
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional AND-joined tag predicates in `namespace:value` form."
                     }
                 },
                 "required": ["query"]
@@ -307,6 +338,11 @@ impl ToolCall {
         // Phase 1C: Handle tool_search meta-function
         if self.name == TOOL_SEARCH_NAME {
             return self.eval_tool_search(config);
+        }
+
+        // Phase 26E: Handle search_knowledge synthetic tool.
+        if self.name == SEARCH_KNOWLEDGE_NAME {
+            return self.eval_search_knowledge(config);
         }
 
         // Phase 2A: Handle pipeline-role tool calls
@@ -391,6 +427,75 @@ impl ToolCall {
             crate::pipe::run_pipeline_role(config, stages, &input_text).await?;
 
         Ok(json!({"output": result}))
+    }
+
+    /// Phase 26E: handle `search_knowledge` synthetic tool calls. Resolves
+    /// the role's + CLI's knowledge bindings, runs the Phase 26A/B pipeline,
+    /// and returns hits as a structured JSON payload for the LLM.
+    fn eval_search_knowledge(&self, config: &GlobalConfig) -> Result<Value> {
+        let query = self
+            .arguments
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if query.is_empty() {
+            return Ok(serde_json::json!({
+                "results": [],
+                "note": "search_knowledge called with empty query",
+            }));
+        }
+
+        let extra_tag_strings: Vec<String> = self
+            .arguments
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Merge role + CLI knowledge bindings; add tool-supplied tag
+        // predicates to each binding's declared tags.
+        let role = config.read().extract_role();
+        let mut bindings: Vec<crate::config::KnowledgeBinding> =
+            role.knowledge_bindings().to_vec();
+        for name in config.read().cli_knowledge_bindings.clone() {
+            if !bindings.iter().any(|b| b.name == name) {
+                bindings.push(crate::config::KnowledgeBinding::simple(name));
+            }
+        }
+        if bindings.is_empty() {
+            return Ok(serde_json::json!({
+                "results": [],
+                "note": "no knowledge bindings are active — declare `knowledge:` in the role or pass `--knowledge <name>`",
+            }));
+        }
+        for b in bindings.iter_mut() {
+            for t in &extra_tag_strings {
+                if !b.tags.contains(t) {
+                    b.tags.push(t.clone());
+                }
+            }
+        }
+
+        let hits = crate::knowledge::retrieve::retrieve_from_bindings(
+            &bindings,
+            &query,
+            &crate::knowledge::retrieve::RetrievalOptions {
+                top_k: None,
+                token_budget: None,
+                graph_expand: true,
+                include_deprecated: false,
+            },
+        )?;
+
+        Ok(serde_json::json!({
+            "results": crate::knowledge::query::hits_to_json(&hits),
+        }))
     }
 
     /// Handles the tool_search meta-function for deferred tool loading.

@@ -66,10 +66,15 @@ async fn main() -> Result<()> {
         || cli.list_macros
         || cli.list_sessions
         || cli.list_tools
-        // Phase 25E: read-only knowledge ops don't need the heavy config setup.
+        // Phase 25E/26E: read-only knowledge ops don't need heavy config setup.
         || cli.knowledge_list
         || cli.knowledge_stat.is_some()
-        || cli.knowledge_show.is_some();
+        || cli.knowledge_show.is_some()
+        || cli.knowledge_search.is_some()
+        // Phase 27B: reflect prints a candidate set and exits; curate mutates
+        // a KB but still short-circuits the interactive path.
+        || cli.knowledge_reflect.is_some()
+        || cli.knowledge_curate.is_some();
     setup_logger(working_mode.is_serve() || working_mode.is_mcp())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
     let output_format = cli.output_format;
@@ -167,8 +172,9 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         println!("{macros}");
         return Ok(());
     }
-    // Phase 25E: knowledge subsystem CLI dispatch. These flags short-circuit
-    // the main interactive path. Compile is the only one that talks to an LLM.
+    // Phase 25E/26E: knowledge subsystem CLI dispatch. These flags
+    // short-circuit the main interactive path. Compile is the only one that
+    // talks to an LLM.
     if cli.knowledge_list {
         return knowledge::run_list();
     }
@@ -180,6 +186,21 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
     }
     if let Some(ref kb_name) = cli.knowledge_compile {
         return knowledge::run_compile(&config, kb_name, &cli.file).await;
+    }
+    if let Some(ref query_text) = cli.knowledge_search {
+        return knowledge::run_search(&cli.knowledge, query_text, cli.output_format);
+    }
+    if let Some(ref kb_name) = cli.knowledge_reflect {
+        return knowledge::run_reflect(&config, kb_name, cli.knowledge_trace.as_deref()).await;
+    }
+    if let Some(ref kb_name) = cli.knowledge_curate {
+        return knowledge::run_curate(
+            &config,
+            kb_name,
+            cli.knowledge_candidates.as_deref(),
+            cli.knowledge_trace.as_deref(),
+        )
+        .await;
     }
 
     if cli.list_tools {
@@ -224,6 +245,11 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
 
     if cli.no_cache {
         config.write().no_cache = true;
+    }
+    // Phase 26D: CLI `--knowledge` bindings merge with role-declared ones at
+    // retrieval time. Captured here so pipeline stages see them too.
+    if !cli.knowledge.is_empty() {
+        config.write().cli_knowledge_bindings = cli.knowledge.clone();
     }
     if cli.dry_run {
         config.write().dry_run = true;
@@ -387,6 +413,9 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         false => {
             let mut input = create_input(&config, text, &cli.file, abort_signal.clone()).await?;
             input.use_embeddings(abort_signal.clone()).await?;
+            // Phase 26D: knowledge injection — no-op unless the role declares
+            // `knowledge:` bindings or the user passed `--knowledge`.
+            input.use_knowledge()?;
             start_directive(&config, input, cli.code, abort_signal).await
         }
         true => {
@@ -441,6 +470,16 @@ async fn start_directive(
 
     let (mut output, mut tool_results, mut metrics) =
         call_react(&mut input, client.as_ref(), abort_signal.clone()).await?;
+
+    // Phase 27D: expand `[[fact-id]]` markers in the LLM output into a
+    // deterministic provenance table. No-op when the role doesn't declare
+    // `attributed_output: true` or no knowledge was retrieved.
+    if input.role().attributed_output() && !is_dry_run {
+        let hits = config.read().last_knowledge_hits.clone();
+        if !hits.is_empty() {
+            output = crate::knowledge::query::annotate_output_with_provenance(&output, &hits);
+        }
+    }
 
     // Retry loop: on output schema validation failure, re-send the original
     // prompt with the failed assistant output + a corrective user turn.

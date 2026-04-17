@@ -96,6 +96,16 @@ pub struct EntityDescriptionPair {
     pub provenance: SourceAnchor,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edges: Vec<EdgeRef>,
+    /// Phase 27A: when true, the fact is superseded and hidden from default
+    /// retrieval. `--include-deprecated` surfaces it again for audit. The
+    /// fact and its edges remain on disk — ACE's anti-collapse prescription
+    /// treats deletion as destructive.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deprecated: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl EntityDescriptionPair {
@@ -124,6 +134,7 @@ impl EntityDescriptionPair {
             tags,
             provenance,
             edges,
+            deprecated: false,
         }
     }
 

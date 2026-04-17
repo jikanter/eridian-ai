@@ -16,11 +16,16 @@
 pub mod cli;
 pub mod compile;
 pub mod edp;
+pub mod evolve;
+pub mod graph;
+pub mod query;
 pub mod restore;
+pub mod retrieve;
 pub mod store;
 pub mod tags;
 
 // External API: just the CLI entry points. Internal types (EDP, Tag,
 // KnowledgeStore, etc.) are accessed through `knowledge::<module>::<Type>`
-// by intra-crate consumers (Phase 26, Phase 27) once those land.
-pub use cli::{run_compile, run_list, run_show, run_stat};
+// by intra-crate consumers (Phase 27) once that lands.
+pub use cli::{run_compile, run_list, run_search, run_show, run_stat};
+pub use evolve::{run_curate, run_reflect};
