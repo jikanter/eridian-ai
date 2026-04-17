@@ -86,7 +86,7 @@ pub async fn openai_chat_completions(
     builder: RequestBuilder,
     _model: &Model,
 ) -> Result<ChatCompletionsOutput> {
-    let res = builder.send().await?;
+    let res = super::retry::send(builder).await?;
     let status = res.status();
     let data: Value = res.json().await?;
     if !status.is_success() {
@@ -208,7 +208,7 @@ pub async fn openai_embeddings(
     builder: RequestBuilder,
     _model: &Model,
 ) -> Result<EmbeddingsOutput> {
-    let res = builder.send().await?;
+    let res = super::retry::send(builder).await?;
     let status = res.status();
     let data: Value = res.json().await?;
     if !status.is_success() {

@@ -8,8 +8,8 @@
 
 | Item | Status | Notes |
 |---|---|---|
-| 10A. API-level retry with exponential backoff | — | New `src/client/retry.rs`. Retries on HTTP 429/500/502/503 with exponential backoff (default: 3 retries, 1s initial, 30s max). Parses `Retry-After` header on 429. Fails immediately on 401/403/404. Global `retry:` config section. |
-| 10B. Pipeline stage output cache | — | New `src/cache.rs`. Content-addressable cache keyed on `sha256(role + model + input)`. File-backed in `<config_dir>/.cache/stages/`. Configurable TTL (default: 1hr). `--no-cache` flag to bypass. Checked before LLM call in `pipe.rs:run_stage_inner()`. |
+| 10A. API-level retry with exponential backoff | Done | New `src/client/retry.rs`. Retries on HTTP 429/500/502/503 with exponential backoff (default: 3 retries, 1s initial, 30s max). Parses `Retry-After` header on 429. Fails immediately on 401/403/404. Global `retry:` config section. |
+| 10B. Pipeline stage output cache | Done | New `src/cache.rs`. Content-addressable cache keyed on `sha256(role + model + input)`. File-backed in `<config_dir>/.cache/stages/`. Configurable TTL (default: 1hr). `--no-cache` flag to bypass. Checked before LLM call in `pipe.rs:run_stage_inner()`. |
 | 10C. Pipeline stage retry | — | On stage failure, retry up to N times (default: 1) before propagating. New `stage_retries:` role frontmatter field. `is_retryable_stage_error()` returns true for API (5/6), schema (8), and model (7) errors; false for config (3), auth (4), abort (9). |
 | 10D. Pipeline model fallback | — | New `fallback_models:` role frontmatter field (list of model IDs). After exhausting retries with primary model, try each fallback in order. Wraps the retry loop: `fallback(retry(cache(run_stage_inner)))`. |
 

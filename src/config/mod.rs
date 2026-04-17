@@ -14,6 +14,7 @@ pub use self::role::{
 };
 pub use self::prompt::Prompt;
 use self::session::Session;
+use crate::client::retry::RetryConfig;
 use crate::client::{
     create_client_config, list_client_types, list_models, ClientConfig, MessageContentToolCalls,
     Model, ModelType, ProviderModels, OPENAI_COMPATIBLE_PROVIDERS,
@@ -131,6 +132,15 @@ pub struct Config {
     pub top_p: Option<f64>,
 
     pub dry_run: bool,
+    /// Phase 10B: bypass the pipeline stage output cache. Set from CLI `--no-cache`.
+    #[serde(default)]
+    pub no_cache: bool,
+    /// Phase 10B: TTL (seconds) for pipeline stage output cache entries. Default 1h.
+    #[serde(default = "default_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    /// Phase 10A: HTTP retry policy applied to all provider calls.
+    #[serde(default)]
+    pub retry: RetryConfig,
     pub stream: bool,
     pub save: bool,
     pub keybindings: String,
@@ -247,6 +257,9 @@ const DEFERRED_TOOL_THRESHOLD: usize = 15;
 fn default_mcp_cache_ttl() -> u64 {
     3600
 }
+fn default_cache_ttl_secs() -> u64 {
+    3600
+}
 fn default_mcp_startup_timeout() -> u64 {
     30
 }
@@ -265,6 +278,9 @@ impl Default for Config {
             top_p: None,
 
             dry_run: false,
+            no_cache: false,
+            cache_ttl_secs: default_cache_ttl_secs(),
+            retry: RetryConfig::default(),
             stream: true,
             save: false,
             keybindings: "emacs".into(),
@@ -362,6 +378,10 @@ impl Config {
 
         config.working_mode = working_mode;
         config.info_flag = info_flag;
+
+        // Phase 10A: propagate retry policy to the process-wide HTTP client state
+        // so every provider call site sees the user's overrides.
+        crate::client::retry::set_global(config.retry.clone());
 
         let setup = |config: &mut Self| -> Result<()> {
             config.load_envs();

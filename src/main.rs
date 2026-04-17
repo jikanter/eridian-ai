@@ -1,3 +1,4 @@
+mod cache;
 mod cli;
 mod client;
 mod config;
@@ -200,6 +201,9 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         return Ok(());
     }
 
+    if cli.no_cache {
+        config.write().no_cache = true;
+    }
     if cli.dry_run {
         config.write().dry_run = true;
     }

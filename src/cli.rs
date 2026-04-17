@@ -162,6 +162,9 @@ pub struct Cli {
     /// Pipeline definition file
     #[clap(long = "pipe-def", value_name = "FILE", requires = "pipe")]
     pub pipe_def: Option<String>,
+    /// Bypass the pipeline stage output cache (Phase 10B)
+    #[clap(long = "no-cache", requires = "pipe")]
+    pub no_cache: bool,
     /// Output format (json, jsonl, tsv, csv, text)
     #[clap(short = 'o', long = "output", value_name = "FORMAT")]
     pub output_format: Option<OutputFormat>,

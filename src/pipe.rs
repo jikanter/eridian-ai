@@ -1,3 +1,4 @@
+use crate::cache::StageCache;
 use crate::cli::Cli;
 use crate::client::{
     call_chat_completions, call_chat_completions_streaming, call_react, CallMetrics,
@@ -187,6 +188,59 @@ async fn run_stage_inner(
     let mut input = Input::from_str(config, input_text, Some(role.clone()));
     let client = input.create_client()?;
 
+    // Phase 10B: content-addressable stage output cache. Skips when caching is
+    // disabled (`--no-cache`), on dry-run, or for tool-using stages (tool calls
+    // carry non-deterministic side effects and must not be replayed).
+    let cache_enabled = !config.read().no_cache
+        && !config.read().dry_run
+        && !has_tools;
+    let cache_key = if cache_enabled {
+        Some(StageCache::key(
+            &stage.role_name,
+            &client.model().id(),
+            input_text,
+        ))
+    } else {
+        None
+    };
+    if let Some(key) = &cache_key {
+        let cache = StageCache::new(
+            Config::local_path(".cache/stages"),
+            config.read().cache_ttl_secs,
+        );
+        if let Some(cached) = cache.get(key) {
+            debug!("Stage cache hit for role '{}'", stage.role_name);
+            let model_id = client.model().id();
+            let metrics = CallMetrics {
+                model_id,
+                turns: 1,
+                ..Default::default()
+            };
+            if is_last && !input.stream() {
+                let final_output = if let Some(fmt) = config.read().output_format {
+                    if fmt.is_structured() {
+                        fmt.clean_output(&cached)?
+                    } else {
+                        cached.clone()
+                    }
+                } else {
+                    cached.clone()
+                };
+                print!("{final_output}");
+                std::io::Write::flush(&mut std::io::stdout())?;
+                if !final_output.ends_with('\n') {
+                    println!();
+                }
+            }
+            let cached_for_caller = if is_last {
+                cached
+            } else {
+                strip_think_tag(&cached).to_string()
+            };
+            return Ok((cached_for_caller, metrics));
+        }
+    }
+
     config.write().before_chat_completion(&input)?;
 
     // Phase 9C: schema retry budget for this stage. Short-circuits to 0 when
@@ -255,6 +309,19 @@ async fn run_stage_inner(
             }
         } else {
             validate_schema_traced("output", schema, &output, trace_emitter.as_ref())?;
+        }
+    }
+
+    // Phase 10B: persist successful output to the cache. Written before
+    // message-history save / printing so a later stage's cache hit sees the
+    // exact text we just produced.
+    if let Some(key) = &cache_key {
+        let cache = StageCache::new(
+            Config::local_path(".cache/stages"),
+            config.read().cache_ttl_secs,
+        );
+        if let Err(e) = cache.put(key, &output) {
+            debug!("Failed to write stage cache entry: {e}");
         }
     }
 

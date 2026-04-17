@@ -177,7 +177,7 @@ impl Client for BedrockClient {
 }
 
 async fn chat_completions(builder: RequestBuilder) -> Result<ChatCompletionsOutput> {
-    let res = builder.send().await?;
+    let res = super::retry::send(builder).await?;
     let status = res.status();
     let data: Value = res.json().await?;
 
@@ -193,7 +193,7 @@ async fn chat_completions_streaming(
     builder: RequestBuilder,
     handler: &mut SseHandler,
 ) -> Result<()> {
-    let res = builder.send().await?;
+    let res = super::retry::send(builder).await?;
     let status = res.status();
     if !status.is_success() {
         let data: Value = res.json().await?;
@@ -300,7 +300,7 @@ async fn chat_completions_streaming(
 }
 
 async fn embeddings(builder: RequestBuilder) -> Result<EmbeddingsOutput> {
-    let res = builder.send().await?;
+    let res = super::retry::send(builder).await?;
     let status = res.status();
     let data: Value = res.json().await?;
 
