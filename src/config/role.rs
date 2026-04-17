@@ -86,6 +86,11 @@ pub struct Role {
     #[serde(skip_serializing_if = "Option::is_none")]
     stage_retries: Option<usize>,
 
+    // Phase 10D: Model fallback chain — tried in order after primary model's
+    // retries exhaust with a retryable error.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fallback_models: Vec<String>,
+
     // Phase 6C: Unified resource binding
     #[serde(
         rename(serialize = "mcp_servers", deserialize = "mcp_servers"),
@@ -478,6 +483,15 @@ impl Role {
                                 "stage_retries" => {
                                     role.stage_retries = value.as_u64().map(|v| v as usize)
                                 }
+                                // Phase 10D: Pipeline model fallback chain
+                                "fallback_models" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.fallback_models = arr
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                            .collect();
+                                    }
+                                }
                                 // Phase 6C: Unified resource binding
                                 "mcp_servers" => {
                                     if let Some(arr) = value.as_array() {
@@ -567,6 +581,12 @@ impl Role {
         }
         if let Some(n) = self.stage_retries {
             meta.insert("stage_retries".into(), serde_json::json!(n));
+        }
+        if !self.fallback_models.is_empty() {
+            meta.insert(
+                "fallback_models".into(),
+                serde_json::json!(self.fallback_models),
+            );
         }
         if !self.role_mcp_servers.is_empty() {
             meta.insert(
@@ -735,6 +755,13 @@ impl Role {
     /// applies its default, typically 1). `Some(0)` means fail fast.
     pub fn stage_retries(&self) -> Option<usize> {
         self.stage_retries
+    }
+
+    /// Phase 10D: Ordered list of model IDs to try after the primary model
+    /// exhausts its retry budget with a retryable error. Empty means no
+    /// fallbacks — the error propagates after primary retries exhaust.
+    pub fn fallback_models(&self) -> &[String] {
+        &self.fallback_models
     }
 
     pub fn set_output_schema(&mut self, value: Option<Value>) {
@@ -2078,6 +2105,58 @@ Prompt."#;
         let role = Role::new("both-retries", content);
         assert_eq!(role.schema_retries(), Some(2));
         assert_eq!(role.stage_retries(), Some(1));
+    }
+
+    // ---- Phase 10D: Pipeline model fallback ----
+
+    #[test]
+    fn test_fallback_models_default_empty() {
+        let content = "---\nmodel: gpt-4\n---\nPrompt.";
+        let role = Role::new("no-fallback", content);
+        assert!(role.fallback_models().is_empty());
+    }
+
+    #[test]
+    fn test_fallback_models_parsed_from_frontmatter() {
+        let content = r#"---
+model: deepseek:deepseek-chat
+fallback_models:
+  - openai:gpt-4o-mini
+  - openai:gpt-4o
+---
+Prompt."#;
+        let role = Role::new("fallback-chain", content);
+        assert_eq!(
+            role.fallback_models(),
+            &["openai:gpt-4o-mini", "openai:gpt-4o"]
+        );
+    }
+
+    #[test]
+    fn test_fallback_models_in_export() {
+        let content = r#"---
+model: a
+fallback_models:
+  - b
+  - c
+---
+Prompt."#;
+        let role = Role::new("export-fallbacks", content);
+        let exported = role.export();
+        assert!(exported.contains("fallback_models"));
+        assert!(exported.contains("b"));
+        assert!(exported.contains("c"));
+    }
+
+    #[test]
+    fn test_fallback_models_empty_list_is_not_exported() {
+        let content = "---\nmodel: a\n---\nPrompt.";
+        let role = Role::new("no-export-when-empty", content);
+        let exported = role.export();
+        assert!(
+            !exported.contains("fallback_models"),
+            "empty fallback list must not round-trip as an empty key"
+        );
     }
 
     #[test]

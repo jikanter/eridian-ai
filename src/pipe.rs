@@ -134,59 +134,107 @@ async fn run_stage(
     is_last: bool,
     abort_signal: AbortSignal,
 ) -> Result<(String, CallMetrics)> {
-    // Phase 10C: stage retry budget. Peek at the role once to read
-    // `stage_retries`; if the role doesn't load, fall through to a single
-    // attempt so the config error surfaces on the first call.
-    let max_stage_retries = config
-        .read()
-        .retrieve_role(&stage.role_name)
-        .ok()
+    // Phase 10C/10D: peek at the role once for the retry budget and the model
+    // fallback chain. If the role fails to load, fall through to a single
+    // primary-model attempt so the config error surfaces on the first call.
+    let role = config.read().retrieve_role(&stage.role_name).ok();
+    let max_stage_retries = role
+        .as_ref()
         .and_then(|r| r.stage_retries())
         .unwrap_or(1);
+    let fallback_models: Vec<String> = role
+        .as_ref()
+        .map(|r| r.fallback_models().to_vec())
+        .unwrap_or_default();
 
-    let mut attempt: usize = 0;
-    loop {
-        // Phase 0C: save model state per attempt — the inner may have mutated
-        // it even on failure, and we want a clean slate for each retry.
-        let saved_model_id = config.read().current_model().id();
+    // Phase 10D: build the candidate chain — primary first, then each fallback.
+    // `None` = use the role's default model (no per-stage override); `Some(id)`
+    // forces that model via `set_model` inside `run_stage_inner`.
+    let mut candidates: Vec<Option<String>> = vec![stage.model_id.clone()];
+    for fb in &fallback_models {
+        candidates.push(Some(fb.clone()));
+    }
+    let total_models = candidates.len();
 
-        let result =
-            run_stage_inner(config, stage, input_text, is_last, abort_signal.clone()).await;
+    for (model_index, model_override) in candidates.into_iter().enumerate() {
+        let attempt_stage = PipelineStage {
+            role_name: stage.role_name.clone(),
+            model_id: model_override.clone(),
+        };
+        let model_label = model_override
+            .clone()
+            .unwrap_or_else(|| "<role-default>".to_string());
 
-        // Phase 0C: Restore model state regardless of success/failure.
-        if let Err(e) = config.write().set_model(&saved_model_id) {
-            debug!("Failed to restore model after pipeline stage: {e}");
-        }
+        let mut attempt: usize = 0;
+        loop {
+            // Phase 0C: save model state per attempt — the inner may have
+            // mutated it even on failure; each retry starts from a clean slate.
+            let saved_model_id = config.read().current_model().id();
 
-        match result {
-            Ok(v) => return Ok(v),
-            Err(e) if attempt < max_stage_retries && is_retryable_stage_error(&e) => {
-                warn!(
-                    "Pipeline stage {}/{} (role '{}') failed on attempt {}/{}, retrying: {}",
-                    stage_index + 1,
-                    stage_count,
-                    stage.role_name,
-                    attempt + 1,
-                    max_stage_retries + 1,
-                    e
-                );
-                attempt += 1;
-                continue;
+            let result = run_stage_inner(
+                config,
+                &attempt_stage,
+                input_text,
+                is_last,
+                abort_signal.clone(),
+            )
+            .await;
+
+            // Phase 0C: restore model state regardless of success/failure.
+            if let Err(e) = config.write().set_model(&saved_model_id) {
+                debug!("Failed to restore model after pipeline stage: {e}");
             }
-            Err(e) => {
-                let model_id = stage.model_id.clone().unwrap_or_else(|| {
-                    config.read().current_model().id()
-                });
-                return Err(anyhow::Error::new(AichatError::PipelineStage {
-                    stage: stage_index + 1,
-                    total: stage_count,
-                    role_name: stage.role_name.clone(),
-                    model_id: Some(model_id),
-                    message: e.to_string(),
-                }));
+
+            match result {
+                Ok(v) => return Ok(v),
+                Err(e) if attempt < max_stage_retries && is_retryable_stage_error(&e) => {
+                    warn!(
+                        "Pipeline stage {}/{} (role '{}', model '{}') failed on attempt {}/{}, retrying: {}",
+                        stage_index + 1,
+                        stage_count,
+                        stage.role_name,
+                        model_label,
+                        attempt + 1,
+                        max_stage_retries + 1,
+                        e
+                    );
+                    attempt += 1;
+                    continue;
+                }
+                Err(e)
+                    if is_retryable_stage_error(&e)
+                        && model_index + 1 < total_models =>
+                {
+                    warn!(
+                        "Pipeline stage {}/{} (role '{}', model '{}') exhausted retries, falling back to next model: {}",
+                        stage_index + 1,
+                        stage_count,
+                        stage.role_name,
+                        model_label,
+                        e
+                    );
+                    break; // advance outer loop to next fallback model
+                }
+                Err(e) => {
+                    // Non-retryable, or retryable with no remaining fallbacks.
+                    let final_model_id = model_override
+                        .clone()
+                        .unwrap_or_else(|| config.read().current_model().id());
+                    return Err(anyhow::Error::new(AichatError::PipelineStage {
+                        stage: stage_index + 1,
+                        total: stage_count,
+                        role_name: stage.role_name.clone(),
+                        model_id: Some(final_model_id),
+                        message: e.to_string(),
+                    }));
+                }
             }
         }
     }
+
+    // Unreachable: the final candidate's non-retryable / no-fallbacks-left
+    // arm always returns Err.
+    unreachable!("fallback loop exited without terminating");
 }
 
 async fn run_stage_inner(
