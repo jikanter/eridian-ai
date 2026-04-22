@@ -1,89 +1,66 @@
-## Me
-Using the project as context, describe the macro functionality in detail and how to leverage it.
+# Macros
 
-## AI Assistant
-Based on the provided code context, specifically `mod.rs` and `cli.rs`, the **Macro** functionality in this project is a feature designed to automate sequences of operations, effectively allowing users to script interactions with the LLM.
+Macros are predefined sequences of REPL commands that automate repetitive workflows. They support customizable variables and run in isolated execution contexts.
 
-It is distinct from the Rust source code macros found in `macros.rs` (which handle internal code generation like `register_client!`).
+## File Location
 
-Here is a detailed breakdown of the user-facing Macro functionality:
+Macros are defined as YAML files in:
+`<aichat-config-dir>/macros/*.yaml`
 
-### 1. Concept and Purpose
-Macros allow you to define a reusable workflow consisting of input variables and a list of sequential steps. Each step acts as a command executed within the application's REPL environment. This is useful for:
-*   Standardizing complex prompts.
-*   Chaining multiple logic steps (e.g., "summarize this," then "translate the summary").
-*   Automating repetitive configuration changes before running a prompt.
-*   Allowing dynamic loading of files or data between steps. 
+The filename (excluding the `.yaml` extension) is used as the macro name. For example, `commit.yaml` becomes the `.macro commit` command.
 
+## File Format
 
-### 2. Structure of a Macro
-As defined in `mod.rs`, a macro is stored as a serialized object (likely YAML) containing two main fields:
+A macro definition consists of `variables` and `steps`.
 
-*   **`variables`**: A list of `MacroVariable` objects. These represent the dynamic inputs the macro accepts when executed.
-*   **`steps`**: A `Vec<String>` representing the commands to be executed.
-
-**Logical Representation:**
 ```yaml
 variables:
-  - name: "input_text"
+  - name: agent
+    default: coder
+  - name: query
+    rest: true
+
 steps:
-  - "run some command with $input_text"
-  - "run another command"
+  - .agent {{agent}}
+  - "{{query}}"
+  - .file %%
 ```
 
+### `variables` (Optional)
+An array of variable definitions:
+- **`name`** (Required): The variable name, referenced as `{{name}}` in steps.
+- **`default`** (Optional): A default value if none is provided at execution.
+- **`rest`** (Optional, Boolean): If `true`, collects all remaining arguments into this variable. Only valid for the last variable.
 
-### 3. How to Leverage Macros
+### `steps` (Required)
+An array of strings, each representing a valid REPL command.
+- Macros support the `%%` token to refer to the output of the previous step.
+- Commands start with a dot (e.g., `.agent`, `.file`, `.role`).
+- Plain text is treated as a prompt to the current AI model.
 
-#### Creation
-The `mod.rs` file contains a `new_macro` function. This suggests the workflow for creating a macro involves:
-1.  Triggering a creation command (likely a REPL command or CLI flag not fully detailed in the snippet, but the logic exists).
-2.  The system determines the file path using `Self::macro_file(name)`.
-3.  The system opens the default system editor (`edit_file`) for you to define the macro's content (YAML).
+## Execution Context
 
-#### Execution
-You can execute macros via the Command Line Interface (CLI) as seen in `cli.rs`.
+When a macro is executed via `.macro <name> [args]`:
+- It runs in an **isolated context**.
+- It does **not** inherit or modify the current session's role, agent, or RAG state.
+- Once the macro finishes, your REPL state remains exactly as it was before execution.
 
-**Command Line Argument:**
-```shell script
-aichat --macro <MACRO_NAME> "argument text"
+## Special Tokens
+
+- **`{{var}}`**: Substituted with the value of the variable `var`.
+- **`%%`**: Refers to the output of the most recent AI response within the macro execution.
+
+## Examples
+
+### Expert Prompt Generator
+```yaml
+# <aichat-config-dir>/macros/expert.yaml
+variables:
+  - name: topic
+    rest: true
+steps:
+  - "I want you to act as an expert prompt engineer. Help me craft a prompt for: {{topic}}"
+  - .info %%
 ```
 
-*   The `cli.rs` logic handles input parsing specially when `--macro` is present. It combines trailing arguments (`self.text`) and standard input (`stdin`) to form the arguments passed to the macro.
-
-**Internal Execution Flow (`macro_execute` in `mod.rs`):**
-1.  **Load:** The macro file is read and deserialized.
-2.  **Argument Resolution:** The input arguments are split and mapped to the defined `variables`. If resolution fails (e.g., missing arguments), it returns an error with usage instructions.
-3.  **Context Isolation:**
-    *   The macro runs in a **cloned configuration**.
-    *   It inherits the current role, model, temperature, and `use_tools` settings.
-    *   Crucially, it **clears** session-specific states (`session`, `rag`, `agent` are set to `None`). This ensures the macro runs in a clean state and doesn't accidentally pollute an active conversation history.
-4.  **Step Iteration:**
-    *   The system iterates through the `steps`.
-    *   It performs interpolation (`Macro::interpolate_command`) to replace variables in the step string with the provided arguments.
-    *   It executes the step using `run_repl_command`.
-
-#### Listing Macros
-
-According to `cli.rs`, you can view available macros using:
-```shell script
-aichat --list-macros
-```
-
-
-### 4. Technical Summary
-
-*   **Storage:** File-based (YAML).
-*   **Parsing:** Uses `serde_yaml` for loading.
-*   **Interpolation:** variable substitution happens at runtime before the command is sent to the REPL processor.
-*   **Concurrency:** The execution is asynchronous (`async fn macro_execute`) and supports abort signals.
-
-### 5. Open Questions
-
-- What visibility do I get between macro steps? 
-- Macro steps are limited to repl commands - See [Macro Definition](https://github.com/sigoden/aichat/wiki/Macro-Guide#macro-definition). So I suppose
-the question is would it be useful to start extending the language here in any way? Right now I think the answer is no as I rarely use the repl form of commands any way, 
-and ultimately it seems like macros are not as good of a fit as shell scripts are for automating processes - especially if we are thinking about integrating 
-with data orchestration tools like airflow or dagu. 
-- Where I do see macro value in the future is in agent interaction 
-
-### 6. Ideas
+See also: [Agents](./agents.md), [Knowledge](./knowledge.md)
