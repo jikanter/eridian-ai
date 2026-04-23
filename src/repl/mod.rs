@@ -27,13 +27,19 @@ use reedline::{
     ReedlineEvent, ReedlineMenu, ValidationResult, Validator, Vi,
 };
 use reedline::{MenuBuilder, Signal};
+use serde_json::Value;
 use std::sync::LazyLock;
 use std::{env, process};
 
 const MENU_NAME: &str = "completion_menu";
 
-static REPL_COMMANDS: LazyLock<[ReplCommand; 37]> = LazyLock::new(|| {
+static REPL_COMMANDS: LazyLock<[ReplCommand; 38]> = LazyLock::new(|| {
     [
+        ReplCommand::new(
+            ".extensions",
+            "Set model-specific extensions",
+            AssertState::pass(),
+        ),
         ReplCommand::new(".help", "Show this help guide", AssertState::pass()),
         ReplCommand::new(".info", "Show system info", AssertState::pass()),
         ReplCommand::new(
@@ -390,6 +396,30 @@ pub async fn run_repl_command(
     }
     match parse_command(line) {
         Some((cmd, args)) => match cmd {
+            ".extensions" => match split_first_arg(args) {
+                Some(("set", Some(args))) => {
+                    if let Some((key, value)) = args.split_once([' ', '=']) {
+                        let value = value.trim();
+                        let value: Value = serde_yaml::from_str(value).unwrap_or(Value::String(value.to_string()));
+                        config.write().update_extension(key.trim(), value)?;
+                    } else {
+                        println!("Usage: .extensions set <key> <value>");
+                    }
+                }
+                Some(("list", _)) => {
+                    if let Some(extensions) = config.read().model.extensions() {
+                        let output = serde_yaml::to_string(extensions)?;
+                        println!("{output}");
+                    }
+                }
+                _ => {
+                    println!(
+                        r#"Usage:
+    .extensions set <key> <value>   # Set a model-specific extension
+    .extensions list                # List current model-specific extensions"#
+                    );
+                }
+            },
             ".help" => {
                 dump_repl_help();
             }

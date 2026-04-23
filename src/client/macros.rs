@@ -1,15 +1,24 @@
 #[macro_export]
-macro_rules! register_client {
-    (
-        $(($module:ident, $name:literal, $config:ident, $client:ident),)+
-    ) => {
-        $(
-            mod $module;
-        )+
-        $(
-            use self::$module::$config;
-        )+
+macro_rules! config_common_fns {
+    () => {
+        fn name(&self) -> Option<&str> {
+            self.name.as_deref()
+        }
+        fn extra(&self) -> Option<&$crate::client::ExtraConfig> {
+            self.extra.as_ref()
+        }
+        fn patch(&self) -> Option<&$crate::client::RequestPatch> {
+            self.patch.as_ref()
+        }
+        fn extensions(&self) -> Option<&serde_json::Value> {
+            self.extensions.as_ref()
+        }
+    };
+}
 
+#[macro_export]
+macro_rules! define_client_config_enum {
+    ($(($name:literal, $config:ident)),+) => {
         #[derive(Debug, Clone, serde::Deserialize)]
         #[serde(tag = "type")]
         pub enum ClientConfig {
@@ -20,6 +29,25 @@ macro_rules! register_client {
             #[serde(other)]
             Unknown,
         }
+    };
+}
+
+#[macro_export]
+macro_rules! register_client {
+    (
+        $(($module:ident, $name:literal, $config:ident, $client:ident),)+
+    ) => {
+        $(
+            mod $module;
+            impl $crate::client::ClientConfigTrait for $module::$config {
+                config_common_fns!();
+            }
+        )+
+        $(
+            use self::$module::$config;
+        )+
+
+        define_client_config_enum!($(($name, $config)),+);
 
         $(
             #[derive(Debug)]
@@ -66,7 +94,7 @@ macro_rules! register_client {
                 }
 
                 pub fn name(local_config: &$config) -> &str {
-                    local_config.name.as_deref().unwrap_or(Self::NAME)
+                    <$config as $crate::client::ClientConfigTrait>::name(local_config).unwrap_or(Self::NAME)
                 }
             }
 
@@ -85,6 +113,22 @@ macro_rules! register_client {
             let mut client_types: Vec<_> = vec![$($client::NAME,)+];
             client_types.extend($crate::client::OPENAI_COMPATIBLE_PROVIDERS.iter().map(|(name, _)| *name));
             client_types
+        }
+
+        pub fn lookup_client_extensions(
+            config: &$crate::config::Config,
+            client_name: &str,
+        ) -> Option<serde_json::Value> {
+            config.clients.iter().find_map(|v| match v {
+                $(ClientConfig::$config(c) => {
+                    if $client::name(c) == client_name {
+                        <$config as $crate::client::ClientConfigTrait>::extensions(c).cloned()
+                    } else {
+                        None
+                    }
+                },)+
+                ClientConfig::Unknown => None,
+            })
         }
 
         pub async fn create_client_config(client: &str) -> anyhow::Result<(String, serde_json::Value)> {
@@ -140,27 +184,23 @@ macro_rules! register_client {
 #[macro_export]
 macro_rules! client_common_fns {
     () => {
+        fn config(&self) -> &dyn $crate::client::ClientConfigTrait {
+            &self.config
+        }
+
         fn global_config(&self) -> &$crate::config::GlobalConfig {
             &self.global_config
         }
 
-        fn extra_config(&self) -> Option<&$crate::client::ExtraConfig> {
-            self.config.extra.as_ref()
+        fn client_name(&self) -> &str {
+            Self::NAME
         }
 
-        fn patch_config(&self) -> Option<&$crate::client::RequestPatch> {
-            self.config.patch.as_ref()
-        }
-
-        fn name(&self) -> &str {
-            Self::name(&self.config)
-        }
-
-        fn model(&self) -> &Model {
+        fn model(&self) -> &$crate::client::Model {
             &self.model
         }
 
-        fn model_mut(&mut self) -> &mut Model {
+        fn model_mut(&mut self) -> &mut $crate::client::Model {
             &mut self.model
         }
     };

@@ -16,6 +16,7 @@ pub struct GeminiConfig {
     #[serde(default)]
     pub models: Vec<ModelData>,
     pub patch: Option<RequestPatch>,
+    pub extensions: Option<Value>,
     pub extra: Option<ExtraConfig>,
 }
 

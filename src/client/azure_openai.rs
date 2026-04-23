@@ -1,5 +1,6 @@
 use super::openai::*;
 use super::*;
+use serde_json::Value;
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -12,6 +13,7 @@ pub struct AzureOpenAIConfig {
     #[serde(default)]
     pub models: Vec<ModelData>,
     pub patch: Option<RequestPatch>,
+    pub extensions: Option<Value>,
     pub extra: Option<ExtraConfig>,
 }
 

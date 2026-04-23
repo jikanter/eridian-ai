@@ -178,6 +178,18 @@ impl Model {
         self.data.patch.as_ref()
     }
 
+    pub fn patch_mut(&mut self) -> &mut Option<Value> {
+        &mut self.data.patch
+    }
+
+    pub fn extensions(&self) -> Option<&Value> {
+        self.data.extensions.as_ref()
+    }
+
+    pub fn extensions_mut(&mut self) -> &mut Option<Value> {
+        &mut self.data.extensions
+    }
+
     pub fn max_input_tokens(&self) -> Option<usize> {
         self.data.max_input_tokens
     }
@@ -307,6 +319,8 @@ pub struct ModelData {
     pub output_price: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub patch: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<Value>,
 
     // chat-only properties
     #[serde(skip_serializing_if = "Option::is_none")]

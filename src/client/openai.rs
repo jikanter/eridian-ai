@@ -18,6 +18,7 @@ pub struct OpenAIConfig {
     #[serde(default)]
     pub models: Vec<ModelData>,
     pub patch: Option<RequestPatch>,
+    pub extensions: Option<Value>,
     pub extra: Option<ExtraConfig>,
 }
 
@@ -238,6 +239,7 @@ pub fn openai_build_chat_completions_body(data: ChatCompletionsData, model: &Mod
         functions,
         stream,
         output_schema,
+        extensions,
     } = data;
 
     let messages_len = messages.len();
@@ -368,6 +370,14 @@ pub fn openai_build_chat_completions_body(data: ChatCompletionsData, model: &Mod
         }
     }
 
+    if let Some(extensions) = extensions {
+        json_patch::merge(&mut body, &extensions);
+    }
+
+    if let Some(extensions) = model.extensions() {
+        json_patch::merge(&mut body, extensions);
+    }
+
     body
 }
 
@@ -474,6 +484,7 @@ mod tests {
             functions,
             stream: false,
             output_schema: schema,
+            extensions: None,
         }
     }
 
@@ -529,5 +540,55 @@ mod tests {
         let tools = body["tools"].as_array().expect("tools array present");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn body_merges_model_level_extensions() {
+        let mut model = openai_model(false);
+        model.extensions_mut().replace(json!({
+            "num_ctx": 4096,
+            "custom_flag": true
+        }));
+
+        let data = data_with_schema(None, None);
+        let body = openai_build_chat_completions_body(data, &model);
+
+        assert_eq!(body["num_ctx"], 4096);
+        assert_eq!(body["custom_flag"], true);
+        assert_eq!(body["model"], "gpt-test");
+    }
+
+    #[test]
+    fn body_merges_client_level_extensions() {
+        let model = openai_model(false);
+        let mut data = data_with_schema(None, None);
+        data.extensions = Some(json!({
+            "num_ctx": 2048,
+            "repeat_penalty": 1.1,
+        }));
+        let body = openai_build_chat_completions_body(data, &model);
+
+        assert_eq!(body["num_ctx"], 2048);
+        assert_eq!(body["repeat_penalty"], 1.1);
+    }
+
+    #[test]
+    fn model_extensions_override_client_extensions() {
+        let mut model = openai_model(false);
+        model.extensions_mut().replace(json!({
+            "num_ctx": 32768,
+            "top_k": 50,
+        }));
+        let mut data = data_with_schema(None, None);
+        data.extensions = Some(json!({
+            "num_ctx": 4096,
+            "repeat_penalty": 1.1,
+        }));
+        let body = openai_build_chat_completions_body(data, &model);
+
+        // Model-level wins on overlap; client-level fills the rest.
+        assert_eq!(body["num_ctx"], 32768);
+        assert_eq!(body["top_k"], 50);
+        assert_eq!(body["repeat_penalty"], 1.1);
     }
 }

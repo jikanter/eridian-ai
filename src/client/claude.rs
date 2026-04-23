@@ -23,6 +23,7 @@ pub struct ClaudeConfig {
     #[serde(default)]
     pub models: Vec<ModelData>,
     pub patch: Option<RequestPatch>,
+    pub extensions: Option<Value>,
     pub extra: Option<ExtraConfig>,
 }
 
@@ -187,6 +188,7 @@ pub fn claude_build_chat_completions_body(
         functions,
         stream,
         output_schema,
+        extensions: _,
     } = data;
 
     let system_message = extract_system_message(&mut messages);
@@ -454,6 +456,7 @@ mod tests {
             functions,
             stream: false,
             output_schema: schema,
+            extensions: None,
         }
     }
 

@@ -387,6 +387,10 @@ impl Input {
         }
 
         let output_schema = self.role().output_schema().cloned();
+        let extensions = crate::client::lookup_client_extensions(
+            &self.config.read(),
+            model.client_name(),
+        );
 
         Ok(ChatCompletionsData {
             messages,
@@ -395,6 +399,7 @@ impl Input {
             functions,
             stream,
             output_schema,
+            extensions,
         })
     }
 

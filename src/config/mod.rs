@@ -31,7 +31,7 @@ use indexmap::IndexMap;
 use inquire::{list_option::ListOption, validator::Validation, Confirm, MultiSelect, Select, Text};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use simplelog::LevelFilter;
 use std::collections::{HashMap, HashSet};
 use std::{
@@ -1090,6 +1090,21 @@ impl Config {
             Some(role_like) => role_like.set_model(model),
             None => {
                 self.model = model;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn update_extension(&mut self, key: &str, value: Value) -> Result<()> {
+        let extensions = self.model.extensions_mut();
+        if extensions.is_none() {
+            *extensions = Some(json!({}));
+        }
+        if let Some(extensions) = extensions.as_mut().and_then(|v| v.as_object_mut()) {
+            if value.is_null() {
+                extensions.remove(key);
+            } else {
+                extensions.insert(key.to_string(), value);
             }
         }
         Ok(())

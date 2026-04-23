@@ -340,6 +340,7 @@ impl Server {
             functions,
             stream,
             output_schema: None,
+            extensions: None,
         };
 
         if stream {

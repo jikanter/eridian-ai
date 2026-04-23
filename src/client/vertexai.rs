@@ -19,6 +19,7 @@ pub struct VertexAIConfig {
     #[serde(default)]
     pub models: Vec<ModelData>,
     pub patch: Option<RequestPatch>,
+    pub extensions: Option<Value>,
     pub extra: Option<ExtraConfig>,
 }
 
@@ -317,6 +318,7 @@ pub fn gemini_build_chat_completions_body(
         functions,
         stream: _,
         output_schema: _,
+        extensions: _,
     } = data;
 
     let system_message = extract_system_message(&mut messages);

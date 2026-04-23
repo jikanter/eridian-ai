@@ -34,15 +34,36 @@ static EMBEDDING_MODEL_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 static ESCAPE_SLASH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?<!\\)/").unwrap());
 
+pub trait ClientConfigTrait {
+    fn name(&self) -> Option<&str>;
+    fn extra(&self) -> Option<&ExtraConfig>;
+    fn patch(&self) -> Option<&RequestPatch>;
+    fn extensions(&self) -> Option<&Value>;
+}
+
 #[async_trait::async_trait]
 pub trait Client: Sync + Send {
+    fn config(&self) -> &dyn ClientConfigTrait;
+
     fn global_config(&self) -> &GlobalConfig;
 
-    fn extra_config(&self) -> Option<&ExtraConfig>;
+    fn extra_config(&self) -> Option<&ExtraConfig> {
+        self.config().extra()
+    }
 
-    fn patch_config(&self) -> Option<&RequestPatch>;
+    fn patch_config(&self) -> Option<&RequestPatch> {
+        self.config().patch()
+    }
 
-    fn name(&self) -> &str;
+    fn extensions_config(&self) -> Option<&Value> {
+        self.config().extensions()
+    }
+
+    fn name(&self) -> &str {
+        self.config().name().unwrap_or(self.client_name())
+    }
+
+    fn client_name(&self) -> &str;
 
     fn model(&self) -> &Model;
 
@@ -294,6 +315,7 @@ pub struct ChatCompletionsData {
     /// Role's `output_schema`, passed through so providers can opt into native
     /// structured output (Phase 9A/9B). `None` when the role declared no schema.
     pub output_schema: Option<serde_json::Value>,
+    pub extensions: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default)]
