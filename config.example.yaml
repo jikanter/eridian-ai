@@ -123,6 +123,8 @@ clients:
   #           <json>
   #         headers:                                  # Patch request headers
   #           <key>: <value>
+  #   extensions:                                     # Vendor-specific request body additions (Ollama, vLLM, etc.)
+  #     <key>: <value>                                # Merged into the request body; model-level extensions override client-level
   #   extra:
   #     proxy: socks5://127.0.0.1:1080                # Set proxy
   #     connect_timeout: 10                           # Set timeout in seconds for connect to api
@@ -138,12 +140,20 @@ clients:
     name: ollama
     api_base: http://localhost:11434/v1
     api_key: xxx                                      # Optional
+    # Client-level extensions are merged into every chat request (Ollama-specific sampling defaults).
+    extensions:
+      num_ctx: 4096
+      repeat_penalty: 1.1
     models:
       - name: deepseek-r1
         max_input_tokens: 131072
       - name: llama3.1
         max_input_tokens: 128000
         supports_function_calling: true
+        # Model-level extensions override client-level on overlap; non-overlapping keys still flow through.
+        extensions:
+          num_ctx: 32768
+          top_k: 50
       - name: llama3.2-vision
         max_input_tokens: 131072
         supports_vision: true
@@ -151,6 +161,21 @@ clients:
         type: embedding
         default_chunk_size: 1000
         max_batch_size: 50
+
+  # vLLM exposes Guided Decoding and other sampling knobs via extra request fields.
+  - type: openai-compatible
+    name: vllm
+    api_base: http://localhost:8000/v1
+    api_key: xxx                                      # Optional
+    extensions:
+      repetition_penalty: 1.05
+    models:
+      - name: meta-llama/Meta-Llama-3-8B-Instruct
+        extensions:
+          guided_json:
+            type: object
+            properties:
+              answer: { type: string }
 
   # See https://ai.google.dev/docs
   - type: gemini

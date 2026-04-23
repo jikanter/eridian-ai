@@ -10,7 +10,7 @@
       <excludeFolder url="file://$MODULE_DIR$/.claude/worktrees/mcp-consumption/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
-    <orderEntry type="inheritedJdk" />
+    <orderEntry type="jdk" jdkName="Python 3.9 (aichat)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>
