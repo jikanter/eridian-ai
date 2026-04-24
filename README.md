@@ -24,6 +24,14 @@ make it easy to pipe one function into another
 7. Schema-aware roles with a retry loop (In-progress)
 8. Role hosting via the local server (so you can `curl <my_role>` from your desktop to your laptop and pipe it into the local aichat)
 
+## Why "Eridian"?
+
+Named after the Eridian engineer from Andy Weir's *Project Hail Mary* — a five-armed, rock-shelled alien who doesn't speak your language but will absolutely out-engineer you while communicating in musical chords. Rocky solves impossible problems with whatever tools are available, composes elegant solutions from simple parts, and does it all with relentless optimism.
+
+That's the vibe. This CLI doesn't care which LLM you speak — it'll bridge the gap, compose the pipeline, and get the job done. *Good good good.*
+
+> "You are my friend. I will never abandon you." — Rocky, who clearly never had to debug a YAML frontmatter parser
+
 ## Install
 
 Note: Eridian is currently in active development and may not be stable, the directions below are for the other aichat
@@ -216,13 +224,7 @@ Supports custom dark and light themes, which highlight response text and code bl
 ## Feature Documentation 
 - [Macros](./docs/features/macros.md)
 
-## Why "Eridian"?
 
-Named after the Eridian engineer from Andy Weir's *Project Hail Mary* — a five-armed, rock-shelled alien who doesn't speak your language but will absolutely out-engineer you while communicating in musical chords. Rocky solves impossible problems with whatever tools are available, composes elegant solutions from simple parts, and does it all with relentless optimism.
-
-That's the vibe. This CLI doesn't care which LLM you speak — it'll bridge the gap, compose the pipeline, and get the job done. *Good good good.*
-
-> "You are my friend. I will never abandon you." — Rocky, who clearly never had to debug a YAML frontmatter parser
 
 ## License
 
