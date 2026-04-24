@@ -26,22 +26,13 @@ make it easy to pipe one function into another
 ## Install
 
 Note: Eridian is currently in active development and may not be stable, the directions below are for the other aichat
-tool, you need to check this one out and `cargo install --package=.`.
+tool, you need to check this one out and `cargo install --package=.`. The name of the binary it installs is aichat, 
+but if you run `aichat --version`, you will get a version string that ends with `-eridian`.
+
+You will almost certainly want to `cargo install argc` and `git checkout https://github.com/sigoden/llm-functions`
+to better be able to actually use this tool.
 
 **Warning** : If you already have aichat installed, this will overwrite it. 
-
-
-### Package Managers
-
-
-~~- **Homebrew~~/Linuxbrew Users:** `brew install aichat`
-- **Pacman Users**: `pacman -S aichat`
-- **Windows Scoop Users:** `scoop install aichat`
-- **Android Termux Users:** `pkg install aichat`
-
-### Pre-built Binaries
-
-Download pre-built binaries for macOS, Linux, and Windows from [GitHub Releases](https://github.com/sigoden/aichat/releases), extract them, and add the binary to your `$PATH`.
 
 ## Features
 
