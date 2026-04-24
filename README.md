@@ -22,7 +22,7 @@ make it easy to pipe one function into another
 5. Composable multi-model pipelines. You can chain multiple models together to create a single pipeline.
 6. Model-aware templating (so you can call different types of models with the same prompts).
 7. Schema-aware roles with a retry loop (In-progress)
-8. Role hosting via the local server (so you can `curl <my_role>` from your laptop and pipe it into the local aichat)
+8. Role hosting via the local server (so you can `curl <my_role>` from your desktop to your laptop and pipe it into the local aichat)
 
 ## Install
 
