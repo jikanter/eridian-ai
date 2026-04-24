@@ -16,12 +16,13 @@ What I am trying to build is the "Make" of models. Not another harness, but a un
 make it easy to pipe one function into another 
 
 1. Composable roles. You can use one role as the basis for other roles.
-2. Response-caching. Eridian remembers previous responses and can reuse them when appropriate.
-3. Native json output so it plays nicely with jq 
-4. Composable multi-model pipelines. You can chain multiple models together to create a single pipeline.
-5. Model-aware templating (so you can call different types of models with the same prompts).
-6. Schema-aware roles with a retry loop (In-progress)
-7. Role hosting via the local server (so you can `curl <my_role>` from your laptop and pipe it into the local aichat)
+2. Semantic exit codes - When there is a problem, eridian returns a somewhat rational error code. 
+3. Response-caching. Eridian remembers previous responses and can reuse them when appropriate.
+4. Native json output so it plays nicely with jq 
+5. Composable multi-model pipelines. You can chain multiple models together to create a single pipeline.
+6. Model-aware templating (so you can call different types of models with the same prompts).
+7. Schema-aware roles with a retry loop (In-progress)
+8. Role hosting via the local server (so you can `curl <my_role>` from your laptop and pipe it into the local aichat)
 
 ## Install
 
