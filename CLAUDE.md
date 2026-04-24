@@ -3,9 +3,9 @@
 AIchat is a command-line swiss army knife for ai applications.
 
 <brief:generated>
-# Briefing: AIChat - A multi-target command-line for AI models.
+# Briefing: Aichat-Eridian - A multi-target "make" for AI models.
 
-**Stack:** Rust 1.93.1, Cargo, Bash, argc
+**Stack:** Rust 1.95.0, Cargo, Bash, argc, llm-functions
 
 ## Constraints
 
