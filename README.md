@@ -10,12 +10,31 @@ Eridian is a multi-target command-line tool for AI models — like having a five
 
 > This project is a fork of [sigoden/aichat](https://github.com/sigoden/aichat), a fantastic foundation for LLM CLI tooling. Eridian builds on that work with a focus on token efficiency, composable multi-model pipelines, and MCP integration — because even Eridians know you don't build a interstellar tunnel without a good blueprint to fork from.
 
+## What this improves on aichat
+
+What I am trying to build is the "Make" of models. Not another harness, but a unix-y tool for AI. I want to 
+make it easy to pipe one function into another 
+
+1. Composable roles. You can use one role as the basis for other roles.
+2. Response-caching. Eridian remembers previous responses and can reuse them when appropriate.
+3. Native json output so it plays nicely with jq 
+4. Composable multi-model pipelines. You can chain multiple models together to create a single pipeline.
+5. Model-aware templating (so you can call different types of models with the same prompts).
+6. Schema-aware roles with a retry loop (In-progress)
+7. Role hosting via the local server (so you can `curl <my_role>` from your laptop and pipe it into the local aichat)
+
 ## Install
+
+Note: Eridian is currently in active development and may not be stable, the directions below are for the other aichat
+tool, you need to check this one out and `cargo install --package=.`.
+
+**Warning** : If you already have aichat installed, this will overwrite it. 
+
 
 ### Package Managers
 
-- **Rust Developers:** `cargo install aichat`
-- **Homebrew/Linuxbrew Users:** `brew install aichat`
+
+~~- **Homebrew~~/Linuxbrew Users:** `brew install aichat`
 - **Pacman Users**: `pacman -S aichat`
 - **Windows Scoop Users:** `scoop install aichat`
 - **Android Termux Users:** `pkg install aichat`
