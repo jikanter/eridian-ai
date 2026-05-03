@@ -142,13 +142,7 @@ The inline `mcp_servers:` block in `config.yaml` remains supported (useful for t
 
 ### User migration (one-time)
 
-```bash
-mkdir -p ~/.config/mcp
-cp <path-to-llm-functions>/mcp.json ~/.config/mcp/mcp.json
-# Verify camelCase and field set against SPEC-mcp-json-artifact.md.
-```
-
-The bridge's existing `mcp.json` already uses `mcpServers` as the top-level key, so the migration is a copy in most cases. Verify field set against `SPEC-mcp-json-artifact.md` § "Field set."
+The hand-followable steps live in [`MIGRATION-portable-mcp-json.md`](MIGRATION-portable-mcp-json.md). Summary: copy `mcp.json` to `~/.config/mcp/mcp.json`, run `aichat --validate-mcp-config` against it, append `mcp_servers_file:` to `config.yaml`, then `argc mcp stop` + `argc mcp recovery-functions -S` to clean up llm-functions. The bridge's existing `mcp.json` already uses `mcpServers` as the top-level key, so the migration is a straight copy in most cases.
 
 ### External-client changes
 

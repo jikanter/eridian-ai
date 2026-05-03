@@ -12,6 +12,7 @@
 | 31B | Multi-server pool init regression at N≥5 (diagnose runtime/IO race, unskips probe-b large-N) | -- |
 | 31C | `mcp_servers_file:` portable loader (per [`SPEC-mcp-json-artifact.md`](../architecture/integrated-architecture/SPEC-mcp-json-artifact.md)) | -- |
 | 31D | Unskip gated bats tests; refresh `docs/demos/demo-mcp-server.md` known-limitation sections | -- |
+| 31E | `aichat --validate-mcp-config [PATH]` CLI subcommand (per SPEC § Validation) | -- |
 
 **Cross-cutting docs:** [`bridge-retirement.md`](../architecture/integrated-architecture/bridge-retirement.md), [`SPEC-mcp-json-artifact.md`](../architecture/integrated-architecture/SPEC-mcp-json-artifact.md).
 

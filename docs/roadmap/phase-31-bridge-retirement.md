@@ -76,6 +76,27 @@ Merge with inline `mcp_servers:` from `config.yaml`. **Inline wins on key confli
 
 **Files.** `src/config/mod.rs` (add field, load step), `src/mcp_client/mod.rs` (parse helper), `Cargo.toml` (no new deps — `serde_json` already present).
 
+### 31E. `aichat --validate-mcp-config [PATH]`
+
+**Problem.** The portable file lives outside both repos; users (and the future
+harness interface) need a way to validate it from outside aichat's main
+runtime — a typo there should not silently disable an MCP server only to
+surface as a confusing "0 tools" symptom at chat time.
+
+**Fix.** Added `--validate-mcp-config [PATH]` to the CLI. Runs **before**
+`Config::init` so a broken `config.yaml` doesn't mask validation results.
+Honors the same search order as the loader when `PATH` is omitted. Exit
+codes:
+
+- `0` — valid; prints `ok: <path>` with a per-server breakdown (or JSON
+  payload when `-o json`).
+- `1` — parse error or schema rule violation (any of SPEC § Validation 1–5).
+- `2` — no file found via search order (or explicit path missing).
+
+**Files.** `src/cli.rs` (flag), `src/main.rs` (early dispatch),
+`src/mcp_client/mod.rs` (`run_validate_mcp_config` + helpers),
+`tests/integration/mcp-validate.sh` (9 bats cases).
+
 ### 31D. Unskip tests; refresh demo
 
 - Remove `skip` from `tests/integration/mcp-server.sh` for probe-a and probe-b large-N.
@@ -92,7 +113,6 @@ Merge with inline `mcp_servers:` from `config.yaml`. **Inline wins on key confli
 ## What is explicitly NOT done in this phase
 
 - The actual deletion of `llm-functions/mcp/bridge/`, `scripts/mcp.sh`, `mcp.json`, and the `bin/<server>__<tool>` shims. That is a separate commit in `llm-functions` once this phase's validation gates pass.
-- `aichat --validate-mcp-config <path>` CLI — deferred to a follow-on phase per `SPEC-mcp-json-artifact.md` § Validation.
 - The `x-aichat` extension namespace (`namespace`, `lazyDiscover` per server). Reserved; first per-server tuning need triggers it.
 - Hot-reload of `mcp.json` on file change. `mcp_cache_ttl` covers most of the cost; revisit if `POST /v1/reload` lands in Phase 16E.
 - Renaming the bridge's `srv__tool` namespace convention to aichat's `srv:tool` convention in any external scripts the user maintains. Out of scope for this repo; `grep` sweep is the user's job.

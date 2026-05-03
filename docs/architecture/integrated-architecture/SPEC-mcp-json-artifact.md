@@ -147,7 +147,7 @@ A `mcp.json` file is valid if:
 4. `args` (when present) is a string array.
 5. `env` and `headers` (when present) are string-to-string objects.
 
-Aichat exposes `aichat --validate-mcp-config [path]` (deferred to a follow-on phase) that runs these checks and exits non-zero with a clear diagnostic on failure. Until that ships, the consumer's startup error is the validator.
+Aichat exposes `aichat --validate-mcp-config [PATH]` (Phase 31E) which runs these checks and exits 0 on valid, 1 on parse/schema failure, 2 when no file is found via the search order. Use `-o json` for machine-readable output. With `PATH` omitted, the same search order described under "File location and discovery" applies.
 
 ## Open questions
 

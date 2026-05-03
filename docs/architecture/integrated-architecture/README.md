@@ -23,3 +23,4 @@ The portable artifacts these documents specify (e.g., `mcp.json` per [`SPEC-mcp-
 
 - [`SPEC-mcp-json-artifact.md`](SPEC-mcp-json-artifact.md) — Schema and discovery rules for the portable `mcp.json` declarations file. Aligned with Claude Code's `.mcp.json` dialect; aichat-specific extensions namespaced under `x-aichat`. Foundational input to bridge retirement.
 - [`bridge-retirement.md`](bridge-retirement.md) — Plan to retire the Node HTTP bridge in `llm-functions/mcp/bridge/` in favor of the portable `mcp.json` artifact + aichat's native `mcp_pool`. Status: blocked on two upstream aichat bugs; tests and demo pinned in aichat to track readiness.
+- [`MIGRATION-portable-mcp-json.md`](MIGRATION-portable-mcp-json.md) — User-facing, hand-followable migration steps for moving from `llm-functions/mcp.json` + the bridge to the portable `~/.config/mcp/mcp.json`. Includes rollback.
