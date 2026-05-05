@@ -1,7 +1,7 @@
 # AIChat Roadmap
 
 **Last updated:** 2026-05-04
-**649 tests passing (452 unit + 197 compatibility), 0 failures**
+**666 tests passing (459 unit + 197 compatibility + 10 phase-14/12 regression), 0 failures**
 
 ---
 
@@ -25,8 +25,8 @@ Roles are the fundamental unit of composition. This roadmap evolves roles from s
 |---|---|---|---|---|
 | 1 | Core Platform | 0-8 | **Done** | -- |
 | 2 | Runtime Intelligence | 9-11 | **Done** | [epic-2.md](./analysis/epic-2.md) |
-| 3 | Composition UX | 12-13 | Planned | [epic-3.md](./analysis/epic-3.md) |
-| 4 | Typed Ports & Capabilities | 14-15 | Planned | [epic-4.md](./analysis/epic-4.md) |
+| 3 | Composition UX | 12-13 | Phase 12 **Done**; Phase 13 planned | [epic-3.md](./analysis/epic-3.md) |
+| 4 | Typed Ports & Capabilities | 14-15 | Phase 14 **Done**; Phase 15 planned | [epic-4.md](./analysis/epic-4.md) |
 | 5 | Server Pipeline Engine | 16-18 | **Deferred 2026-04-17** | [epic-5.md](./analysis/epic-5.md) |
 | 6 | Universal Addressing | 19-20 | Phase 19 **Done**; Phase 20 blocked on Epic 5 Phase 17B | [epic-6.md](./analysis/epic-6.md) |
 | 7 | DAG Execution | 21-22 | Planned | [epic-7.md](./analysis/epic-7.md) |

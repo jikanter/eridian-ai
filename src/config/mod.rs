@@ -1448,6 +1448,43 @@ impl Config {
         roles
     }
 
+    /// Phase 14C: discover roles whose `capabilities:` field contains a
+    /// substring match for the given query. Case-insensitive. Returns a
+    /// snapshot — caller owns the cloned roles.
+    pub fn find_roles_by_capability(capability: &str) -> Vec<Role> {
+        let needle = capability.to_lowercase();
+        let mut hits: Vec<Role> = Self::all_roles()
+            .into_iter()
+            .filter(|r| {
+                r.capabilities()
+                    .iter()
+                    .any(|c| c.to_lowercase().contains(&needle))
+            })
+            .collect();
+        hits.sort_unstable_by(|a, b| a.name().cmp(b.name()));
+        hits
+    }
+
+    /// Phase 14C: discover roles whose input/output port signatures match the
+    /// given type filters. `None` for either filter means "no constraint".
+    /// Both filters are AND'd. Match semantics follow `Role::port_accepts` /
+    /// `Role::port_produces` (see Phase 14B).
+    pub fn find_roles_by_port(
+        input_type: Option<&str>,
+        output_type: Option<&str>,
+    ) -> Vec<Role> {
+        let mut hits: Vec<Role> = Self::all_roles()
+            .into_iter()
+            .filter(|r| {
+                let input_ok = input_type.is_none_or(|t| r.port_accepts(t));
+                let output_ok = output_type.is_none_or(|t| r.port_produces(t));
+                input_ok && output_ok
+            })
+            .collect();
+        hits.sort_unstable_by(|a, b| a.name().cmp(b.name()));
+        hits
+    }
+
     pub fn list_roles(with_builtin: bool) -> Vec<String> {
         let mut names = HashSet::new();
         if let Ok(rd) = read_dir(Self::roles_dir()) {

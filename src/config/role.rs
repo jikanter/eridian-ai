@@ -131,6 +131,11 @@ pub struct Role {
     description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tags: Option<Vec<String>>,
+    /// Phase 14A: free-form capability tags for discovery (e.g. `code-review`,
+    /// `summarization`). Distinct from `tags`: capabilities describe *what the
+    /// role can do*, while tags are organizational labels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    capabilities: Vec<String>,
     #[serde(
         rename(serialize = "model", deserialize = "model"),
         skip_serializing_if = "Option::is_none"
@@ -520,6 +525,14 @@ impl Role {
                                         );
                                     }
                                 }
+                                "capabilities" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.capabilities = arr
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect();
+                                    }
+                                }
                                 "examples" => {
                                     if let Some(arr) = value.as_array() {
                                         role.examples = Some(
@@ -660,6 +673,12 @@ impl Role {
         }
         if let Some(tags) = &self.tags {
             meta.insert("tags".into(), serde_json::to_value(tags).unwrap_or_default());
+        }
+        if !self.capabilities.is_empty() {
+            meta.insert(
+                "capabilities".into(),
+                serde_json::to_value(&self.capabilities).unwrap_or_default(),
+            );
         }
         if let Some(model) = self.model_id() {
             meta.insert("model".into(), Value::String(model.to_string()));
@@ -821,12 +840,43 @@ impl Role {
         self.output_schema.is_some()
     }
 
+    /// Phase 14B: human-readable summary of the role's input port. Returns
+    /// `"any"` (no schema), `"text"` (string schema), `"json{a, b, c}"` (object
+    /// schema), `"array"` (array schema), or `"json"` (other shapes).
+    pub fn port_input_summary(&self) -> String {
+        port_summary_from_schema(self.input_schema.as_ref())
+    }
+
+    /// Phase 14B: human-readable summary of the role's output port. Defaults
+    /// to `"text"` when no `output_schema` is declared (the LLM emits free
+    /// text by default).
+    pub fn port_output_summary(&self) -> String {
+        port_summary_from_schema_for_output(self.output_schema.as_ref())
+    }
+
+    /// Phase 14B: does the input port accept the given type-string? Tolerant
+    /// match against the human form returned by `port_input_summary` — e.g.
+    /// `"json"` matches `"json{a, b}"`.
+    pub fn port_accepts(&self, type_query: &str) -> bool {
+        port_signature_matches(&self.port_input_summary(), type_query)
+    }
+
+    /// Phase 14B: does the output port produce the given type-string?
+    pub fn port_produces(&self, type_query: &str) -> bool {
+        port_signature_matches(&self.port_output_summary(), type_query)
+    }
+
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
     }
 
     pub fn tags(&self) -> Option<&[String]> {
         self.tags.as_deref()
+    }
+
+    /// Phase 14A: capability tags declared by this role for discovery.
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
     }
 
     pub fn description_or_derived(&self) -> String {
@@ -928,6 +978,18 @@ impl Role {
 
     pub fn role_mcp_servers(&self) -> &[String] {
         &self.role_mcp_servers
+    }
+
+    /// Phase 12A: parent role this one extends (post-resolution this is None;
+    /// preserved when `Role::new` is called directly on raw frontmatter).
+    pub fn extends(&self) -> Option<&str> {
+        self.extends.as_deref()
+    }
+
+    /// Phase 12A: included role names (post-resolution this is empty;
+    /// preserved when `Role::new` is called directly on raw frontmatter).
+    pub fn include(&self) -> &[String] {
+        &self.include
     }
 
     pub fn variables(&self) -> &[RoleVariable] {
@@ -1262,6 +1324,68 @@ fn save_output_to_path(template: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
+/// Phase 14B: render a JSON Schema fragment into a one-line human-readable
+/// type. Used for `port_input_summary` and `port_output_summary`. Returns
+/// `"any"` when no schema is declared so the same helper drives both ports.
+fn port_summary_from_schema(schema: Option<&Value>) -> String {
+    let Some(schema) = schema else {
+        return "any".to_string();
+    };
+    port_summary_render(schema)
+}
+
+/// For the output port, treat "no schema" as `"text"` rather than `"any"` —
+/// the LLM produces free text unless told otherwise.
+fn port_summary_from_schema_for_output(schema: Option<&Value>) -> String {
+    let Some(schema) = schema else {
+        return "text".to_string();
+    };
+    port_summary_render(schema)
+}
+
+fn port_summary_render(schema: &Value) -> String {
+    let kind = schema.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match kind {
+        "string" => "text".to_string(),
+        "array" => "array".to_string(),
+        "object" => {
+            // List the top-level property names, comma-joined inside `json{}`.
+            // No properties? Just `"json"` — reflects an open-shape object.
+            if let Some(props) = schema.get("properties").and_then(|p| p.as_object()) {
+                if props.is_empty() {
+                    "json".to_string()
+                } else {
+                    let names: Vec<&str> = props.keys().map(|s| s.as_str()).collect();
+                    format!("json{{{}}}", names.join(", "))
+                }
+            } else {
+                "json".to_string()
+            }
+        }
+        "" => "json".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Tolerant match between a port summary and a user-supplied query.
+/// `"json"` matches `"json{...}"`; otherwise prefix-match is used so that
+/// `"text"` matches itself but not `"text-something"` accidentally.
+fn port_signature_matches(summary: &str, query: &str) -> bool {
+    let s = summary.trim();
+    let q = query.trim();
+    if q.is_empty() {
+        return true;
+    }
+    if s == q {
+        return true;
+    }
+    // `json` is the broad family; `json{...}` is a narrower form.
+    if q == "json" && (s == "json" || s.starts_with("json{")) {
+        return true;
+    }
+    false
+}
+
 fn parse_structure_prompt(prompt: &str) -> (&str, Vec<(&str, &str)>) {
     let mut text = prompt;
     let mut search_input = true;
@@ -1567,6 +1691,110 @@ Extract all named entities."#;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not valid JSON"));
+    }
+
+    #[test]
+    fn test_role_capabilities_parsed_and_exported() {
+        let content = r#"---
+capabilities: [code-review, security-audit, rust]
+---
+You are a code reviewer."#;
+        let role = Role::new("reviewer", content);
+        assert_eq!(
+            role.capabilities(),
+            &[
+                "code-review".to_string(),
+                "security-audit".to_string(),
+                "rust".to_string()
+            ]
+        );
+        // Round-trip: export and re-parse preserves capabilities
+        let exported = role.export();
+        assert!(exported.contains("capabilities"));
+        let reparsed = Role::new("reviewer", &exported);
+        assert_eq!(reparsed.capabilities(), role.capabilities());
+    }
+
+    #[test]
+    fn test_role_capabilities_empty_when_absent() {
+        let content = "---\nmodel: gpt-4\n---\nNo caps declared.";
+        let role = Role::new("plain", content);
+        assert!(role.capabilities().is_empty());
+        // Empty capabilities should not appear in the exported frontmatter
+        assert!(!role.export().contains("capabilities"));
+    }
+
+    #[test]
+    fn test_port_summary_no_schemas() {
+        let role = Role::new("plain", "---\n---\nHi.");
+        assert_eq!(role.port_input_summary(), "any");
+        assert_eq!(role.port_output_summary(), "text");
+    }
+
+    #[test]
+    fn test_port_summary_string_schema() {
+        let content = r#"---
+input_schema:
+  type: string
+---
+text in."#;
+        let role = Role::new("text-in", content);
+        assert_eq!(role.port_input_summary(), "text");
+    }
+
+    #[test]
+    fn test_port_summary_object_schema_lists_properties() {
+        let content = r#"---
+input_schema:
+  type: object
+  properties:
+    code: { type: string }
+    language: { type: string }
+output_schema:
+  type: object
+  properties:
+    issues: { type: array }
+    severity: { type: string }
+---
+review."#;
+        let role = Role::new("reviewer", content);
+        assert_eq!(role.port_input_summary(), "json{code, language}");
+        assert_eq!(role.port_output_summary(), "json{issues, severity}");
+    }
+
+    #[test]
+    fn test_port_accepts_and_produces() {
+        let content = r#"---
+input_schema:
+  type: object
+  properties:
+    text: { type: string }
+output_schema:
+  type: object
+  properties:
+    label: { type: string }
+---
+classify."#;
+        let role = Role::new("classifier", content);
+        // Tolerant: bare "json" matches "json{...}"
+        assert!(role.port_accepts("json"));
+        assert!(role.port_produces("json"));
+        // Exact summary matches
+        assert!(role.port_accepts("json{text}"));
+        assert!(role.port_produces("json{label}"));
+        // Mismatched type does not match
+        assert!(!role.port_accepts("text"));
+        assert!(!role.port_produces("array"));
+    }
+
+    #[test]
+    fn test_port_accepts_text_for_no_input_schema() {
+        // No input_schema → "any". User asking for "any" matches; "text" does not.
+        let role = Role::new("plain", "---\n---\nplain.");
+        assert!(role.port_accepts("any"));
+        assert!(!role.port_accepts("text"));
+        // Output defaults to "text" when no output_schema declared
+        assert!(role.port_produces("text"));
     }
 
     #[test]

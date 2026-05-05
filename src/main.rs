@@ -72,6 +72,7 @@ async fn main() -> Result<()> {
         || cli.sync_models
         || cli.list_models
         || cli.list_roles
+        || cli.find_role
         || cli.list_prompts
         || cli.list_agents
         || cli.list_rags
@@ -167,30 +168,39 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
         return Ok(());
     }
     if cli.list_roles {
-        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
-            let roles = Config::all_roles();
-            let json_roles: Vec<serde_json::Value> = roles
-                .iter()
-                .map(|r| {
-                    let tools_str = r.use_tools().unwrap_or_default();
-                    let tools: Vec<&str> = tools_str
-                        .split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    serde_json::json!({
-                        "name": r.name(),
-                        "description": r.description_or_derived(),
-                        "model": r.model_id().unwrap_or("default"),
-                        "tools": tools,
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&json_roles)?);
-        } else {
-            let roles = Config::list_roles(true).join("\n");
-            println!("{roles}");
+        // Phase 14D: an optional `--capability` filter narrows the list.
+        let roles = match cli.capability.as_deref() {
+            Some(cap) => Config::find_roles_by_capability(cap),
+            None => Config::all_roles(),
+        };
+        render_role_list(&roles, cli.verbose, cli.output_format)?;
+        return Ok(());
+    }
+    if cli.find_role {
+        // At least one filter must be present, otherwise --find-role is just a
+        // less-friendly --list-roles.
+        if cli.capability.is_none() && cli.accepts.is_none() && cli.produces.is_none() {
+            bail!(
+                "--find-role requires at least one of --capability, --accepts, --produces"
+            );
         }
+        // Apply capability filter first (if any), then port filters on the
+        // remaining set. find_roles_by_port takes the universe via all_roles,
+        // so do capability narrowing first by filtering by name afterwards.
+        let mut roles = if let Some(cap) = cli.capability.as_deref() {
+            Config::find_roles_by_capability(cap)
+        } else {
+            Config::all_roles()
+        };
+        if cli.accepts.is_some() || cli.produces.is_some() {
+            let accepts = cli.accepts.as_deref();
+            let produces = cli.produces.as_deref();
+            roles.retain(|r| {
+                accepts.is_none_or(|t| r.port_accepts(t))
+                    && produces.is_none_or(|t| r.port_produces(t))
+            });
+        }
+        render_role_list(&roles, cli.verbose, cli.output_format)?;
         return Ok(());
     }
     if cli.list_prompts {
@@ -497,6 +507,14 @@ async fn start_directive(
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
+
+    // Phase 12A/B: emit a "terraform plan"-style preview to stderr before the
+    // assembled prompt hits stdout. Stderr keeps stdout pipeable; the preview
+    // shows extends/include, ports, capabilities, and pipeline stages so the
+    // caller sees what they're about to run with zero tokens spent.
+    if is_dry_run {
+        emit_dry_run_preview(input.role());
+    }
 
     // Phase 9C: Schema validation retry budget. Short-circuit to 0 when the
     // provider is enforcing the schema natively (Phase 9A/9B) — a retry in
@@ -878,6 +896,132 @@ async fn process_one_record(
     };
 
     Ok(output)
+}
+
+/// Phase 12A/B: emit a one-shot resolved-role preview to stderr. Skipped for
+/// the implicit `%%` temp role used by `--prompt`/raw input — there's nothing
+/// useful to preview when the user didn't pick a role. The preview is the
+/// "what will this run with?" answer at zero token cost.
+fn emit_dry_run_preview(role: &config::Role) {
+    // The temp role created by `--prompt` (or bare `aichat "text"`) is named
+    // `%%` and carries no metadata worth previewing — keep stderr clean.
+    if role.name() == "%%" || role.name().is_empty() {
+        return;
+    }
+
+    eprintln!("--- Resolved Role: {} ---", role.name());
+    if let Some(parent) = role.extends() {
+        eprintln!("  extends: {parent}");
+    }
+    if !role.include().is_empty() {
+        eprintln!("  includes: [{}]", role.include().join(", "));
+    }
+    if let Some(model) = role.model_id() {
+        eprintln!("  model: {model}");
+    }
+    let tools_str = role.use_tools().unwrap_or_default();
+    let tools: Vec<&str> = tools_str
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !tools.is_empty() {
+        eprintln!("  tools: {} ({})", tools.len(), tools.join(", "));
+    }
+    eprintln!("  in: {}  out: {}", role.port_input_summary(), role.port_output_summary());
+    if !role.capabilities().is_empty() {
+        eprintln!("  capabilities: [{}]", role.capabilities().join(", "));
+    }
+    if let Some(stages) = role.pipeline() {
+        if !stages.is_empty() {
+            eprintln!("--- Pipeline ---");
+            for (i, stage) in stages.iter().enumerate() {
+                let model = stage.model.as_deref().unwrap_or("(default model)");
+                eprintln!("  {}. {} ({})", i + 1, stage.role, model);
+            }
+        }
+    }
+    eprintln!("--- Assembled Prompt ---");
+}
+
+/// Phase 12C / 14D: render a role list with optional verbose details
+/// (port signatures, capabilities, tools count, extends). Honors `-o json`
+/// for machine consumption. Always emits one role per line in text mode so
+/// it stays grep-friendly.
+fn render_role_list(
+    roles: &[config::Role],
+    verbose: bool,
+    output_format: Option<crate::cli::OutputFormat>,
+) -> Result<()> {
+    if matches!(output_format, Some(crate::cli::OutputFormat::Json)) {
+        let json: Vec<serde_json::Value> = roles
+            .iter()
+            .map(|r| {
+                let tools_str = r.use_tools().unwrap_or_default();
+                let tools: Vec<&str> = tools_str
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if verbose {
+                    serde_json::json!({
+                        "name": r.name(),
+                        "description": r.description_or_derived(),
+                        "model": r.model_id().unwrap_or("default"),
+                        "tools": tools,
+                        "capabilities": r.capabilities(),
+                        "input": r.port_input_summary(),
+                        "output": r.port_output_summary(),
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": r.name(),
+                        "description": r.description_or_derived(),
+                        "model": r.model_id().unwrap_or("default"),
+                        "tools": tools,
+                    })
+                }
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json)?);
+        return Ok(());
+    }
+
+    if !verbose {
+        for r in roles {
+            println!("{}", r.name());
+        }
+        return Ok(());
+    }
+
+    // Verbose text rendering: align name into a left column, then port
+    // signatures and capability tags. Width adapts to the longest name in the
+    // current set so a small `--find-role` result stays compact.
+    let name_width = roles.iter().map(|r| r.name().len()).max().unwrap_or(0).max(8);
+    for r in roles {
+        let tools_count = r
+            .use_tools()
+            .as_deref()
+            .map(|s| s.split(',').filter(|t| !t.trim().is_empty()).count())
+            .unwrap_or(0);
+        let mut parts = vec![format!(
+            "in: {}  out: {}",
+            r.port_input_summary(),
+            r.port_output_summary()
+        )];
+        if tools_count > 0 {
+            parts.push(format!("{} tool{}", tools_count, if tools_count == 1 { "" } else { "s" }));
+        }
+        if !r.capabilities().is_empty() {
+            parts.push(format!("capabilities: [{}]", r.capabilities().join(", ")));
+        }
+        if r.is_pipeline() {
+            let n = r.pipeline().map(|p| p.len()).unwrap_or(0);
+            parts.push(format!("pipeline: {n} stage{}", if n == 1 { "" } else { "s" }));
+        }
+        println!("  {:<width$}  {}", r.name(), parts.join("  "), width = name_width);
+    }
+    Ok(())
 }
 
 fn setup_logger(is_serve: bool) -> Result<()> {

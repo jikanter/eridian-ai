@@ -1,11 +1,32 @@
 # Phase 12: Discoverability & Previews : Overview - Epic 3
 
+**Status (2026-05-04):** Shipped alongside Phase 14. Preview hits stderr so stdout stays pipeable; `--list-roles --verbose` and `--find-role` share a single renderer.
+
 | Item | Description | Status |
 |---|---|---|
-| 12A | Resolved prompt preview (`--dry-run` with `extends`/`include` expanded, variables interpolated) | -- |
-| 12B | Pipeline visualization in `--dry-run` (text diagram: `extract -> validate -> summarize (3 stages)`) | -- |
-| 12C | Port signatures in `--list-roles` (`--verbose` shows `in: raw-text, out: json{summary, entities}`) | -- |
-| 12D | Composition summary after `.role <name>` in REPL (`extends: base, includes: [safety], tools: 3`) | -- |
+| 12A | Resolved prompt preview (`--dry-run` with `extends`/`include` expanded, variables interpolated) | **Done** |
+| 12B | Pipeline visualization in `--dry-run` (numbered stages with model per row) | **Done** |
+| 12C | Port signatures in `--list-roles` (`--verbose` shows `in: ... out: ...` plus capabilities and tools) | **Done** |
+| 12D | Composition summary after `.role <name>` in REPL (one line: extends, includes, tools, ports, capabilities, pipeline) | **Done** |
+
+**Files touched:**
+- `src/main.rs` — `emit_dry_run_preview` (stderr block in `start_directive`
+  before `call_react`); `render_role_list` shared by `--list-roles` and
+  `--find-role`; honors `-o json`.
+- `src/repl/mod.rs` — `print_role_composition_summary` called from `.role
+  <name>`; imports `RoleLike` so `use_tools` resolves.
+- `src/cli.rs` — `--verbose` flag.
+
+**Design notes:**
+- The preview emits to **stderr**, never stdout. Existing tooling that pipes
+  `aichat --dry-run` into another process keeps working unchanged; humans
+  still see the preview in their terminal.
+- The implicit `%%` temp role (created by `--prompt` or bare `aichat
+  "text"`) intentionally suppresses the preview — there is no metadata
+  worth showing for an unnamed inline prompt.
+- The composition summary stays silent when a role has no metadata to
+  surface (no extends/include/tools/capabilities, plain `any → text`
+  ports). Avoids noise for trivial roles.
 
 **12A/12B Design — Resolved Preview:**
 

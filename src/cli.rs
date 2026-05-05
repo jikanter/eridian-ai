@@ -216,6 +216,26 @@ pub struct Cli {
     /// List all roles
     #[clap(long)]
     pub list_roles: bool,
+    /// Phase 14D: search roles by capability tag and/or port type. Combine
+    /// with `--capability`, `--accepts`, and/or `--produces` to filter.
+    #[clap(long = "find-role")]
+    pub find_role: bool,
+    /// Phase 14D: filter for `--find-role` — capability tag substring match
+    /// (case-insensitive). Also allowed alongside `--list-roles`.
+    #[clap(long, value_name = "TAG")]
+    pub capability: Option<String>,
+    /// Phase 14D: filter for `--find-role` — input port type
+    /// (`text`, `json`, `array`, or a literal `json{...}` shape).
+    #[clap(long, value_name = "TYPE")]
+    pub accepts: Option<String>,
+    /// Phase 14D: filter for `--find-role` — output port type
+    /// (`text`, `json`, `array`, or a literal `json{...}` shape).
+    #[clap(long, value_name = "TYPE")]
+    pub produces: Option<String>,
+    /// Phase 12C: include port signatures, capabilities, and composition info
+    /// in `--list-roles` / `--find-role` output.
+    #[clap(long)]
+    pub verbose: bool,
     /// List all prompts
     #[clap(long)]
     pub list_prompts: bool,
