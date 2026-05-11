@@ -71,9 +71,15 @@ pub fn validate_pipeline_stages(
         // `Agent::init` and is deferred to stage execution. We've confirmed
         // the agent name exists (classification passed) — that's the
         // strongest sync check we can offer here.
+        //
+        // Phase 20D: remote-stage validation needs an HTTP call to the
+        // remote's `/v1/roles/{name}` and is deferred to execution as well.
+        // Tool / model capability checks happen on the remote side; we just
+        // confirm the address parsed.
         let role_name = match &entity {
             EntityRef::Role(name) => name.clone(),
             EntityRef::Agent(_) => continue,
+            EntityRef::Remote { .. } => continue,
             EntityRef::Macro(_) => unreachable!("rejected by pipeline_stage_admissible"),
         };
 

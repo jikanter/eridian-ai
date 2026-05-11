@@ -128,6 +128,31 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
                 cli.role = None;
                 cli.macro_name = Some(name);
             }
+            Ok(config::EntityRef::Remote { target, role }) => {
+                // Phase 20A: `aichat -r remote:NAME/role "input"` — invoke a
+                // remote role directly from the CLI. We dispatch via the
+                // pipeline runner (single Remote stage) so token metrics
+                // and the X-AIChat-Cost wiring stay consistent with the
+                // pipeline path. Keep the rest of `cli` untouched so flags
+                // like `-o json` still apply on the way out.
+                let input_text = text.clone().unwrap_or_default();
+                let stages = vec![crate::pipe::InlineStage {
+                    role: format!("remote:{target}/{role}"),
+                    model: None,
+                }];
+                let result = crate::pipe::run_inline_pipeline(
+                    &config,
+                    &stages,
+                    &input_text,
+                    create_abort_signal(),
+                )
+                .await?;
+                print!("{}", result.output);
+                if !result.output.ends_with('\n') {
+                    println!();
+                }
+                return Ok(());
+            }
             Err(e) if has_prefix => {
                 // The user's explicit prefix told us exactly what they meant;
                 // surface the precise classification error rather than letting

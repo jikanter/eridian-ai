@@ -126,13 +126,18 @@ impl RoleAddress {
 
 /// What kind of entity a name resolves to, plus the resolved name.
 /// Carries the *classification*, not the loaded entity — callers run their
-/// existing loader (`retrieve_role`, `Agent::init`, `Config::load_macro`)
-/// once they know which branch to take.
+/// existing loader (`retrieve_role`, `Agent::init`, `Config::load_macro`,
+/// or `RemoteRoleResolver`) once they know which branch to take.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntityRef {
     Role(String),
     Agent(String),
     Macro(String),
+    /// Phase 20A: a role hosted on a remote aichat server. `target` is
+    /// either the name of a `remotes:` config entry or a literal
+    /// `host[:port]` authority; the resolver decides which at execution
+    /// time by checking the named-remote table first.
+    Remote { target: String, role: String },
 }
 
 impl EntityRef {
@@ -141,12 +146,14 @@ impl EntityRef {
             EntityRef::Role(_) => "role",
             EntityRef::Agent(_) => "agent",
             EntityRef::Macro(_) => "macro",
+            EntityRef::Remote { .. } => "remote",
         }
     }
 
     pub fn name(&self) -> &str {
         match self {
             EntityRef::Role(s) | EntityRef::Agent(s) | EntityRef::Macro(s) => s.as_str(),
+            EntityRef::Remote { role, .. } => role.as_str(),
         }
     }
 }
@@ -161,13 +168,15 @@ pub trait RoleResolver {
     fn resolve(&self, address: &str) -> Result<EntityRef>;
 }
 
-/// Phase 19C: gatekeeper for pipeline-stage admissibility.
+/// Phase 19C / 20D: gatekeeper for pipeline-stage admissibility.
 /// Roles and agents both yield a `Role` (agents via `to_role()`), so they're
-/// valid stages. Macros run REPL commands in an isolated config clone — they
-/// have no role shape and cannot participate in stage chaining.
+/// valid stages. Phase 20D adds `Remote` — remote-hosted roles execute via
+/// HTTP and stream their output back to the next local stage. Macros run
+/// REPL commands in an isolated config clone — they have no role shape and
+/// cannot participate in stage chaining.
 pub fn pipeline_stage_admissible(entity: &EntityRef) -> Result<()> {
     match entity {
-        EntityRef::Role(_) | EntityRef::Agent(_) => Ok(()),
+        EntityRef::Role(_) | EntityRef::Agent(_) | EntityRef::Remote { .. } => Ok(()),
         EntityRef::Macro(name) => bail!(
             "Macro '{name}' cannot be used as a pipeline stage \
              (macros execute REPL commands in an isolated config clone, not LLM stages)"
@@ -210,10 +219,18 @@ pub fn classify_address(
             }
             Ok(EntityRef::Macro(name.clone()))
         }
-        RoleAddress::Remote { .. } => bail!(
-            "Remote entity resolution requires Phase 20 (Epic 6: Remote & Federated Composition); \
-             not yet implemented"
-        ),
+        RoleAddress::Remote { host, role } => {
+            // Phase 20A: classification is pure — the resolver does NOT
+            // touch the network or the `remotes:` table here. The remote
+            // call happens at execution time inside `RemoteRoleResolver`.
+            // We accept any well-formed `remote:target/role` here; if the
+            // target name is unknown and isn't a routable host, the error
+            // surfaces when the HTTP call is attempted.
+            Ok(EntityRef::Remote {
+                target: host.clone(),
+                role: role.clone(),
+            })
+        }
         RoleAddress::Mcp { .. } => bail!(
             "MCP-as-role resolution is not yet implemented in Phase 19"
         ),
@@ -444,10 +461,32 @@ mod tests {
     }
 
     #[test]
-    fn classify_remote_address_defers_to_phase20() {
-        let addr = RoleAddress::parse("remote:host:8080/foo").unwrap();
-        let err = classify_address(&addr, always, always, always).unwrap_err();
-        assert!(err.to_string().contains("Phase 20"));
+    fn classify_remote_address_with_named_target() {
+        // Phase 20A: `remote:NAME/role` classifies as Remote regardless of
+        // whether NAME exists in `remotes:` — the lookup happens at
+        // execution time, not classification.
+        let addr = RoleAddress::parse("remote:staging/review").unwrap();
+        let out = classify_address(&addr, never, never, never).unwrap();
+        assert_eq!(
+            out,
+            EntityRef::Remote {
+                target: "staging".into(),
+                role: "review".into()
+            }
+        );
+    }
+
+    #[test]
+    fn classify_remote_address_with_host_port_target() {
+        let addr = RoleAddress::parse("remote:host.example:8080/foo").unwrap();
+        let out = classify_address(&addr, never, never, never).unwrap();
+        assert_eq!(
+            out,
+            EntityRef::Remote {
+                target: "host.example:8080".into(),
+                role: "foo".into()
+            }
+        );
     }
 
     #[test]
@@ -461,6 +500,16 @@ mod tests {
     fn pipeline_stage_admits_role_and_agent() {
         assert!(pipeline_stage_admissible(&EntityRef::Role("a".into())).is_ok());
         assert!(pipeline_stage_admissible(&EntityRef::Agent("b".into())).is_ok());
+    }
+
+    #[test]
+    fn pipeline_stage_admits_remote() {
+        // Phase 20D: remote stages are valid pipeline participants.
+        let r = EntityRef::Remote {
+            target: "staging".into(),
+            role: "review".into(),
+        };
+        assert!(pipeline_stage_admissible(&r).is_ok());
     }
 
     #[test]
@@ -483,6 +532,12 @@ mod tests {
         let m = EntityRef::Macro("c".into());
         assert_eq!(m.kind(), "macro");
         assert_eq!(m.name(), "c");
+        let r = EntityRef::Remote {
+            target: "staging".into(),
+            role: "review".into(),
+        };
+        assert_eq!(r.kind(), "remote");
+        assert_eq!(r.name(), "review");
     }
 
     #[test]

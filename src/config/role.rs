@@ -489,7 +489,7 @@ fn compose_role_content(parts: &RawRoleParts) -> String {
 ///
 /// Schemas (`input_schema`, `output_schema`) are included verbatim: they are
 /// the contract the remote caller needs to satisfy.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RolePublicView {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]

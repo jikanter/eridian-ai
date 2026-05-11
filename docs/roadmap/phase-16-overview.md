@@ -1,8 +1,9 @@
 # Phase 16: Server Hardening : Overview - Epic 5
 
-> **[DEFERRED 2026-04-17]** Phases 16, 17, and 18 are parked while Epic 9
-> (Knowledge Evolution) is in flight. The existing `--serve` behavior is
-> unchanged; expanding the server surface is a future-session decision.
+> **[PARTIALLY UN-DEFERRED 2026-05-11]** 16F (`RolePublicView`), 16G
+> (`GET /v1/roles/{name}`), and 16H (`X-AIChat-Cost-USD`) shipped as
+> prerequisites for Phase 20's federation path. 16A/B/C/D/E remain
+> deferred until the server surface needs broader hardening.
 
 | Item | Description | Status |
 |---|---|---|
@@ -11,8 +12,8 @@
 | 16C | Health endpoint (`GET /health`) | -- |
 | 16D | Streaming usage in final SSE chunk | -- |
 | 16E | Hot-reload endpoint (`POST /v1/reload`) | -- |
-| 16F | Role metadata security (`RolePublicView` — hide prompt text, shell commands, filesystem paths) | -- |
-| 16G | Single-role retrieval (`GET /v1/roles/{name}`) | -- |
-| 16H | Cost in API responses (`usage.cost_usd` + `X-AIChat-Cost-USD` header) | -- |
+| 16F | Role metadata security (`RolePublicView` — hides prompt text, pipeline stage names, server-local wiring) | **Done** |
+| 16G | Single-role retrieval (`GET /v1/roles/{name}`, 404 on miss) | **Done** |
+| 16H | Cost in API responses (`X-AIChat-Cost-USD` header on `/v1/roles/{name}/invoke`, `/v1/pipelines/run`, `/v1/batch`) | **Done** |
 
 ## [Epic Details](./phase-16-server-hardening.md)

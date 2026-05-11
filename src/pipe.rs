@@ -18,14 +18,17 @@ struct PipelineStage {
     model_id: Option<String>,
 }
 
-#[derive(Serialize)]
-struct StageTrace {
-    role: String,
-    model: String,
-    input_tokens: u64,
-    output_tokens: u64,
-    cost_usd: f64,
-    latency_ms: u64,
+/// Phase 17B: per-stage execution trace. Public so server-side invocation
+/// can include it in the response envelope (`trace: true`) and the CLI can
+/// emit it under `-o json`.
+#[derive(Serialize, Clone, Debug)]
+pub struct StageTrace {
+    pub role: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+    pub latency_ms: u64,
 }
 
 #[derive(Deserialize)]
@@ -237,10 +240,21 @@ async fn run_stage(
     unreachable!("fallback loop exited without terminating");
 }
 
+/// Phase 19C / 20D: resolved pipeline-stage target.
+///
+/// Local stages collapse to a `Role` (agents via `RoleLike::to_role()`).
+/// Remote stages instead carry the resolved HTTP target so `run_stage_inner`
+/// can dispatch over the network without re-doing classification.
+enum StageTarget {
+    Local(Role),
+    Remote(crate::config::remote::ResolvedRemote),
+}
+
 /// Phase 19C: load the entity for a pipeline stage. Roles use the existing
 /// path; agents are loaded via `Agent::init` and bridged to a Role through
 /// the `RoleLike::to_role()` synthesis. Macros are rejected — they aren't
-/// role-shaped.
+/// role-shaped. Phase 20D adds the Remote branch, which classifies but
+/// defers the HTTP call to `run_stage_inner`.
 ///
 /// Caveats for the agent path:
 /// - Agent variables are not interactively resolved here. Defaults (including
@@ -252,21 +266,35 @@ async fn resolve_stage_entity(
     config: &GlobalConfig,
     raw_name: &str,
     abort_signal: AbortSignal,
-) -> Result<Role> {
+) -> Result<StageTarget> {
     let entity = config
         .read()
         .classify_entity(raw_name)
         .with_context(|| format!("Failed to resolve pipeline stage '{raw_name}'"))?;
     pipeline_stage_admissible(&entity)?;
     match entity {
-        EntityRef::Role(name) => config.read().retrieve_role(&name).with_context(|| {
-            format!("Failed to load role '{name}' for pipeline stage")
-        }),
+        EntityRef::Role(name) => {
+            let r = config.read().retrieve_role(&name).with_context(|| {
+                format!("Failed to load role '{name}' for pipeline stage")
+            })?;
+            Ok(StageTarget::Local(r))
+        }
         EntityRef::Agent(name) => {
             let agent = Agent::init(config, &name, abort_signal)
                 .await
                 .with_context(|| format!("Failed to load agent '{name}' for pipeline stage"))?;
-            Ok(agent.to_role())
+            Ok(StageTarget::Local(agent.to_role()))
+        }
+        EntityRef::Remote { target, role } => {
+            // Phase 20D: turn the parsed target+role into a concrete
+            // endpoint via the `remotes:` config table. The HTTP call to
+            // discover/invoke happens later, on every retry attempt.
+            let resolved = crate::config::remote::resolve_target(
+                &config.read().remotes,
+                &target,
+                &role,
+            )?;
+            Ok(StageTarget::Remote(resolved))
         }
         EntityRef::Macro(_) => unreachable!("rejected by pipeline_stage_admissible above"),
     }
@@ -279,7 +307,40 @@ async fn run_stage_inner(
     is_last: bool,
     abort_signal: AbortSignal,
 ) -> Result<(String, CallMetrics)> {
-    let role = resolve_stage_entity(config, &stage.role_name, abort_signal.clone()).await?;
+    let target = resolve_stage_entity(config, &stage.role_name, abort_signal.clone()).await?;
+    let role = match target {
+        StageTarget::Local(r) => r,
+        StageTarget::Remote(resolved) => {
+            // Phase 20D: federated stage — HTTP-invoke the remote and
+            // return its output as if it were a local stage's output.
+            // Schema validation, retries, caching, lifecycle hooks all
+            // live on the remote side; we only carry the result through.
+            let http = reqwest::Client::builder()
+                .build()
+                .context("Failed to build HTTP client for remote stage")?;
+            let result = crate::config::remote::invoke(
+                &http,
+                &resolved,
+                input_text,
+                &Default::default(),
+                false,
+            )
+            .await?;
+            let output = if is_last {
+                result.output.clone()
+            } else {
+                strip_think_tag(&result.output).to_string()
+            };
+            if is_last && !output.is_empty() {
+                print!("{output}");
+                std::io::Write::flush(&mut std::io::stdout())?;
+                if !output.ends_with('\n') {
+                    println!();
+                }
+            }
+            return Ok((output, result.metrics));
+        }
+    };
 
     if let Some(model_id) = &stage.model_id {
         config.write().set_model(model_id)?;
@@ -529,6 +590,318 @@ fn load_pipeline_def(path: &str) -> Result<Vec<PipelineStage>> {
             model_id: s.model,
         })
         .collect())
+}
+
+/// Phase 17B: aggregated result of invoking a role end-to-end. Returned by
+/// [`invoke_role`] to the HTTP server (and any future programmatic caller).
+///
+/// `metrics` is the sum across all stages; `stages` carries the per-stage
+/// breakdown that the server emits when the caller requests `trace: true`.
+#[derive(Debug, Clone)]
+pub struct InvokeResult {
+    pub output: String,
+    pub metrics: CallMetrics,
+    pub stages: Vec<StageTrace>,
+    /// True when the role's `output_schema` validated (or no schema was
+    /// declared). `run_stage_inner` returns Err on terminal schema failure,
+    /// so reaching this struct already means the output is conformant.
+    pub schema_valid: bool,
+}
+
+/// Phase 17C: per-stage event used by [`invoke_role_streaming`]. The HTTP
+/// server forwards these as SSE `stage.start` / `stage.end` events with the
+/// `role` and `trace` fields as data payloads.
+#[derive(Debug, Clone)]
+pub enum StageEvent {
+    Start {
+        index: usize,
+        total: usize,
+        role: String,
+        model_override: Option<String>,
+    },
+    End {
+        index: usize,
+        role: String,
+        trace: StageTrace,
+        output: String,
+    },
+}
+
+/// Phase 17B: programmatic role invocation. Loads the role, walks its
+/// pipeline (or a synthetic one-stage pipeline if the role has none), and
+/// returns the final text plus aggregated metrics.
+///
+/// Mirrors the CLI's `run()` flow but stays silent: every stage is invoked
+/// with `is_last=false` so nothing prints to stdout and the chat-history
+/// save side-effect is suppressed.
+///
+/// The caller is responsible for setting `config.role_variables` (and any
+/// model override via `config.set_model`) BEFORE invoking — `run_stage`
+/// reads those at stage start.
+pub async fn invoke_role(
+    config: &GlobalConfig,
+    role_name: &str,
+    input_text: &str,
+    abort_signal: AbortSignal,
+) -> Result<InvokeResult> {
+    let role = config
+        .read()
+        .retrieve_role(role_name)
+        .with_context(|| format!("Failed to load role '{role_name}'"))?;
+
+    let pipeline_stages: Vec<PipelineStage> = if let Some(stages) = role.pipeline() {
+        stages
+            .iter()
+            .map(|s| PipelineStage {
+                role_name: s.role.clone(),
+                model_id: s.model.clone(),
+            })
+            .collect()
+    } else {
+        // Non-pipeline role: run it as a single-stage pipeline so we get the
+        // same retry / fallback / preflight machinery for free.
+        vec![PipelineStage {
+            role_name: role_name.to_string(),
+            model_id: None,
+        }]
+    };
+
+    // Phase 9D preflight applies to inline runs too — surface model/tool
+    // mismatches before any LLM call.
+    {
+        let stage_tuples: Vec<(String, Option<String>)> = pipeline_stages
+            .iter()
+            .map(|s| (s.role_name.clone(), s.model_id.clone()))
+            .collect();
+        crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
+    }
+
+    let stage_count = pipeline_stages.len();
+    let mut current = input_text.to_string();
+    let mut total = CallMetrics::default();
+    let mut traces: Vec<StageTrace> = Vec::with_capacity(stage_count);
+
+    for (i, stage) in pipeline_stages.iter().enumerate() {
+        let (out, m) = run_stage(
+            config,
+            stage,
+            i,
+            stage_count,
+            &current,
+            // Always false — server callers want the text back, not stdout.
+            false,
+            abort_signal.clone(),
+        )
+        .await?;
+        traces.push(StageTrace {
+            role: stage.role_name.clone(),
+            model: m.model_id.clone(),
+            input_tokens: m.input_tokens,
+            output_tokens: m.output_tokens,
+            cost_usd: m.cost_usd,
+            latency_ms: m.latency_ms,
+        });
+        total.merge(&m);
+        current = out;
+    }
+
+    Ok(InvokeResult {
+        output: current,
+        metrics: total,
+        stages: traces,
+        schema_valid: true,
+    })
+}
+
+/// Phase 17C: streaming variant of [`invoke_role`]. Emits a `StageEvent`
+/// over `tx` at each stage boundary so the HTTP server can forward them
+/// as SSE events. Returns the same `InvokeResult` as the non-streaming
+/// variant.
+///
+/// Caveat: this gives *stage*-granularity streaming, not token-granularity.
+/// `run_stage` runs each stage to completion before returning, so the
+/// per-stage `output` text arrives in the `End` event. Token streaming
+/// during a stage would require rewiring `run_stage_inner` to expose an
+/// `SseHandler`, which the design defers to a future iteration.
+pub async fn invoke_role_streaming(
+    config: &GlobalConfig,
+    role_name: &str,
+    input_text: &str,
+    abort_signal: AbortSignal,
+    tx: tokio::sync::mpsc::UnboundedSender<StageEvent>,
+) -> Result<InvokeResult> {
+    let role = config
+        .read()
+        .retrieve_role(role_name)
+        .with_context(|| format!("Failed to load role '{role_name}'"))?;
+
+    let pipeline_stages: Vec<PipelineStage> = if let Some(stages) = role.pipeline() {
+        stages
+            .iter()
+            .map(|s| PipelineStage {
+                role_name: s.role.clone(),
+                model_id: s.model.clone(),
+            })
+            .collect()
+    } else {
+        vec![PipelineStage {
+            role_name: role_name.to_string(),
+            model_id: None,
+        }]
+    };
+
+    // Preflight matches the non-streaming path so a mismatched stage fails
+    // before we start emitting events.
+    {
+        let stage_tuples: Vec<(String, Option<String>)> = pipeline_stages
+            .iter()
+            .map(|s| (s.role_name.clone(), s.model_id.clone()))
+            .collect();
+        crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
+    }
+
+    let stage_count = pipeline_stages.len();
+    let mut current = input_text.to_string();
+    let mut total = CallMetrics::default();
+    let mut traces: Vec<StageTrace> = Vec::with_capacity(stage_count);
+
+    for (i, stage) in pipeline_stages.iter().enumerate() {
+        let _ = tx.send(StageEvent::Start {
+            index: i,
+            total: stage_count,
+            role: stage.role_name.clone(),
+            model_override: stage.model_id.clone(),
+        });
+        let (out, m) = run_stage(
+            config,
+            stage,
+            i,
+            stage_count,
+            &current,
+            false,
+            abort_signal.clone(),
+        )
+        .await?;
+        let trace = StageTrace {
+            role: stage.role_name.clone(),
+            model: m.model_id.clone(),
+            input_tokens: m.input_tokens,
+            output_tokens: m.output_tokens,
+            cost_usd: m.cost_usd,
+            latency_ms: m.latency_ms,
+        };
+        let _ = tx.send(StageEvent::End {
+            index: i,
+            role: stage.role_name.clone(),
+            trace: trace.clone(),
+            output: out.clone(),
+        });
+        traces.push(trace);
+        total.merge(&m);
+        current = out;
+    }
+
+    Ok(InvokeResult {
+        output: current,
+        metrics: total,
+        stages: traces,
+        schema_valid: true,
+    })
+}
+
+/// Phase 17D: stage descriptor accepted by the HTTP pipeline-run endpoint.
+/// Same shape as the YAML pipeline-def schema (`role:` + optional `model:`),
+/// hoisted to the public API so the server can deserialize inline stages
+/// without re-defining the type.
+#[derive(Debug, Clone, Deserialize)]
+pub struct InlineStage {
+    pub role: String,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Phase 17D: run an arbitrary list of `InlineStage`s. Used by the
+/// `/v1/pipelines/run` endpoint (and by 17E batch). Returns the same
+/// `InvokeResult` envelope as [`invoke_role`].
+pub async fn run_inline_pipeline(
+    config: &GlobalConfig,
+    stages: &[InlineStage],
+    input_text: &str,
+    abort_signal: AbortSignal,
+) -> Result<InvokeResult> {
+    if stages.is_empty() {
+        bail!("Pipeline has no stages");
+    }
+    let pipeline_stages: Vec<PipelineStage> = stages
+        .iter()
+        .map(|s| PipelineStage {
+            role_name: s.role.clone(),
+            model_id: s.model.clone(),
+        })
+        .collect();
+    {
+        let stage_tuples: Vec<(String, Option<String>)> = pipeline_stages
+            .iter()
+            .map(|s| (s.role_name.clone(), s.model_id.clone()))
+            .collect();
+        crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
+    }
+    let stage_count = pipeline_stages.len();
+    let mut current = input_text.to_string();
+    let mut total = CallMetrics::default();
+    let mut traces: Vec<StageTrace> = Vec::with_capacity(stage_count);
+    for (i, stage) in pipeline_stages.iter().enumerate() {
+        let (out, m) = run_stage(
+            config,
+            stage,
+            i,
+            stage_count,
+            &current,
+            false,
+            abort_signal.clone(),
+        )
+        .await?;
+        traces.push(StageTrace {
+            role: stage.role_name.clone(),
+            model: m.model_id.clone(),
+            input_tokens: m.input_tokens,
+            output_tokens: m.output_tokens,
+            cost_usd: m.cost_usd,
+            latency_ms: m.latency_ms,
+        });
+        total.merge(&m);
+        current = out;
+    }
+    Ok(InvokeResult {
+        output: current,
+        metrics: total,
+        stages: traces,
+        schema_valid: true,
+    })
+}
+
+/// Phase 17D: load a named pipeline definition from `<config>/pipelines/<name>.yaml`.
+/// Returns the parsed stage list. Used by the server's `/v1/pipelines/run`
+/// endpoint when a request specifies `pipeline: "name"`.
+pub fn load_pipeline_stages(name: &str) -> Result<Vec<InlineStage>> {
+    let pipelines_dir = Config::local_path("pipelines");
+    let path = pipelines_dir.join(format!("{name}.yaml"));
+    if !path.exists() {
+        bail!("Pipeline '{name}' not found at {}", path.display());
+    }
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read pipeline '{name}': {}", path.display()))?;
+    #[derive(Deserialize)]
+    struct File {
+        #[serde(default)]
+        stages: Vec<InlineStage>,
+    }
+    let file: File = serde_yaml::from_str(&content)
+        .with_context(|| format!("Failed to parse pipeline '{name}' YAML"))?;
+    if file.stages.is_empty() {
+        bail!("Pipeline '{name}' has no stages");
+    }
+    Ok(file.stages)
 }
 
 /// Run a pipeline defined in a role's frontmatter. Called from tool dispatch.

@@ -11,6 +11,7 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
+use indexmap::IndexMap;
 use parking_lot::RwLock;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -83,7 +84,7 @@ impl Server {
         let mut default_model = config.model.clone();
         default_model.data_mut().name = DEFAULT_MODEL_NAME.into();
         models.insert(0, &default_model);
-        let models: Vec<Value> = models
+        let mut models: Vec<Value> = models
             .into_iter()
             .enumerate()
             .map(|(i, model)| {
@@ -102,11 +103,26 @@ impl Server {
                 value
             })
             .collect();
+        let roles = Config::all_roles();
+        // Phase 17A: every locally-known role appears as a virtual model
+        // (`role:<name>`). Clients like OpenWebUI see them in the model
+        // dropdown alongside provider models; selecting one routes the
+        // request through the role's prompt + pipeline.
+        for role in &roles {
+            if role.name().is_empty() {
+                continue;
+            }
+            models.push(json!({
+                "id": format!("role:{}", role.name()),
+                "object": "model",
+                "owned_by": "aichat-role",
+            }));
+        }
         Self {
             config,
             models,
             prompts: Config::all_prompts(),
-            roles: Config::all_roles(),
+            roles,
             rags: Config::list_rags(),
         }
     }
@@ -175,12 +191,25 @@ impl Server {
             self.list_models()
         } else if path == "/v1/roles" {
             self.list_roles()
+        } else if let Some(rest) = path.strip_prefix("/v1/roles/") {
+            // Phase 17B: `/v1/roles/{name}/invoke` is matched ahead of the
+            // bare single-role retrieval. Future Phase 17C streaming variant
+            // will dispatch on method=POST + Accept: text/event-stream.
+            if let Some(name) = rest.strip_suffix("/invoke") {
+                self.invoke_role(name, req).await
+            } else {
+                self.get_role(rest)
+            }
         } else if path == "/v1/prompts" {
             self.list_prompts()
         } else if path == "/v1/rags" {
             self.list_rags()
         } else if path == "/v1/rags/search" {
             self.search_rag(req).await
+        } else if path == "/v1/pipelines/run" {
+            self.run_pipeline(req).await
+        } else if path == "/v1/batch" {
+            self.batch(req).await
         } else if path == "/playground" || path == "/playground.html" {
             self.playground_page()
         } else if path == "/arena" || path == "/arena.html" {
@@ -192,6 +221,12 @@ impl Server {
         };
         let mut res = match res {
             Ok(res) => {
+                // Phase 16G: handlers may set their own status (e.g. 404 for
+                // a missing role). Preserve any non-OK code they emitted
+                // instead of overwriting with the route-level default.
+                if res.status() != StatusCode::OK {
+                    status = res.status();
+                }
                 info!("{method} {uri} {}", status.as_u16());
                 res
             }
@@ -231,10 +266,378 @@ impl Server {
     }
 
     fn list_roles(&self) -> Result<AppResponse> {
-        let data = json!({ "data": self.roles });
+        // Phase 16F/16G: serialize through `RolePublicView` so the prompt
+        // body and any server-local wiring (pipe_to, save_to, mcp_servers,
+        // pipeline stage names) stay private.
+        let views: Vec<RolePublicView> =
+            self.roles.iter().map(RolePublicView::from).collect();
+        let data = json!({ "data": views });
         let res = Response::builder()
             .header("Content-Type", "application/json; charset=utf-8")
             .body(Full::new(Bytes::from(data.to_string())).boxed())?;
+        Ok(res)
+    }
+
+    /// Phase 16G: single-role retrieval. Returns the role's public view,
+    /// `404 Not Found` when no role by that name exists on this server.
+    ///
+    /// Path-segment routing: `/v1/roles/` and `/v1/roles/foo/bar` fall through
+    /// to the global Not-Found handler so they can't accidentally collide
+    /// with role names. The Phase 17B `/v1/roles/{name}/invoke` route is
+    /// matched ahead of this one in `handle()`.
+    fn get_role(&self, name: &str) -> Result<AppResponse> {
+        if name.is_empty() || name.contains('/') {
+            return self.build_not_found("Not Found");
+        }
+        let role = match self.roles.iter().find(|r| r.name() == name) {
+            Some(r) => r,
+            None => return self.build_not_found(&format!("Role '{name}' not found")),
+        };
+        let view = RolePublicView::from(role);
+        let body = serde_json::to_string(&view)?;
+        let res = Response::builder()
+            .header("Content-Type", "application/json; charset=utf-8")
+            .body(Full::new(Bytes::from(body)).boxed())?;
+        Ok(res)
+    }
+
+    fn build_not_found(&self, message: &str) -> Result<AppResponse> {
+        let body = json!({ "error": { "code": 404, "message": message } }).to_string();
+        let res = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header("Content-Type", "application/json; charset=utf-8")
+            .body(Full::new(Bytes::from(body)).boxed())?;
+        Ok(res)
+    }
+
+    /// Phase 17A: handle a `/v1/chat/completions` request whose `model` field
+    /// was a `role:<name>` virtual model. Pulls the latest user message out
+    /// of the conversation, runs the role, and wraps the result in an
+    /// OpenAI-compatible `chat.completion` envelope.
+    ///
+    /// Conversation context (everything before the last user message) is
+    /// dropped. Roles are single-shot operators; clients that want
+    /// multi-turn behavior should use a session via the CLI rather than
+    /// asking the server to interpret history.
+    async fn chat_completions_via_role(
+        &self,
+        role_name: &str,
+        full_model_id: &str,
+        messages: Vec<Value>,
+        stream: bool,
+    ) -> Result<AppResponse> {
+        let input = extract_last_user_message(&messages)
+            .ok_or_else(|| anyhow!("Chat completion via role requires at least one user message"))?;
+
+        let config = Arc::new(RwLock::new(self.config.clone()));
+        let abort_signal = create_abort_signal();
+        let result =
+            crate::pipe::invoke_role(&config, role_name, &input, abort_signal).await?;
+
+        let completion_id = generate_completion_id();
+        let created = Utc::now().timestamp();
+        let usage = json!({
+            "prompt_tokens": result.metrics.input_tokens,
+            "completion_tokens": result.metrics.output_tokens,
+            "total_tokens": result.metrics.input_tokens + result.metrics.output_tokens,
+            "cost_usd": result.metrics.cost_usd,
+        });
+
+        if stream {
+            // Single-chunk SSE: roles run to completion before we know the
+            // output, so we emit one delta with the full body and then [DONE].
+            // Phase 17C will turn this into per-stage streaming.
+            let chunk = json!({
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": full_model_id,
+                "choices": [{
+                    "index": 0,
+                    "delta": { "role": "assistant", "content": result.output },
+                    "finish_reason": "stop",
+                }],
+            });
+            let final_chunk = json!({
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": full_model_id,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop",
+                }],
+                "usage": usage,
+            });
+            let body = format!(
+                "data: {chunk}\n\ndata: {final_chunk}\n\ndata: [DONE]\n\n"
+            );
+            let res = Response::builder()
+                .header("Content-Type", "text/event-stream; charset=utf-8")
+                .header("Cache-Control", "no-cache")
+                .header("X-AIChat-Cost-USD", format!("{:.6}", result.metrics.cost_usd))
+                .body(Full::new(Bytes::from(body)).boxed())?;
+            return Ok(res);
+        }
+
+        let envelope = json!({
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": full_model_id,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": result.output,
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": usage,
+        });
+        let res = Response::builder()
+            .header("Content-Type", "application/json; charset=utf-8")
+            .header("X-AIChat-Cost-USD", format!("{:.6}", result.metrics.cost_usd))
+            .body(Full::new(Bytes::from(envelope.to_string())).boxed())?;
+        Ok(res)
+    }
+
+    /// Phase 17B: `POST /v1/roles/{name}/invoke` — dedicated role invocation.
+    ///
+    /// Request body:
+    /// ```json
+    /// {
+    ///   "input": "string (required)",
+    ///   "variables": { "k": "v", ... },
+    ///   "model": "model-id",
+    ///   "trace": true
+    /// }
+    /// ```
+    ///
+    /// Response:
+    /// ```json
+    /// {
+    ///   "output": "...",
+    ///   "usage": {
+    ///     "input_tokens": 0, "output_tokens": 0,
+    ///     "cost_usd": 0.0, "latency_ms": 0,
+    ///     "model": "..."
+    ///   },
+    ///   "schema_valid": true,
+    ///   "trace": { "stages": [...] }   // only when trace=true
+    /// }
+    /// ```
+    async fn invoke_role(
+        &self,
+        role_name: &str,
+        req: hyper::Request<Incoming>,
+    ) -> Result<AppResponse> {
+        // Path-segment sanity: `/v1/roles//invoke` and nested paths fall
+        // through to 404 rather than running an empty/garbled lookup.
+        if role_name.is_empty() || role_name.contains('/') {
+            return self.build_not_found("Not Found");
+        }
+        // Phase 16F: 404 before reading the body when the role doesn't exist
+        // on this server, so a misaddressed caller doesn't waste bandwidth
+        // on a payload we'll discard.
+        if !self.roles.iter().any(|r| r.name() == role_name) {
+            return self.build_not_found(&format!("Role '{role_name}' not found"));
+        }
+
+        let req_body = req.collect().await?.to_bytes();
+        let req_body: Value = serde_json::from_slice(&req_body)
+            .map_err(|err| anyhow!("Invalid request json, {err}"))?;
+        debug!("invoke role request: {req_body}");
+        let body: InvokeRoleReqBody = serde_json::from_value(req_body)
+            .map_err(|err| anyhow!("Invalid request body, {err}"))?;
+
+        if body.input.is_empty() {
+            bail!("Field 'input' is required and must be non-empty");
+        }
+
+        // Each request runs against a fresh config snapshot. The base
+        // server-time config holds defaults; we layer the request-time
+        // model override and variables on top so concurrent invocations
+        // don't see each other's mutations.
+        let mut config = self.config.clone();
+        config.role_variables = if body.variables.is_empty() {
+            None
+        } else {
+            Some(body.variables.clone())
+        };
+        let config = Arc::new(RwLock::new(config));
+        if let Some(model_id) = &body.model {
+            config.write().set_model(model_id)?;
+        }
+
+        let abort_signal = create_abort_signal();
+
+        // Phase 17C: streaming SSE response — stage.start / stage.end / done.
+        if body.stream {
+            return self
+                .invoke_role_streaming_response(
+                    config,
+                    role_name.to_string(),
+                    body.input.clone(),
+                    body.trace,
+                    abort_signal,
+                )
+                .await;
+        }
+
+        let result =
+            crate::pipe::invoke_role(&config, role_name, &body.input, abort_signal).await?;
+
+        let mut usage = json!({
+            "input_tokens": result.metrics.input_tokens,
+            "output_tokens": result.metrics.output_tokens,
+            "cost_usd": result.metrics.cost_usd,
+            "latency_ms": result.metrics.latency_ms,
+        });
+        if !result.metrics.model_id.is_empty() {
+            usage["model"] = json!(result.metrics.model_id);
+        }
+        let mut envelope = json!({
+            "output": result.output,
+            "usage": usage,
+            "schema_valid": result.schema_valid,
+        });
+        if body.trace {
+            envelope["trace"] = json!({ "stages": result.stages });
+        }
+        // Phase 16H surfaces cost in a header too, for proxies that strip
+        // bodies (e.g. CDN caches with text-only routes).
+        let res = Response::builder()
+            .header("Content-Type", "application/json; charset=utf-8")
+            .header("X-AIChat-Cost-USD", format!("{:.6}", result.metrics.cost_usd))
+            .body(Full::new(Bytes::from(envelope.to_string())).boxed())?;
+        Ok(res)
+    }
+
+    /// Phase 17C: stream the invoke response as `text/event-stream`.
+    ///
+    /// Wire format (one event per `\n\n`-separated frame):
+    ///
+    /// ```text
+    /// event: stage.start
+    /// data: {"index":0,"total":2,"role":"extract","model":null}
+    ///
+    /// event: stage.end
+    /// data: {"index":0,"role":"extract","trace":{...},"output":"..."}
+    ///
+    /// event: done
+    /// data: {"output":"...","usage":{...},"schema_valid":true}
+    ///
+    /// data: [DONE]
+    /// ```
+    ///
+    /// The `done` event carries the full final output and aggregated usage;
+    /// callers that only want stage-level telemetry can stop reading after
+    /// the last `stage.end`.
+    async fn invoke_role_streaming_response(
+        &self,
+        config: Arc<RwLock<Config>>,
+        role_name: String,
+        input: String,
+        include_trace: bool,
+        abort_signal: AbortSignal,
+    ) -> Result<AppResponse> {
+        let (event_tx, mut event_rx) = unbounded_channel::<crate::pipe::StageEvent>();
+        let (frame_tx, frame_rx) =
+            unbounded_channel::<std::result::Result<Frame<Bytes>, Infallible>>();
+
+        // Driver: runs the role and pushes StageEvents into event_rx.
+        let driver_config = config.clone();
+        let driver_role = role_name.clone();
+        let driver_input = input.clone();
+        let driver_abort = abort_signal.clone();
+        let driver_handle = tokio::spawn(async move {
+            crate::pipe::invoke_role_streaming(
+                &driver_config,
+                &driver_role,
+                &driver_input,
+                driver_abort,
+                event_tx,
+            )
+            .await
+        });
+
+        // Forwarder: drains StageEvents, writes SSE frames into frame_rx.
+        let forwarder_tx = frame_tx.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = event_rx.recv().await {
+                let frame = match ev {
+                    crate::pipe::StageEvent::Start {
+                        index,
+                        total,
+                        role,
+                        model_override,
+                    } => format!(
+                        "event: stage.start\ndata: {}\n\n",
+                        json!({
+                            "index": index,
+                            "total": total,
+                            "role": role,
+                            "model": model_override,
+                        })
+                    ),
+                    crate::pipe::StageEvent::End {
+                        index,
+                        role,
+                        trace,
+                        output,
+                    } => format!(
+                        "event: stage.end\ndata: {}\n\n",
+                        json!({
+                            "index": index,
+                            "role": role,
+                            "trace": trace,
+                            "output": output,
+                        })
+                    ),
+                };
+                let _ = forwarder_tx.send(Ok(Frame::data(Bytes::from(frame))));
+            }
+            // event_rx closed — driver task is done; await its result to
+            // emit the final done / error frame.
+            let join_result = driver_handle.await;
+            let final_frame = match join_result {
+                Ok(Ok(result)) => {
+                    let mut done = json!({
+                        "output": result.output,
+                        "usage": {
+                            "input_tokens": result.metrics.input_tokens,
+                            "output_tokens": result.metrics.output_tokens,
+                            "cost_usd": result.metrics.cost_usd,
+                            "latency_ms": result.metrics.latency_ms,
+                            "model": result.metrics.model_id,
+                        },
+                        "schema_valid": result.schema_valid,
+                    });
+                    if include_trace {
+                        done["trace"] = json!({ "stages": result.stages });
+                    }
+                    format!("event: done\ndata: {done}\n\ndata: [DONE]\n\n")
+                }
+                Ok(Err(err)) => format!(
+                    "event: error\ndata: {}\n\n",
+                    json!({ "message": format!("{err}") })
+                ),
+                Err(join_err) => format!(
+                    "event: error\ndata: {}\n\n",
+                    json!({ "message": format!("invocation task panicked: {join_err}") })
+                ),
+            };
+            let _ = forwarder_tx.send(Ok(Frame::data(Bytes::from(final_frame))));
+        });
+
+        let stream = UnboundedReceiverStream::new(frame_rx);
+        let body = BodyExt::boxed(StreamBody::new(stream));
+        let res = Response::builder()
+            .header("Content-Type", "text/event-stream; charset=utf-8")
+            .header("Cache-Control", "no-cache")
+            .body(body)?;
         Ok(res)
     }
 
@@ -279,6 +682,224 @@ impl Server {
         Ok(res)
     }
 
+    /// Phase 17D: `POST /v1/pipelines/run` — execute either a named pipeline
+    /// (`<config>/pipelines/<name>.yaml`) or an inline list of stages.
+    ///
+    /// Request:
+    /// ```json
+    /// { "input": "...", "stages": [{"role": "a"}, {"role": "b"}], "trace": true }
+    /// ```
+    /// or
+    /// ```json
+    /// { "input": "...", "pipeline": "summarize-then-rate" }
+    /// ```
+    ///
+    /// Response shape mirrors the Phase 17B invoke envelope.
+    async fn run_pipeline(&self, req: hyper::Request<Incoming>) -> Result<AppResponse> {
+        let req_body = req.collect().await?.to_bytes();
+        let req_body: Value = serde_json::from_slice(&req_body)
+            .map_err(|err| anyhow!("Invalid request json, {err}"))?;
+        let body: RunPipelineReqBody = serde_json::from_value(req_body)
+            .map_err(|err| anyhow!("Invalid request body, {err}"))?;
+
+        if body.input.is_empty() {
+            bail!("Field 'input' is required and must be non-empty");
+        }
+
+        let stages: Vec<crate::pipe::InlineStage> = match (body.stages, body.pipeline) {
+            (Some(s), None) => {
+                if s.is_empty() {
+                    bail!("Field 'stages' must contain at least one stage");
+                }
+                s
+            }
+            (None, Some(name)) => crate::pipe::load_pipeline_stages(&name)?,
+            (Some(_), Some(_)) => {
+                bail!("Provide either 'stages' (inline) or 'pipeline' (named), not both")
+            }
+            (None, None) => bail!("Request must specify either 'stages' or 'pipeline'"),
+        };
+
+        let mut config = self.config.clone();
+        config.role_variables = if body.variables.is_empty() {
+            None
+        } else {
+            Some(body.variables.clone())
+        };
+        let config = Arc::new(RwLock::new(config));
+
+        let abort_signal = create_abort_signal();
+        let result =
+            crate::pipe::run_inline_pipeline(&config, &stages, &body.input, abort_signal).await?;
+
+        let envelope = json!({
+            "output": result.output,
+            "usage": {
+                "input_tokens": result.metrics.input_tokens,
+                "output_tokens": result.metrics.output_tokens,
+                "cost_usd": result.metrics.cost_usd,
+                "latency_ms": result.metrics.latency_ms,
+                "model": result.metrics.model_id,
+            },
+            "schema_valid": result.schema_valid,
+            "trace": { "stages": result.stages },
+        });
+        let res = Response::builder()
+            .header("Content-Type", "application/json; charset=utf-8")
+            .header("X-AIChat-Cost-USD", format!("{:.6}", result.metrics.cost_usd))
+            .body(Full::new(Bytes::from(envelope.to_string())).boxed())?;
+        Ok(res)
+    }
+
+    /// Phase 17E: `POST /v1/batch` — apply a role (or pipeline) to a list of
+    /// inputs, with bounded concurrency.
+    ///
+    /// Request:
+    /// ```json
+    /// {
+    ///   "inputs": ["text1", "text2", ...],
+    ///   "role": "classify",          // OR
+    ///   "stages": [...],             // OR
+    ///   "pipeline": "name",
+    ///   "concurrency": 4             // optional, default 4, max 32
+    /// }
+    /// ```
+    ///
+    /// Response:
+    /// ```json
+    /// {
+    ///   "results": [{ "index": 0, "output": "...", "usage": {...}, "error": null }, ...],
+    ///   "usage": { aggregate across all items }
+    /// }
+    /// ```
+    ///
+    /// Per-item errors are captured in the `error` field; one bad input
+    /// does not fail the whole batch. Batch-level errors (missing fields,
+    /// unknown role) still 400.
+    async fn batch(&self, req: hyper::Request<Incoming>) -> Result<AppResponse> {
+        let req_body = req.collect().await?.to_bytes();
+        let req_body: Value = serde_json::from_slice(&req_body)
+            .map_err(|err| anyhow!("Invalid request json, {err}"))?;
+        let body: BatchReqBody = serde_json::from_value(req_body)
+            .map_err(|err| anyhow!("Invalid request body, {err}"))?;
+
+        if body.inputs.is_empty() {
+            bail!("Field 'inputs' must be a non-empty array");
+        }
+
+        let target = match (body.role, body.stages, body.pipeline) {
+            (Some(r), None, None) => BatchTarget::Role(r),
+            (None, Some(s), None) => {
+                if s.is_empty() {
+                    bail!("Field 'stages' must contain at least one stage");
+                }
+                BatchTarget::Inline(s)
+            }
+            (None, None, Some(name)) => {
+                BatchTarget::Inline(crate::pipe::load_pipeline_stages(&name)?)
+            }
+            _ => bail!("Specify exactly one of: 'role', 'stages', 'pipeline'"),
+        };
+
+        // Bounded concurrency: default 4, capped at 32 so a single batch
+        // call can't blow past the server's per-provider rate budget.
+        let concurrency = body.concurrency.unwrap_or(4).clamp(1, 32);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+
+        let mut config = self.config.clone();
+        config.role_variables = if body.variables.is_empty() {
+            None
+        } else {
+            Some(body.variables.clone())
+        };
+        let config = Arc::new(RwLock::new(config));
+        let target = Arc::new(target);
+
+        let mut handles = Vec::with_capacity(body.inputs.len());
+        for (i, input) in body.inputs.into_iter().enumerate() {
+            let permit_sem = semaphore.clone();
+            let cfg = config.clone();
+            let tgt = target.clone();
+            let abort = create_abort_signal();
+            handles.push(tokio::spawn(async move {
+                let _permit = permit_sem.acquire_owned().await.expect("semaphore closed");
+                let result = match &*tgt {
+                    BatchTarget::Role(r) => {
+                        crate::pipe::invoke_role(&cfg, r, &input, abort).await
+                    }
+                    BatchTarget::Inline(stages) => {
+                        crate::pipe::run_inline_pipeline(&cfg, stages, &input, abort).await
+                    }
+                };
+                (i, result)
+            }));
+        }
+
+        let mut results = Vec::with_capacity(handles.len());
+        for h in handles {
+            match h.await {
+                Ok((i, Ok(r))) => results.push((i, Ok(r))),
+                Ok((i, Err(e))) => results.push((i, Err(e.to_string()))),
+                Err(join_err) => {
+                    // Spawn failure — surface as an item-level error with no
+                    // index recovery; the batch as a whole still succeeds.
+                    results.push((results.len(), Err(format!("task panic: {join_err}"))));
+                }
+            }
+        }
+        // Preserve original input order.
+        results.sort_by_key(|(i, _)| *i);
+
+        let mut agg_in: u64 = 0;
+        let mut agg_out: u64 = 0;
+        let mut agg_cost: f64 = 0.0;
+        let mut agg_latency: u64 = 0;
+        let items: Vec<Value> = results
+            .into_iter()
+            .map(|(i, r)| match r {
+                Ok(invoke) => {
+                    agg_in += invoke.metrics.input_tokens;
+                    agg_out += invoke.metrics.output_tokens;
+                    agg_cost += invoke.metrics.cost_usd;
+                    agg_latency += invoke.metrics.latency_ms;
+                    json!({
+                        "index": i,
+                        "output": invoke.output,
+                        "usage": {
+                            "input_tokens": invoke.metrics.input_tokens,
+                            "output_tokens": invoke.metrics.output_tokens,
+                            "cost_usd": invoke.metrics.cost_usd,
+                            "latency_ms": invoke.metrics.latency_ms,
+                        },
+                        "schema_valid": invoke.schema_valid,
+                        "error": Value::Null,
+                    })
+                }
+                Err(msg) => json!({
+                    "index": i,
+                    "output": Value::Null,
+                    "usage": Value::Null,
+                    "schema_valid": false,
+                    "error": msg,
+                }),
+            })
+            .collect();
+        let envelope = json!({
+            "results": items,
+            "usage": {
+                "input_tokens": agg_in,
+                "output_tokens": agg_out,
+                "cost_usd": agg_cost,
+                "latency_ms": agg_latency,
+            },
+        });
+        let res = Response::builder()
+            .header("Content-Type", "application/json; charset=utf-8")
+            .header("X-AIChat-Cost-USD", format!("{:.6}", agg_cost))
+            .body(Full::new(Bytes::from(envelope.to_string())).boxed())?;
+        Ok(res)
+    }
+
     async fn chat_completions(&self, req: hyper::Request<Incoming>) -> Result<AppResponse> {
         let req_body = req.collect().await?.to_bytes();
         let req_body: Value = serde_json::from_slice(&req_body)
@@ -297,6 +918,20 @@ impl Server {
             stream,
             tools,
         } = req_body;
+
+        // Phase 17A: when the caller asks for a `role:<name>` virtual model,
+        // route to the role-invocation path instead of a raw model call. The
+        // role's own model + pipeline take over from here; `temperature`,
+        // `top_p`, and `tools` from the request body are deliberately
+        // ignored so the role's declaration wins.
+        if let Some(role_name) = model.strip_prefix("role:") {
+            if !self.roles.iter().any(|r| r.name() == role_name) {
+                return self.build_not_found(&format!("Role '{role_name}' not found"));
+            }
+            return self
+                .chat_completions_via_role(role_name, &model, messages, stream)
+                .await;
+        }
 
         let mut messages =
             parse_messages(messages).map_err(|err| anyhow!("Invalid request body, {err}"))?;
@@ -605,6 +1240,71 @@ struct SearchRagReqBody {
     input: String,
 }
 
+/// Phase 17D: request body for `POST /v1/pipelines/run`.
+#[derive(Debug, Deserialize)]
+struct RunPipelineReqBody {
+    input: String,
+    /// Inline stage list. Mutually exclusive with `pipeline`.
+    #[serde(default)]
+    stages: Option<Vec<crate::pipe::InlineStage>>,
+    /// Named pipeline (looked up at `<config>/pipelines/<name>.yaml`).
+    /// Mutually exclusive with `stages`.
+    #[serde(default)]
+    pipeline: Option<String>,
+    #[serde(default)]
+    variables: IndexMap<String, String>,
+}
+
+/// Phase 17E: request body for `POST /v1/batch`.
+#[derive(Debug, Deserialize)]
+struct BatchReqBody {
+    inputs: Vec<String>,
+    /// Apply this role to each input.
+    #[serde(default)]
+    role: Option<String>,
+    /// Inline stage list applied to each input.
+    #[serde(default)]
+    stages: Option<Vec<crate::pipe::InlineStage>>,
+    /// Named pipeline applied to each input.
+    #[serde(default)]
+    pipeline: Option<String>,
+    /// Shared variables applied to every batch item.
+    #[serde(default)]
+    variables: IndexMap<String, String>,
+    /// Max in-flight invocations. Default 4, clamped to [1, 32].
+    #[serde(default)]
+    concurrency: Option<usize>,
+}
+
+/// Phase 17E: internal dispatch shape — picked between role or pipeline once,
+/// shared across all items in the batch.
+enum BatchTarget {
+    Role(String),
+    Inline(Vec<crate::pipe::InlineStage>),
+}
+
+/// Phase 17B: request body for `POST /v1/roles/{name}/invoke`.
+#[derive(Debug, Deserialize)]
+struct InvokeRoleReqBody {
+    input: String,
+    /// Optional role variables (`-v key=value` equivalent). Empty map is
+    /// treated the same as omitted.
+    #[serde(default)]
+    variables: IndexMap<String, String>,
+    /// Optional per-request model override. When set, overrides the role's
+    /// declared model AND the server's default.
+    #[serde(default)]
+    model: Option<String>,
+    /// When `true`, include a per-stage breakdown under `trace.stages` in
+    /// the response. Defaults to off to keep responses small.
+    #[serde(default)]
+    trace: bool,
+    /// Phase 17C: when `true`, response is `text/event-stream` with
+    /// `stage.start` / `stage.end` / `done` SSE events.
+    #[serde(default)]
+    stream: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct ChatCompletionsReqBody {
     model: String,
@@ -858,6 +1558,44 @@ fn ret_err<T: std::fmt::Display>(err: T) -> AppResponse {
         .unwrap()
 }
 
+/// Phase 17A: pull the last user message's text out of a chat-completions
+/// `messages` array. Roles consume a single input string, so we don't need
+/// the prior conversation; the LLM-side history belongs to the calling
+/// app, not the role.
+///
+/// Returns `None` when no user message is present (an all-system prompt has
+/// nothing to act on). String and OpenAI-style multipart-array content are
+/// both supported; for multipart we concatenate `text` parts and skip any
+/// image / file parts (roles don't carry vision context in this path).
+fn extract_last_user_message(messages: &[Value]) -> Option<String> {
+    for msg in messages.iter().rev() {
+        if msg.get("role").and_then(|v| v.as_str()) != Some("user") {
+            continue;
+        }
+        let content = msg.get("content")?;
+        if let Some(s) = content.as_str() {
+            return Some(s.to_string());
+        }
+        if let Some(parts) = content.as_array() {
+            let text: String = parts
+                .iter()
+                .filter_map(|p| {
+                    if p.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        p.get("text").and_then(|v| v.as_str()).map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
 fn parse_messages(message: Vec<Value>) -> Result<Vec<Message>> {
     let mut output = vec![];
     let mut tool_results = None;
@@ -977,4 +1715,60 @@ fn parse_tools(tools: Option<Vec<Value>>) -> Result<Option<Vec<FunctionDeclarati
         }
     }
     Ok(Some(functions))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- Phase 17A: extract_last_user_message ----
+
+    #[test]
+    fn extracts_string_content_from_user_message() {
+        let msgs = vec![json!({ "role": "user", "content": "hello" })];
+        assert_eq!(extract_last_user_message(&msgs), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn returns_the_latest_user_message_only() {
+        let msgs = vec![
+            json!({ "role": "user", "content": "first question" }),
+            json!({ "role": "assistant", "content": "first answer" }),
+            json!({ "role": "user", "content": "second question" }),
+        ];
+        assert_eq!(
+            extract_last_user_message(&msgs),
+            Some("second question".to_string())
+        );
+    }
+
+    #[test]
+    fn skips_system_and_assistant_messages() {
+        let msgs = vec![
+            json!({ "role": "system", "content": "you are X" }),
+            json!({ "role": "assistant", "content": "ok" }),
+        ];
+        assert_eq!(extract_last_user_message(&msgs), None);
+    }
+
+    #[test]
+    fn concatenates_text_parts_from_array_content() {
+        let msgs = vec![json!({
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "part one" },
+                { "type": "image_url", "image_url": { "url": "data:..." } },
+                { "type": "text", "text": "part two" },
+            ]
+        })];
+        assert_eq!(
+            extract_last_user_message(&msgs),
+            Some("part one\npart two".to_string())
+        );
+    }
+
+    #[test]
+    fn returns_none_for_empty_messages() {
+        assert_eq!(extract_last_user_message(&[]), None);
+    }
 }

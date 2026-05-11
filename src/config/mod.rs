@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod input;
 pub mod preflight;
+pub mod remote;
 pub mod resolver;
 pub mod role;
 pub mod session;
@@ -126,6 +127,58 @@ pub struct McpServerConfig {
     pub headers: HashMap<String, String>,
 }
 
+/// Phase 20C: a named remote aichat instance, addressable in pipeline stages
+/// as `remote:<name>/<role>` and in `-r` as the same.
+///
+/// Example `config.yaml`:
+/// ```yaml
+/// remotes:
+///   staging:
+///     endpoint: http://staging.internal:8080
+///     api_key: ${STAGING_API_KEY}
+///   security:
+///     endpoint: http://security-scanner.internal:8080
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RemoteConfig {
+    /// Base URL of the remote aichat server, without a trailing slash.
+    /// Phase 20A/B route `GET /v1/roles/{name}` (discovery) and
+    /// `POST /v1/roles/{name}/invoke` (execution) under this endpoint.
+    pub endpoint: String,
+    /// Optional bearer token. Sent as `Authorization: Bearer <key>`.
+    /// `${VAR}` interpolation is resolved at request time so the secret
+    /// never lands on disk in this struct.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl RemoteConfig {
+    /// Resolve `${VAR}` indirection on `api_key`. Returns `None` when no key
+    /// is configured, or when `${VAR}` is present but the variable is unset
+    /// (with a warning, mirroring `resolve_env_vars` in mcp_client).
+    pub fn resolved_api_key(&self) -> Option<String> {
+        let raw = self.api_key.as_deref()?;
+        if raw.starts_with("${") && raw.ends_with('}') {
+            let name = &raw[2..raw.len() - 1];
+            match std::env::var(name) {
+                Ok(v) if !v.is_empty() => Some(v),
+                _ => {
+                    warn!("Remote api_key references unset env var '{name}'");
+                    None
+                }
+            }
+        } else {
+            Some(raw.to_string())
+        }
+    }
+
+    /// Trim the trailing slash off `endpoint` so the `/v1/...` join is
+    /// uniform regardless of what the user put in `config.yaml`.
+    pub fn base_url(&self) -> &str {
+        self.endpoint.trim_end_matches('/')
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -195,6 +248,12 @@ pub struct Config {
 
     #[serde(default)]
     pub mcp_servers: IndexMap<String, McpServerConfig>,
+
+    /// Phase 20C: named remote aichat instances. Pipeline stages can refer
+    /// to them by `remote:<name>/<role>`; the `-r` flag accepts the same
+    /// syntax. Empty by default — no remotes are wired in.
+    #[serde(default)]
+    pub remotes: IndexMap<String, RemoteConfig>,
 
     /// Phase 31C: optional path to a portable `mcp.json` declarations file.
     /// When set, aichat loads `mcpServers` from this file and merges with
@@ -365,6 +424,7 @@ impl Default for Config {
 
             clients: vec![],
             mcp_servers: Default::default(),
+            remotes: Default::default(),
             mcp_servers_file: None,
             mcp_cache_ttl: default_mcp_cache_ttl(),
             mcp_startup_timeout: default_mcp_startup_timeout(),
@@ -3494,6 +3554,89 @@ fn validate_pipe_to_command(cmd: &str) -> Result<()> {
     which::which(binary)
         .map_err(|_| anyhow!("Command not found: '{binary}'"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- Phase 20C: RemoteConfig ----
+
+    #[test]
+    fn remote_config_parses_endpoint_and_api_key() {
+        let yaml = "endpoint: http://example.internal:8080\napi_key: secret\n";
+        let cfg: RemoteConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.endpoint, "http://example.internal:8080");
+        assert_eq!(cfg.api_key.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn remote_config_api_key_is_optional() {
+        let yaml = "endpoint: http://example.internal:8080\n";
+        let cfg: RemoteConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.api_key.is_none());
+        assert!(cfg.resolved_api_key().is_none());
+    }
+
+    #[test]
+    fn remote_config_resolves_env_var_in_api_key() {
+        // Use a fresh var name so we don't fight with other tests.
+        std::env::set_var("AICHAT_TEST_REMOTE_TOKEN_20C", "from-env-789");
+        let yaml = "endpoint: http://x\napi_key: ${AICHAT_TEST_REMOTE_TOKEN_20C}\n";
+        let cfg: RemoteConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.resolved_api_key().as_deref(), Some("from-env-789"));
+        std::env::remove_var("AICHAT_TEST_REMOTE_TOKEN_20C");
+    }
+
+    #[test]
+    fn remote_config_unset_env_var_resolves_to_none() {
+        // Variable deliberately not set.
+        std::env::remove_var("AICHAT_TEST_REMOTE_TOKEN_MISSING");
+        let cfg = RemoteConfig {
+            endpoint: "http://x".into(),
+            api_key: Some("${AICHAT_TEST_REMOTE_TOKEN_MISSING}".into()),
+        };
+        assert!(cfg.resolved_api_key().is_none());
+    }
+
+    #[test]
+    fn remote_config_base_url_strips_trailing_slash() {
+        let cfg = RemoteConfig {
+            endpoint: "http://example.com/".into(),
+            api_key: None,
+        };
+        assert_eq!(cfg.base_url(), "http://example.com");
+        let cfg2 = RemoteConfig {
+            endpoint: "http://example.com".into(),
+            api_key: None,
+        };
+        assert_eq!(cfg2.base_url(), "http://example.com");
+    }
+
+    #[test]
+    fn config_parses_remotes_section() {
+        let yaml = r#"
+remotes:
+  staging:
+    endpoint: http://staging.internal:8080
+    api_key: ${STAGING_KEY}
+  security:
+    endpoint: http://sec.internal:8080
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.remotes.len(), 2);
+        let staging = cfg.remotes.get("staging").unwrap();
+        assert_eq!(staging.endpoint, "http://staging.internal:8080");
+        assert_eq!(staging.api_key.as_deref(), Some("${STAGING_KEY}"));
+        let security = cfg.remotes.get("security").unwrap();
+        assert!(security.api_key.is_none());
+    }
+
+    #[test]
+    fn config_remotes_default_empty() {
+        let cfg = Config::default();
+        assert!(cfg.remotes.is_empty());
+    }
 }
 
 

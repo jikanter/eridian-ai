@@ -99,6 +99,16 @@ sync_models_url: https://raw.githubusercontent.com/sigoden/aichat/refs/heads/mai
 #     command: npx
 #     args: ["@modelcontextprotocol/server-filesystem", "/home/user"]
 
+# ---- remotes (Phase 20C) ----
+# Named remote aichat instances for federated role/pipeline composition.
+# Reference them in pipelines or under `-r` as `remote:<name>/<role-name>`.
+# remotes:
+#   staging:
+#     endpoint: http://staging.internal:8080
+#     api_key: ${STAGING_API_KEY}           # ${VAR} substitution at request time
+#   security:
+#     endpoint: http://security-scanner.internal:8080
+
 # ---- clients ----
 clients:
   # All clients have the following configuration:
