@@ -10,6 +10,31 @@ Eridian is a multi-target command-line tool for AI models — like having a five
 
 > This project is a fork of [sigoden/aichat](https://github.com/sigoden/aichat), a fantastic foundation for LLM CLI tooling. Eridian builds on that work with a focus on token efficiency, composable multi-model pipelines, and MCP integration — because even Eridians know you don't build a interstellar tunnel without a good blueprint to fork from.
 
+## REPL surface
+
+The interactive REPL is [`pi`](https://github.com/earendil-works/pi), the
+open-source coding-agent harness. Pi owns the TUI; aichat keeps owning
+inference, roles, agents, RAG, MCP, and macros.
+
+```bash
+aichat                  # default: pi if on PATH, else built-in REPL with a note
+aichat --legacy-repl    # force the built-in Reedline REPL (no scheduled removal)
+aichat --pi-repl        # strict pi: error if pi not installed
+```
+
+Install pi with `curl -fsSL https://pi.dev/install.sh | sh` or
+`npm install -g @earendil-works/pi-coding-agent`. aichat slash commands
+(`/role`, `/agent`, `/macro`, `/rag`, `/session`, `/info`,
+`/exit-context`) are surfaced inside pi by a bundled extension that talks
+to an in-process aichat server. See [`docs/repl-pi.md`](docs/repl-pi.md)
+for the full command map and
+[`docs/migrations/pi-repl-migration.md`](docs/migrations/pi-repl-migration.md)
+for the existing-user playbook (including `aichat --convert-session` for
+lifting aichat session YAML into pi's tree format).
+
+Batch mode (`aichat "<prompt>"`, `aichat -r`, `aichat -a`, `aichat -f`,
+`aichat --macro`, `aichat --serve`, `aichat --mcp`) is unchanged.
+
 ## What this improves on aichat
 
 What I am trying to build is the "Make" of models. Not another harness, but a unix-y tool for AI. I want to 

@@ -1,5 +1,6 @@
 mod completer;
 mod highlighter;
+pub mod pi;
 mod prompt;
 
 use self::completer::ReplCompleter;

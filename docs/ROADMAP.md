@@ -1,13 +1,13 @@
 # AIChat Roadmap
 
-**Last updated:** 2026-05-04
-**666 tests passing (459 unit + 197 compatibility + 10 phase-14/12 regression), 0 failures**
+**Last updated:** 2026-05-11
+**674 tests passing (471 unit + 197 compatibility + 6 regression) + 20 pi/bridge/session bats integration tests, 0 failures**
 
 ---
 
 ## Vision
 
-AIChat is becoming **"make for AI workflows"**: a token-efficient, Unix-native CLI that lets agents and humans compose multi-model pipelines, consume external tools via MCP, and expose roles as callable infrastructure. The REPL remains a debug/interactive surface, not the primary interface.
+AIChat is becoming **"make for AI workflows"**: a token-efficient, Unix-native CLI that lets agents and humans compose multi-model pipelines, consume external tools via MCP, and expose roles as callable infrastructure. The REPL is provided by [pi](https://github.com/earendil-works/pi) (after Epic 13 / Phase 32) and remains a debug/interactive surface, not the primary interface.
 
 Roles are the fundamental unit of composition. This roadmap evolves roles from static prompt templates into **typed, addressable, evaluable building blocks** that compose across machines, execution models, and cost budgets.
 
@@ -35,6 +35,7 @@ Roles are the fundamental unit of composition. This roadmap evolves roles from s
 | 10 | Entity Evolution | 28-29 | Planned | [epic-10.md](./analysis/epic-10.md) |
 | 11 | Bridge Retirement & MCP Pool Hardening | 31 | **Done** | [bridge-retirement.md](./architecture/integrated-architecture/bridge-retirement.md) |
 | 12 | Developer Experience & Performance | 30 | **Done** | -- |
+| 13 | Pi as REPL Surface | 32 | **Done** (4 phases shipped 2026-05-11) | [repl-pi.md](./repl-pi.md) |
 
 Architecture reference: [architecture.md](architecture/architecture.md)
 Completed Epics: [completed-epics.md](archive/roadmap/completed-epics.md)
@@ -213,6 +214,21 @@ Completed Epics: [completed-epics.md](archive/roadmap/completed-epics.md)
 
 ---
 
+## Epic 13: Pi as REPL Surface -- [user guide](./repl-pi.md)
+
+*Replaces the built-in Reedline REPL with the [pi coding-agent harness](https://github.com/earendil-works/pi). Pi owns the TUI; aichat keeps owning inference, roles, agents, RAG, MCP, and macros. The built-in REPL stays in-tree behind `--legacy-repl` for indefinite side-by-side testing.*
+
+**Status (2026-05-11):** All four phases shipped. Default REPL is pi when on PATH; soft fallback to the built-in REPL with a one-line note when pi is missing. 674 tests passing (471 unit + 6 regression + 197 compatibility) plus 20 bats integration tests across launcher, bridge, and session conversion.
+
+### Phase 32: Pi as REPL Surface
+
+- **Phase 32A — Orchestration scaffold:** `--pi-repl` flag, ephemeral-port server start, env contract, exit propagation.
+- **Phase 32B — Extension bundle + bridge endpoints:** `assets/pi-extensions/aichat-bridge.js` registers `/role`, `/agent`, `/macro`, `/rag`, `/session`, `/info`, `/exit-context`; `/v1/state/*` routes gated by per-launch bearer token.
+- **Phase 32C — Session migration + docs:** `Session::export_to_pi_jsonl` and `aichat --convert-session <name> --to pi --out PATH`; new user guide ([`repl-pi.md`](./repl-pi.md)) and migration playbook ([`migrations/pi-repl-migration.md`](./migrations/pi-repl-migration.md)).
+- **Phase 32D — Cutover:** pi is the default REPL surface; `--legacy-repl` / `AICHAT_REPL=legacy` keep the built-in REPL available with no scheduled removal date.
+
+---
+
 ## Cross-Epic Dependency Graph
 
 ```
@@ -308,3 +324,4 @@ Epic 1 (Core Platform)         ──── DONE ──────────�
 | 29 | 10: Entity Evolution | Dynamism | ReactPolicy trait, agent memory |
 | 30 | 12: Developer Experience & Performance | Macro Compilation | Trait-based defaults, modular `register_client!`, slim `impl_client_trait!` |
 | 31 | 11: Bridge Retirement | MCP Pool Hardening | `ToolCall::eval` MCP routing, multi-server pool fix, portable `mcp.json` loader |
+| 32 | 13: Pi as REPL Surface | Pi Cutover | Pi launcher + `/v1/state/*` bridge + extension bundle + `--convert-session`; pi is the default REPL, legacy stays behind `--legacy-repl` |

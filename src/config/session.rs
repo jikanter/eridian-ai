@@ -1,7 +1,7 @@
 use super::input::*;
 use super::*;
 
-use crate::client::{Message, MessageContent, MessageRole};
+use crate::client::{Message, MessageContent, MessageContentPart, MessageRole};
 use crate::render::MarkdownRender;
 
 use anyhow::{bail, Context, Result};
@@ -181,6 +181,239 @@ impl Session {
         let output = serde_yaml::to_string(&data)
             .with_context(|| format!("Unable to show info about session '{}'", &self.name))?;
         Ok(output)
+    }
+
+    /// Export this session in pi's v3 JSONL tree format so an existing
+    /// aichat conversation can be resumed in the pi REPL.
+    ///
+    /// Layout: one `SessionHeader` line, then one `SessionMessageEntry` per
+    /// non-system message. The aichat message list is linear, so each entry
+    /// is the child of the previous one. Assistant messages carrying tool
+    /// calls split into one assistant entry (text + `toolCall` content
+    /// blocks) followed by one `toolResult` entry per call — matching the
+    /// shape pi's `buildSessionContext()` consumes.
+    ///
+    /// System-role messages are dropped: pi resolves the system prompt from
+    /// the model + extension config at session start, so reseeding it as a
+    /// user-visible turn would double up.
+    ///
+    /// `cwd` is recorded in the session header so pi can group the file
+    /// alongside other sessions for that working directory.
+    pub fn export_to_pi_jsonl(
+        &self,
+        cwd: &std::path::Path,
+        out: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        use std::io::Write;
+
+        // Prefer the serialized `model_id` field over `self.model().id()`:
+        // the latter is the runtime resolved `Model` which may not be
+        // populated yet (e.g. during conversion outside of a chat).
+        let model_id = if !self.model_id.is_empty() {
+            self.model_id.clone()
+        } else {
+            self.model().id()
+        };
+        let (provider, model_short) = match model_id.split_once(':') {
+            Some((p, m)) => (p.to_string(), m.to_string()),
+            None => ("unknown".to_string(), model_id.clone()),
+        };
+        let base = chrono::Utc::now();
+        let session_uuid = uuid::Uuid::new_v4().to_string();
+        let cwd_str = cwd.to_string_lossy().to_string();
+
+        // Header. `version: 3` is the current pi format; older sessions get
+        // migrated by pi on load, so we ship the latest to avoid the loader
+        // doing work it doesn't need to do.
+        let header = json!({
+            "type": "session",
+            "version": 3,
+            "id": session_uuid,
+            "timestamp": iso_ms(&base),
+            "cwd": cwd_str,
+        });
+        writeln!(out, "{header}")?;
+
+        // Per-message synthetic timestamps and ids. Pi requires entry ids
+        // to be globally unique within the file and parentId to chain
+        // backwards; we increment timestamps by 1ms per emitted entry so
+        // ordering is stable across re-imports.
+        let mut prev_id: Option<String> = None;
+        let mut step: i64 = 0;
+
+        // For the user-facing timestamp inside each AgentMessage body, pi
+        // expects Unix ms (a number); reuse our advancing clock.
+        let body_ts = |step: i64| (base.timestamp_millis()) + step;
+
+        let walk = |msgs: &[Message],
+                    prev_id: &mut Option<String>,
+                    step: &mut i64,
+                    out: &mut dyn std::io::Write|
+         -> Result<()> {
+            for m in msgs {
+                if matches!(m.role, MessageRole::System) {
+                    continue;
+                }
+                match (&m.role, &m.content) {
+                    (MessageRole::User, content) => {
+                        *step += 1;
+                        let id = short_hex_id();
+                        let body = json!({
+                            "role": "user",
+                            "content": user_content_to_pi(content),
+                            "timestamp": body_ts(*step),
+                        });
+                        let entry = json!({
+                            "type": "message",
+                            "id": id,
+                            "parentId": prev_id.clone().map_or(Value::Null, Value::String),
+                            "timestamp": iso_ms(&(base + chrono::Duration::milliseconds(*step))),
+                            "message": body,
+                        });
+                        writeln!(out, "{entry}")?;
+                        *prev_id = Some(id);
+                    }
+                    (MessageRole::Assistant, MessageContent::ToolCalls(calls)) => {
+                        *step += 1;
+                        let id = short_hex_id();
+                        // Assistant content: optional preface text + one
+                        // toolCall block per call. Pi expects all toolCall
+                        // ids referenced by later toolResult entries to
+                        // appear here, so we mint a fresh id when aichat's
+                        // ToolCall.id was None.
+                        let mut content_blocks: Vec<Value> = Vec::new();
+                        if !calls.text.is_empty() {
+                            content_blocks
+                                .push(json!({"type": "text", "text": calls.text}));
+                        }
+                        let mut call_ids: Vec<String> = Vec::with_capacity(calls.tool_results.len());
+                        for tr in &calls.tool_results {
+                            let call_id = tr
+                                .call
+                                .id
+                                .clone()
+                                .unwrap_or_else(|| format!("call_{}", short_hex_id()));
+                            content_blocks.push(json!({
+                                "type": "toolCall",
+                                "id": call_id,
+                                "name": tr.call.name,
+                                "arguments": tr.call.arguments,
+                            }));
+                            call_ids.push(call_id);
+                        }
+                        let body = json!({
+                            "role": "assistant",
+                            "content": content_blocks,
+                            "provider": provider,
+                            "model": model_short,
+                            "usage": pi_zero_usage(),
+                            "stopReason": "toolUse",
+                            "timestamp": body_ts(*step),
+                        });
+                        let entry = json!({
+                            "type": "message",
+                            "id": id,
+                            "parentId": prev_id.clone().map_or(Value::Null, Value::String),
+                            "timestamp": iso_ms(&(base + chrono::Duration::milliseconds(*step))),
+                            "message": body,
+                        });
+                        writeln!(out, "{entry}")?;
+                        *prev_id = Some(id);
+
+                        // Emit each tool result as its own entry. Pi treats
+                        // each toolResult as one tree node — even when the
+                        // assistant fired tool calls in parallel.
+                        for (call_id, tr) in call_ids.iter().zip(calls.tool_results.iter()) {
+                            *step += 1;
+                            let id = short_hex_id();
+                            let output_text = match tr.output.as_str() {
+                                Some(s) => s.to_string(),
+                                None => tr.output.to_string(),
+                            };
+                            let body = json!({
+                                "role": "toolResult",
+                                "toolCallId": call_id,
+                                "toolName": tr.call.name,
+                                "content": [{"type": "text", "text": output_text}],
+                                "isError": false,
+                                "timestamp": body_ts(*step),
+                            });
+                            let entry = json!({
+                                "type": "message",
+                                "id": id,
+                                "parentId": prev_id.clone().map_or(Value::Null, Value::String),
+                                "timestamp": iso_ms(&(base + chrono::Duration::milliseconds(*step))),
+                                "message": body,
+                            });
+                            writeln!(out, "{entry}")?;
+                            *prev_id = Some(id);
+                        }
+                    }
+                    (MessageRole::Assistant, content) => {
+                        *step += 1;
+                        let id = short_hex_id();
+                        let text = content.to_text();
+                        let body = json!({
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": text}],
+                            "provider": provider,
+                            "model": model_short,
+                            "usage": pi_zero_usage(),
+                            "stopReason": "stop",
+                            "timestamp": body_ts(*step),
+                        });
+                        let entry = json!({
+                            "type": "message",
+                            "id": id,
+                            "parentId": prev_id.clone().map_or(Value::Null, Value::String),
+                            "timestamp": iso_ms(&(base + chrono::Duration::milliseconds(*step))),
+                            "message": body,
+                        });
+                        writeln!(out, "{entry}")?;
+                        *prev_id = Some(id);
+                    }
+                    (MessageRole::Tool, content) => {
+                        // aichat sometimes carries a bare Tool role with
+                        // text payload (older sessions); the corresponding
+                        // call should have appeared in the prior assistant
+                        // turn. Emit a best-effort toolResult; pi will
+                        // reject it if the id doesn't match, so we tag it
+                        // with a synthetic id.
+                        *step += 1;
+                        let id = short_hex_id();
+                        let body = json!({
+                            "role": "toolResult",
+                            "toolCallId": format!("orphan_{}", short_hex_id()),
+                            "toolName": "unknown",
+                            "content": [{"type": "text", "text": content.to_text()}],
+                            "isError": false,
+                            "timestamp": body_ts(*step),
+                        });
+                        let entry = json!({
+                            "type": "message",
+                            "id": id,
+                            "parentId": prev_id.clone().map_or(Value::Null, Value::String),
+                            "timestamp": iso_ms(&(base + chrono::Duration::milliseconds(*step))),
+                            "message": body,
+                        });
+                        writeln!(out, "{entry}")?;
+                        *prev_id = Some(id);
+                    }
+                    (MessageRole::System, _) => unreachable!("filtered above"),
+                }
+            }
+            Ok(())
+        };
+
+        // Compressed history is meaningful conversation just like live
+        // messages — pi has no native way to inline an aichat-summarized
+        // tail, so we flatten the two lists. A future pass could emit a
+        // CompactionEntry between them to preserve the summarization, but
+        // for round-tripping a conversation the flat order is faithful.
+        walk(&self.compressed_messages, &mut prev_id, &mut step, out)?;
+        walk(&self.messages, &mut prev_id, &mut step, out)?;
+
+        Ok(())
     }
 
     pub fn render(
@@ -670,5 +903,280 @@ impl AutoName {
     }
     pub fn need(&self) -> bool {
         !self.naming && self.chat_history.is_some() && self.name.is_none()
+    }
+}
+
+#[cfg(test)]
+mod pi_export_tests {
+    use super::*;
+    use crate::client::Message;
+    use crate::function::{ToolCall, ToolResult};
+    use serde_json::Value;
+    use std::path::PathBuf;
+
+    /// Build a session, push messages, and export to a Vec<u8>. Returns
+    /// the JSONL lines parsed as JSON values so each test can assert on
+    /// shape without re-parsing.
+    fn export(messages: Vec<Message>, compressed: Vec<Message>) -> Vec<Value> {
+        let mut session = Session::default();
+        session.model_id = "openai:gpt-4o-mini".to_string();
+        // The exported `model` short name comes from the configured
+        // model's `id()` (Model::id concatenates client:model). For tests
+        // we bypass Model::retrieve_model — set the inner model id via
+        // the underlying default model_id string parsing in export.
+        session.messages = messages;
+        session.compressed_messages = compressed;
+
+        let mut buf: Vec<u8> = Vec::new();
+        session
+            .export_to_pi_jsonl(&PathBuf::from("/tmp/aichat-test"), &mut buf)
+            .expect("export should not fail");
+        let text = String::from_utf8(buf).unwrap();
+        text.lines()
+            .map(|l| serde_json::from_str::<Value>(l).expect("each line must be valid JSON"))
+            .collect()
+    }
+
+    fn user(text: &str) -> Message {
+        Message::new(MessageRole::User, MessageContent::Text(text.to_string()))
+    }
+
+    fn assistant(text: &str) -> Message {
+        Message::new(
+            MessageRole::Assistant,
+            MessageContent::Text(text.to_string()),
+        )
+    }
+
+    fn system(text: &str) -> Message {
+        Message::new(MessageRole::System, MessageContent::Text(text.to_string()))
+    }
+
+    #[test]
+    fn header_is_pi_v3_with_cwd() {
+        let lines = export(vec![user("hello")], vec![]);
+        let header = &lines[0];
+        assert_eq!(header["type"], "session");
+        assert_eq!(header["version"], 3);
+        assert_eq!(header["cwd"], "/tmp/aichat-test");
+        assert!(header["id"].as_str().unwrap().len() >= 32);
+        // ISO 8601 with milliseconds and Z suffix.
+        let ts = header["timestamp"].as_str().unwrap();
+        assert!(ts.ends_with('Z'), "timestamp must be UTC: {ts}");
+        assert!(ts.contains('.'), "timestamp must have ms: {ts}");
+    }
+
+    #[test]
+    fn linear_user_assistant_pair_chains_via_parent_id() {
+        let lines = export(vec![user("hi"), assistant("hello")], vec![]);
+        // [header, user_entry, assistant_entry]
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[1]["type"], "message");
+        assert_eq!(lines[1]["parentId"], Value::Null);
+        assert_eq!(lines[1]["message"]["role"], "user");
+        assert_eq!(lines[1]["message"]["content"], "hi");
+
+        assert_eq!(lines[2]["type"], "message");
+        assert_eq!(
+            lines[2]["parentId"].as_str().unwrap(),
+            lines[1]["id"].as_str().unwrap(),
+            "second entry must point to first",
+        );
+        assert_eq!(lines[2]["message"]["role"], "assistant");
+        assert_eq!(
+            lines[2]["message"]["content"][0]["text"],
+            "hello",
+            "assistant text is wrapped in a content block",
+        );
+        assert_eq!(lines[2]["message"]["provider"], "openai");
+        assert_eq!(lines[2]["message"]["model"], "gpt-4o-mini");
+        assert_eq!(lines[2]["message"]["stopReason"], "stop");
+    }
+
+    #[test]
+    fn system_messages_are_dropped() {
+        let lines = export(
+            vec![system("you are X"), user("hi"), assistant("hello")],
+            vec![],
+        );
+        // Header + user + assistant only.
+        assert_eq!(lines.len(), 3);
+        for entry in &lines[1..] {
+            assert_ne!(entry["message"]["role"], "system");
+        }
+    }
+
+    #[test]
+    fn compressed_messages_emitted_before_live_messages() {
+        let lines = export(
+            vec![user("live-q")],
+            vec![user("old-q"), assistant("old-a")],
+        );
+        // Header + old-q + old-a + live-q.
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[1]["message"]["content"], "old-q");
+        assert_eq!(lines[2]["message"]["content"][0]["text"], "old-a");
+        assert_eq!(lines[3]["message"]["content"], "live-q");
+        // The live message must chain off the compressed tail.
+        assert_eq!(
+            lines[3]["parentId"].as_str().unwrap(),
+            lines[2]["id"].as_str().unwrap(),
+        );
+    }
+
+    #[test]
+    fn tool_call_assistant_splits_into_assistant_plus_tool_result() {
+        // Build an assistant message with a single tool call + result.
+        let call = ToolCall {
+            name: "bash".into(),
+            arguments: json!({"command": "ls"}),
+            id: Some("call_abc".into()),
+        };
+        let tool_results = vec![ToolResult::new(call, json!("file1\nfile2"))];
+        let asst = Message::new(
+            MessageRole::Assistant,
+            MessageContent::ToolCalls(crate::client::MessageContentToolCalls::new(
+                tool_results,
+                "running ls".into(),
+            )),
+        );
+        let lines = export(vec![user("list files"), asst], vec![]);
+        // Header + user + assistant(with toolCall) + toolResult.
+        assert_eq!(lines.len(), 4);
+
+        let assistant_entry = &lines[2]["message"];
+        assert_eq!(assistant_entry["role"], "assistant");
+        assert_eq!(assistant_entry["stopReason"], "toolUse");
+        let blocks = assistant_entry["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2, "text + one toolCall block");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "running ls");
+        assert_eq!(blocks[1]["type"], "toolCall");
+        assert_eq!(blocks[1]["id"], "call_abc");
+        assert_eq!(blocks[1]["name"], "bash");
+        assert_eq!(blocks[1]["arguments"]["command"], "ls");
+
+        let result_entry = &lines[3]["message"];
+        assert_eq!(result_entry["role"], "toolResult");
+        assert_eq!(result_entry["toolCallId"], "call_abc");
+        assert_eq!(result_entry["toolName"], "bash");
+        assert_eq!(result_entry["content"][0]["text"], "file1\nfile2");
+        assert_eq!(result_entry["isError"], false);
+    }
+
+    #[test]
+    fn tool_call_without_id_mints_synthetic_id_that_matches_result() {
+        let call = ToolCall {
+            name: "bash".into(),
+            arguments: json!({"command": "ls"}),
+            id: None,
+        };
+        let tool_results = vec![ToolResult::new(call, json!("ok"))];
+        let asst = Message::new(
+            MessageRole::Assistant,
+            MessageContent::ToolCalls(crate::client::MessageContentToolCalls::new(
+                tool_results,
+                String::new(),
+            )),
+        );
+        let lines = export(vec![asst], vec![]);
+        // Header + assistant + toolResult.
+        let asst_call_id = lines[1]["message"]["content"][0]["id"].as_str().unwrap();
+        let result_id = lines[2]["message"]["toolCallId"].as_str().unwrap();
+        assert!(asst_call_id.starts_with("call_"));
+        assert_eq!(asst_call_id, result_id);
+    }
+
+    #[test]
+    fn all_entry_ids_are_unique() {
+        // A bigger session to make sure synthetic ids don't collide.
+        let mut msgs = vec![];
+        for i in 0..20 {
+            msgs.push(user(&format!("q{i}")));
+            msgs.push(assistant(&format!("a{i}")));
+        }
+        let lines = export(msgs, vec![]);
+        let mut seen = std::collections::HashSet::new();
+        for entry in &lines[1..] {
+            let id = entry["id"].as_str().unwrap().to_string();
+            assert!(seen.insert(id.clone()), "id collision: {id}");
+        }
+    }
+}
+
+// --- pi JSONL conversion helpers -------------------------------------------
+
+/// Format a UTC instant as the ISO 8601 string pi expects in entry
+/// `timestamp` fields: millisecond precision, trailing `Z`.
+fn iso_ms(t: &chrono::DateTime<chrono::Utc>) -> String {
+    t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Mint an 8-char lowercase-hex entry id. Pi accepts anything unique in
+/// the file; truncating a v4 UUID gives 32 bits of entropy which is more
+/// than enough for the few hundred entries a converted session contains.
+fn short_hex_id() -> String {
+    let s = uuid::Uuid::new_v4().simple().to_string();
+    s[..8].to_string()
+}
+
+/// Zeroed `Usage` block. Converted sessions don't carry token/cost data
+/// because aichat never recorded it per-message. Pi's loader tolerates
+/// the zeros and just shows "0 tokens" in its session stats.
+fn pi_zero_usage() -> Value {
+    json!({
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": {
+            "input": 0.0,
+            "output": 0.0,
+            "cacheRead": 0.0,
+            "cacheWrite": 0.0,
+            "total": 0.0,
+        },
+    })
+}
+
+/// Convert an aichat `MessageContent` for a user-role message into pi's
+/// `UserMessage.content` shape (string when plain text, array of content
+/// blocks when multimodal). Tool-call content can't appear on a user
+/// message in either format; it falls back to a flattened text rendering.
+#[allow(dead_code)] // Called from inside a closure in export_to_pi_jsonl;
+                    // rustc's dead-code lint misses captures occasionally.
+fn user_content_to_pi(content: &MessageContent) -> Value {
+    match content {
+        MessageContent::Text(text) => json!(text),
+        MessageContent::Array(parts) => {
+            let blocks: Vec<Value> = parts
+                .iter()
+                .map(|part| match part {
+                    MessageContentPart::Text { text } => json!({"type": "text", "text": text}),
+                    MessageContentPart::ImageUrl { image_url } => {
+                        // Pi uses an embedded-data shape, not a URL ref.
+                        // aichat already stores base64-encoded data URLs
+                        // for local images, but external URLs would need
+                        // fetch-and-encode work we don't do here. Emit as
+                        // text so the message round-trips without lying
+                        // about its provenance.
+                        if let Some(rest) = image_url.url.strip_prefix("data:") {
+                            if let Some((meta, b64)) = rest.split_once(',') {
+                                let mime = meta.split(';').next().unwrap_or("image/png");
+                                return json!({
+                                    "type": "image",
+                                    "data": b64,
+                                    "mimeType": mime,
+                                });
+                            }
+                        }
+                        json!({"type": "text", "text": format!("[image: {}]", image_url.url)})
+                    }
+                })
+                .collect();
+            json!(blocks)
+        }
+        MessageContent::ToolCalls(_) => json!(content.to_text()),
     }
 }

@@ -28,7 +28,15 @@ A multi-tool for integrated interactions with AI models.
 
 - This tool should function using the "one tool per job" unix ethos
 - This tool should use the 'showboat' command to demo its work. Use the output of `showboat --help` to understand how to implement.
-- Implement both repl and batch interaction surfaces for functionality
+- Implement both repl and batch interaction surfaces for functionality. The
+  default REPL is the [pi coding-agent harness](https://github.com/earendil-works/pi),
+  launched via `src/repl/pi.rs` (see `docs/repl-pi.md`). The built-in
+  Reedline REPL remains under `src/repl/{mod.rs,completer.rs,
+  highlighter.rs,prompt.rs}` behind `--legacy-repl` / `AICHAT_REPL=legacy`
+  for indefinite side-by-side testing. New REPL features land as pi
+  extension commands in `pi-extensions/` and bridge endpoints in
+  `src/serve.rs` (`/v1/state/*`); only fix the legacy REPL if the change
+  is also relevant to it.
 - Read through the files in the https://github.com/simonw/showboat/blob/main/docs/plans/ and add any skills to the project.
 
 ## Ask First

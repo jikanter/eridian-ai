@@ -1,0 +1,183 @@
+# REPL via pi
+
+aichat's interactive REPL is provided by [`pi`](https://github.com/earendil-works/pi),
+the open-source coding-agent harness from earendil-works. When you run
+`aichat` with no input, aichat starts its OpenAI-compatible HTTP server
+on an ephemeral localhost port, stages a shipped pi extension into
+`<cwd>/.pi/extensions/`, and hands the terminal over to `pi`. Pi owns the
+TUI; aichat owns the inference, roles, agents, RAG, MCP pool, and macros.
+
+> Built-in Reedline REPL: the legacy surface remains available behind
+> `--legacy-repl` for long-term side-by-side comparison. There is no
+> scheduled removal date.
+
+## Install
+
+```bash
+# Either path works.
+curl -fsSL https://pi.dev/install.sh | sh
+npm install -g @earendil-works/pi-coding-agent
+```
+
+Confirm:
+
+```bash
+pi --version   # 0.74.0 or newer
+```
+
+## Launch
+
+```bash
+aichat                  # default: pi if installed, else legacy with a note
+aichat --pi-repl        # strict: error if pi missing
+aichat --legacy-repl    # force the built-in REPL
+AICHAT_REPL=legacy aichat   # same as --legacy-repl, via env
+AICHAT_REPL=pi aichat       # same as --pi-repl, via env
+```
+
+On launch you should see pi's editor with the bundled `aichat-bridge`
+extension loaded. The bridge is the bidirectional connection back to
+aichat — every slash command below routes through it.
+
+### Behavior when pi isn't installed
+
+Bare `aichat` does a soft fallback: it warns once and routes to the
+built-in Reedline REPL.
+
+```
+aichat: `pi` not on PATH; using the built-in REPL. Install pi at
+https://pi.dev for the new REPL surface, or pass --legacy-repl to
+silence this message. `--pi-repl` requires pi and will error if missing.
+```
+
+Pass `--legacy-repl` (or set `AICHAT_REPL=legacy`) to opt into the
+built-in REPL silently. Pass `--pi-repl` (or set `AICHAT_REPL=pi`) to
+require pi — aichat will exit with an actionable install hint if it's
+missing.
+
+## Slash-command mapping
+
+The bridge re-exposes aichat's interactive surface as pi slash commands.
+Pi's own commands (`/model`, `/new`, `/fork`, `/clone`, `/compact`, `/copy`,
+`/quit`, etc.) continue to work alongside them.
+
+| Aichat legacy `.dot` | Pi slash command | Notes |
+|---|---|---|
+| `.role <name>` | `/role <name>` | Switches active role on aichat's `Config`. |
+| `.role <name> <text>` | `/role <name>` then send `<text>` | One-shot role + prompt is a two-step in pi. |
+| `.prompt <text>` | `/role <name>` (temp `%%`) then send | Or just send the prompt — pi has its own send mechanic. |
+| `.session [name]` | `/session [name]` | Without a name, opens a temp session. |
+| `.empty session` | not yet bridged | Use pi's `/new` to drop the conversation. |
+| `.compress session` | not yet bridged | Use pi's `/compact` instead. |
+| `.agent <name> [session]` | `/agent <name> [session]` | Binds an aichat agent for subsequent turns. |
+| `.starter <id>` | not yet bridged | |
+| `.rag [name]` | `/rag [name]` | Without a name, opens a temp RAG. |
+| `.rebuild rag` | not yet bridged | |
+| `.sources rag` / `.sources knowledge` | not yet bridged | |
+| `.macro <name> [text]` | `/macro <name> [text]` | Runs the macro headlessly; result is shown in pi. |
+| `.model <name>` | pi-native `/model` | Pi handles model selection through its own provider config. |
+| `.continue` / `.regenerate` | pi-native `/fork` | Pi's session-tree navigation subsumes both. |
+| `.copy` | pi-native `/copy` | |
+| `.edit role` / `.edit session` / `.edit config` / `.edit rag-docs` / `.edit agent-config` | not yet bridged | Edit the underlying YAML files directly for now. |
+| `.save role` / `.save session` | not yet bridged | |
+| `.set <k> <v>` | not yet bridged | |
+| `.delete <kind>` | not yet bridged | |
+| `.file <paths> -- <text>` | not yet bridged | Use pi's `@path` autocomplete to attach files. |
+| `.extensions set <k> <v>` | not yet bridged | |
+| `.exit role/session/rag/agent` | `/exit-context <kind>` | |
+| `.exit` | pi-native `/quit` | |
+| `.help` | pi-native `/help` | Pi lists its own commands; the bridge commands appear under "Extensions". |
+
+"Not yet bridged" entries land in follow-up phases. The endpoints are
+already defined in `src/serve.rs` for `/role`, `/agent`, `/macro`, `/rag`,
+`/session`, `/info`, `/exit-context`; the others ride on the same HTTP
+contract once an extension command is registered.
+
+### `/info`
+
+```
+/info               # current implicit context
+/info role          # active role only
+/info agent
+/info session
+/info rag
+```
+
+Equivalent to the legacy `.info` family. Output is the same export string
+the legacy REPL printed.
+
+## Sessions: pi owns the format
+
+Pi sessions live under `~/.pi/agent/sessions/` and use the v3 JSONL tree
+format documented in pi's
+[`docs/session-format.md`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md).
+
+Aichat sessions (`<config>/sessions/<name>.yaml`) remain the source of
+truth for **batch mode** (`aichat -s <name> ...`). They do not appear in
+pi's `/resume` list automatically — convert first:
+
+```bash
+aichat --convert-session my-session --to pi --out ~/.pi/agent/sessions/imported.jsonl
+# or stream to stdout, e.g. for inspection
+aichat --convert-session ~/.config/aichat/sessions/my-session.yaml --to pi | head
+```
+
+Limitations of the converter:
+
+- System-role messages are dropped; pi composes the system prompt from the
+  active model and extension config at session start.
+- Compressed history is flattened in front of live messages (no
+  `CompactionEntry` is emitted yet).
+- Token usage and cost numbers are zeroed — aichat never recorded those
+  per-message.
+- Tool calls split into one assistant entry with `toolCall` content blocks
+  plus one `toolResult` entry per call, matching pi's expected shape.
+
+## Bridge security
+
+Each `--pi-repl` launch:
+
+1. Binds an ephemeral port on `127.0.0.1` (no external listener).
+2. Mints a 32-hex-char bearer token (`uuid::Uuid::simple()`, ~122 bits of
+   entropy).
+3. Exposes the URL + token to the spawned `pi` via `AICHAT_BRIDGE_URL`
+   and `AICHAT_BRIDGE_TOKEN` env vars.
+4. The aichat server rejects any `/v1/state/*` request without the
+   matching `Authorization: Bearer <tok>` header. Token comparison is
+   constant-time.
+
+The CLI `--serve` mode does **not** see these routes — when
+`AICHAT_BRIDGE_TOKEN` is unset at server start, `/v1/state/*` returns 404.
+
+## Troubleshooting
+
+**`pi not found on PATH`** — install pi per the instructions above. The
+launcher prints the exact install commands on failure.
+
+**Slash command returns 401 in pi** — usually a stale `aichat-bridge.js`
+in `<cwd>/.pi/extensions/` from an earlier crashed launch. Remove it and
+re-run:
+
+```bash
+rm -rf .pi/extensions/aichat-bridge.js
+```
+
+(The launcher cleans this up on a normal exit. To opt out of cleanup for
+debugging, set `AICHAT_KEEP_PI_STAGE=1`.)
+
+**`pi exited with status N`** — propagated verbatim from pi. `130` is
+Ctrl-C; anything else is a pi-side error and pi's own logging (`pi
+--debug`, `~/.pi/agent/logs/`) is the place to look.
+
+**Pi sees the bridge env but slash commands aren't visible** — the
+extension is staged into `<cwd>/.pi/extensions/`, project-scoped. If you
+launched aichat from a directory you don't have write access to, staging
+fails silently and the bridge becomes a no-op. Cd somewhere writable and
+re-launch.
+
+## Pinned versions
+
+Tested against `@earendil-works/pi-coding-agent` ≥ 0.74.0. If pi changes
+its extension API or RPC framing in a breaking way the bridge will need a
+matching update; the failure mode is "slash commands no longer appear in
+`/help`" rather than a crash.

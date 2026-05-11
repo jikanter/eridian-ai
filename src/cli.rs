@@ -129,6 +129,31 @@ pub struct Cli {
     /// Serve the LLM API and WebAPP
     #[clap(long, value_name = "ADDRESS")]
     pub serve: Option<Option<String>>,
+    /// Launch the pi coding-agent harness as the REPL surface instead of the
+    /// built-in Reedline REPL. Requires `pi` on PATH (see https://pi.dev).
+    /// Also honored when the environment variable `AICHAT_REPL=pi` is set.
+    #[clap(long)]
+    pub pi_repl: bool,
+    /// Force the built-in Reedline REPL even when `AICHAT_REPL=pi` would
+    /// otherwise route through pi. Reserved for the cutover window so users
+    /// can fall back to the legacy surface during the deprecation period.
+    #[clap(long, conflicts_with = "pi_repl")]
+    pub legacy_repl: bool,
+    /// Convert an aichat session file to pi's JSONL session-tree format
+    /// and write the result to stdout (or to --out PATH). Accepts either
+    /// a bare session name (resolved against the configured sessions
+    /// directory) or a path to a `.yaml` session file.
+    #[clap(long = "convert-session", value_name = "NAME_OR_PATH")]
+    pub convert_session: Option<String>,
+    /// Conversion target for --convert-session. Currently `pi` is the only
+    /// supported target; the flag exists so future targets fit cleanly.
+    #[clap(long = "to", value_name = "TARGET", default_value = "pi", requires = "convert_session")]
+    pub convert_to: String,
+    /// Destination path for --convert-session output. When omitted, the
+    /// converted JSONL is streamed to stdout so it pipes into `pi` or
+    /// `jq` directly.
+    #[clap(long = "out", value_name = "PATH", requires = "convert_session")]
+    pub convert_out: Option<String>,
     /// Run as an MCP stdio server
     #[clap(long)]
     pub mcp: bool,

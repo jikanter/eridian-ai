@@ -39,21 +39,9 @@ const ARENA_HTML: &[u8] = include_bytes!("../assets/arena.html");
 type AppResponse = Response<BoxBody<Bytes, Infallible>>;
 
 pub async fn run(config: GlobalConfig, addr: Option<String>) -> Result<()> {
-    let addr = match addr {
-        Some(addr) => {
-            if let Ok(port) = addr.parse::<u16>() {
-                format!("127.0.0.1:{port}")
-            } else if let Ok(ip) = addr.parse::<IpAddr>() {
-                format!("{ip}:8000")
-            } else {
-                addr
-            }
-        }
-        None => config.read().serve_addr(),
-    };
-    let server = Arc::new(Server::new(&config));
+    let addr = resolve_addr(&config, addr);
     let listener = TcpListener::bind(&addr).await?;
-    let stop_server = server.run(listener).await?;
+    let stop_server = run_on(listener, &config).await?;
     println!("Chat Completions API: http://{addr}/v1/chat/completions");
     println!("Models API:           http://{addr}/v1/models");
     println!("Roles API:            http://{addr}/v1/roles");
@@ -67,8 +55,51 @@ pub async fn run(config: GlobalConfig, addr: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Resolve an optional `--serve` address argument to a concrete `host:port`.
+///
+/// - A bare integer (`8000`) binds to `127.0.0.1:8000`.
+/// - A bare IP (`0.0.0.0`) uses port 8000.
+/// - Anything else is passed through.
+/// - `None` falls back to the configured `serve_addr`.
+pub fn resolve_addr(config: &GlobalConfig, addr: Option<String>) -> String {
+    match addr {
+        Some(addr) => {
+            if let Ok(port) = addr.parse::<u16>() {
+                format!("127.0.0.1:{port}")
+            } else if let Ok(ip) = addr.parse::<IpAddr>() {
+                format!("{ip}:8000")
+            } else {
+                addr
+            }
+        }
+        None => config.read().serve_addr(),
+    }
+}
+
+/// Start the HTTP server on a pre-bound listener and return the shutdown
+/// handle. Unlike [`run`], this does not print the URL banner and does not
+/// block on a shutdown signal — the caller owns the lifetime.
+///
+/// Used by the REPL launcher (`src/repl/pi.rs`) to bring the server up on
+/// an ephemeral port in-process while pi handles the terminal.
+pub async fn run_on(
+    listener: TcpListener,
+    config: &GlobalConfig,
+) -> Result<oneshot::Sender<()>> {
+    let server = Arc::new(Server::new(config));
+    server.run(listener).await
+}
+
 struct Server {
-    config: Config,
+    /// Shared, live configuration. Phase 2 introduces the bridge endpoints
+    /// (`/v1/state/*`) which mutate this lock so subsequent chat completions
+    /// observe the new role / agent / session / rag. The CLI `--serve` path
+    /// continues to behave identically because nothing else writes to it.
+    config: GlobalConfig,
+    /// Bridge token sourced from `AICHAT_BRIDGE_TOKEN` at server start.
+    /// When `None`, `/v1/state/*` routes 404 (CLI `--serve` users never see
+    /// them). When `Some`, requests must carry `Authorization: Bearer <tok>`.
+    bridge_token: Option<String>,
     models: Vec<Value>,
     roles: Vec<Role>,
     prompts: Vec<Prompt>,
@@ -77,10 +108,12 @@ struct Server {
 
 impl Server {
     fn new(config: &GlobalConfig) -> Self {
-        let mut config = config.read().clone();
-        config.functions = Functions::default();
-        let mut models = list_all_models(&config);
-        let mut default_model = config.model.clone();
+        // Snapshot enough of the config at boot to populate the static
+        // listings the OpenAI-compatible surface exposes. The live lock
+        // (`self.config`) is what state-mutating bridge endpoints touch.
+        let snapshot = config.read().clone();
+        let mut models = list_all_models(&snapshot);
+        let mut default_model = snapshot.model.clone();
         default_model.data_mut().name = DEFAULT_MODEL_NAME.into();
         models.insert(0, &default_model);
         let models: Vec<Value> = models
@@ -103,12 +136,25 @@ impl Server {
             })
             .collect();
         Self {
-            config,
+            config: config.clone(),
+            bridge_token: std::env::var("AICHAT_BRIDGE_TOKEN").ok(),
             models,
             prompts: Config::all_prompts(),
             roles: Config::all_roles(),
             rags: Config::list_rags(),
         }
+    }
+
+    /// Snapshot the current live config. Existing handlers clone the inner
+    /// `Config` at this point to preserve their per-request immutability
+    /// semantics; bridge state writes don't tear an in-flight request.
+    fn config_snapshot(&self) -> Config {
+        let mut snap = self.config.read().clone();
+        // Match the historical Server::new behavior: don't expose the
+        // configured function set to incoming /v1/chat/completions calls;
+        // tool routing on the server is opt-in via the OpenAI `tools` field.
+        snap.functions = Functions::default();
+        snap
     }
 
     async fn run(self: Arc<Self>, listener: TcpListener) -> Result<oneshot::Sender<()>> {
@@ -161,6 +207,21 @@ impl Server {
             let mut res = Response::default();
             *res.status_mut() = StatusCode::NO_CONTENT;
             set_cors_header(&mut res, request_origin.as_deref());
+            return Ok(res);
+        }
+
+        // Phase 2 bridge surface: `/v1/state/*` mutates the live config so
+        // pi-side slash commands (defined in pi-extensions/) take effect for
+        // subsequent /v1/chat/completions on the same server. Gated by a
+        // per-launch bearer token; absent CLI `--serve` users never see
+        // these routes, they just 404 like any unknown path.
+        if path.starts_with("/v1/state/") {
+            let mut res = self
+                .handle_bridge(&method, path, req)
+                .await
+                .unwrap_or_else(ret_err);
+            set_cors_header(&mut res, request_origin.as_deref());
+            info!("{method} {uri} {}", res.status().as_u16());
             return Ok(res);
         }
 
@@ -263,7 +324,7 @@ impl Server {
         let SearchRagReqBody { name, input } = serde_json::from_value(req_body)
             .map_err(|err| anyhow!("Invalid request body, {err}"))?;
 
-        let config = Arc::new(RwLock::new(self.config.clone()));
+        let config = Arc::new(RwLock::new(self.config_snapshot()));
 
         let abort_signal = create_abort_signal();
 
@@ -303,7 +364,7 @@ impl Server {
 
         let functions = parse_tools(tools).map_err(|err| anyhow!("Invalid request body, {err}"))?;
 
-        let config = self.config.clone();
+        let config = self.config_snapshot();
 
         let default_model = config.model.clone();
 
@@ -504,7 +565,7 @@ impl Server {
             model: embedding_model_id,
         } = req_body;
 
-        let config = Arc::new(RwLock::new(self.config.clone()));
+        let config = Arc::new(RwLock::new(self.config_snapshot()));
 
         let embedding_model =
             Model::retrieve_model(&config.read(), &embedding_model_id, ModelType::Embedding)?;
@@ -564,7 +625,7 @@ impl Server {
 
         let top_n = top_n.unwrap_or(documents.len());
 
-        let config = Arc::new(RwLock::new(self.config.clone()));
+        let config = Arc::new(RwLock::new(self.config_snapshot()));
 
         let reranker_model =
             Model::retrieve_model(&config.read(), &reranker_model_id, ModelType::Reranker)?;
@@ -597,6 +658,269 @@ impl Server {
             .body(Full::new(Bytes::from(output.to_string())).boxed())?;
         Ok(res)
     }
+
+    /// Bridge entry: route `/v1/state/*` after authenticating with the
+    /// bearer token minted at launch by `src/repl/pi.rs`. Returns a fully
+    /// formed `AppResponse` (with status code) so the outer dispatcher can
+    /// stamp CORS and log without re-deriving the status.
+    ///
+    /// Sentinel responses (401, 403, 404, 405) come back as `Ok(...)`; only
+    /// internal failures bubble up as `Err`.
+    async fn handle_bridge(
+        self: &Arc<Self>,
+        method: &Method,
+        path: &str,
+        req: hyper::Request<Incoming>,
+    ) -> Result<AppResponse> {
+        let token = match &self.bridge_token {
+            Some(t) => t.clone(),
+            // No token configured (CLI `--serve` mode): pretend the route
+            // doesn't exist. Avoids leaking the route surface to operators
+            // who didn't opt in to the bridge.
+            None => return bridge_status_response(StatusCode::NOT_FOUND, "Not Found"),
+        };
+        let provided = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .unwrap_or("");
+        if !constant_time_eq(provided.as_bytes(), token.as_bytes()) {
+            return bridge_status_response(StatusCode::UNAUTHORIZED, "Unauthorized");
+        }
+
+        // Route table. Method gating is per-endpoint because GET/POST
+        // semantics diverge sharply between read and mutate operations.
+        match (method, path) {
+            (&Method::GET, "/v1/state/info") => self.state_info(req).await,
+            (&Method::POST, "/v1/state/role") => self.state_role(req).await,
+            (&Method::POST, "/v1/state/session") => self.state_session(req).await,
+            (&Method::POST, "/v1/state/rag") => self.state_rag(req).await,
+            (&Method::POST, "/v1/state/agent") => self.state_agent(req).await,
+            (&Method::POST, "/v1/state/exit-context") => self.state_exit_context(req).await,
+            (&Method::POST, "/v1/state/macro") => self.state_macro(req).await,
+            (_, "/v1/state/info")
+            | (_, "/v1/state/role")
+            | (_, "/v1/state/session")
+            | (_, "/v1/state/rag")
+            | (_, "/v1/state/agent")
+            | (_, "/v1/state/exit-context")
+            | (_, "/v1/state/macro") => {
+                bridge_status_response(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
+            }
+            _ => bridge_status_response(StatusCode::NOT_FOUND, "Not Found"),
+        }
+    }
+
+    /// `GET /v1/state/info?of=role|agent|session|rag` — returns the same
+    /// rendered text the legacy REPL emitted via `.info`. Without `?of=`,
+    /// returns the implicit context Config::info chooses.
+    async fn state_info(self: &Arc<Self>, req: hyper::Request<Incoming>) -> Result<AppResponse> {
+        let of = query_param(&req, "of");
+        let cfg = self.config.read();
+        let text = match of.as_deref() {
+            None => cfg.info()?,
+            Some("role") => cfg.role_info()?,
+            Some("agent") => cfg.agent_info()?,
+            Some("session") => match &cfg.session {
+                Some(s) => s.export()?,
+                None => bail!("No session"),
+            },
+            Some("rag") => match &cfg.rag {
+                Some(r) => r.export()?,
+                None => bail!("No rag"),
+            },
+            Some(other) => bail!("Unknown info kind: {other}"),
+        };
+        Ok(json_response(StatusCode::OK, json!({ "info": text })))
+    }
+
+    /// `POST /v1/state/role` body: `{"name": "<role>"}`
+    /// Mirrors `.role <name>` in the legacy REPL.
+    async fn state_role(self: &Arc<Self>, req: hyper::Request<Incoming>) -> Result<AppResponse> {
+        #[derive(Deserialize)]
+        struct Body {
+            name: String,
+        }
+        let body: Body = read_json_body(req).await?;
+        self.config.write().use_role(&body.name)?;
+        Ok(json_response(
+            StatusCode::OK,
+            json!({ "ok": true, "kind": "role", "name": body.name }),
+        ))
+    }
+
+    /// `POST /v1/state/session` body: `{"name": "<session>"}` (name optional)
+    /// Mirrors `.session [name]` in the legacy REPL.
+    async fn state_session(
+        self: &Arc<Self>,
+        req: hyper::Request<Incoming>,
+    ) -> Result<AppResponse> {
+        #[derive(Deserialize, Default)]
+        struct Body {
+            #[serde(default)]
+            name: Option<String>,
+        }
+        let body: Body = read_json_body(req).await?;
+        self.config.write().use_session(body.name.as_deref())?;
+        Ok(json_response(
+            StatusCode::OK,
+            json!({ "ok": true, "kind": "session", "name": body.name }),
+        ))
+    }
+
+    /// `POST /v1/state/rag` body: `{"name": "<rag>"}` (name optional → temp).
+    /// Mirrors `.rag [name]` in the legacy REPL. Uses `Config::use_rag` which
+    /// is async and takes a `GlobalConfig`; we already hold one in `self`.
+    async fn state_rag(self: &Arc<Self>, req: hyper::Request<Incoming>) -> Result<AppResponse> {
+        #[derive(Deserialize, Default)]
+        struct Body {
+            #[serde(default)]
+            name: Option<String>,
+        }
+        let body: Body = read_json_body(req).await?;
+        let abort = create_abort_signal();
+        Config::use_rag(&self.config, body.name.as_deref(), abort).await?;
+        Ok(json_response(
+            StatusCode::OK,
+            json!({ "ok": true, "kind": "rag", "name": body.name }),
+        ))
+    }
+
+    /// `POST /v1/state/agent` body: `{"name": "<agent>", "session": "<sess>"}`
+    /// The legacy REPL also accepts agent variables — supported via
+    /// `"variables": {"k": "v"}`. For Phase 2 we just bind the agent;
+    /// per-invocation variable threading is a follow-up.
+    async fn state_agent(self: &Arc<Self>, req: hyper::Request<Incoming>) -> Result<AppResponse> {
+        #[derive(Deserialize)]
+        struct Body {
+            name: String,
+            #[serde(default)]
+            session: Option<String>,
+        }
+        let body: Body = read_json_body(req).await?;
+        let abort = create_abort_signal();
+        Config::use_agent(&self.config, &body.name, body.session.as_deref(), abort).await?;
+        Ok(json_response(
+            StatusCode::OK,
+            json!({ "ok": true, "kind": "agent", "name": body.name }),
+        ))
+    }
+
+    /// `POST /v1/state/exit-context` body: `{"kind": "role|agent|session|rag"}`
+    /// Mirrors `.exit <kind>` in the legacy REPL.
+    async fn state_exit_context(
+        self: &Arc<Self>,
+        req: hyper::Request<Incoming>,
+    ) -> Result<AppResponse> {
+        #[derive(Deserialize)]
+        struct Body {
+            kind: String,
+        }
+        let body: Body = read_json_body(req).await?;
+        match body.kind.as_str() {
+            "role" => self.config.write().exit_role()?,
+            "session" => self.config.write().exit_session()?,
+            "rag" => self.config.write().exit_rag()?,
+            "agent" => self.config.write().exit_agent()?,
+            other => bail!("Unknown exit context kind: {other}"),
+        }
+        Ok(json_response(
+            StatusCode::OK,
+            json!({ "ok": true, "exited": body.kind }),
+        ))
+    }
+
+    /// `POST /v1/state/macro` body: `{"name": "<macro>", "text": "<optional>"}`
+    /// Mirrors `.macro <name>` in the legacy REPL. Returns the macro's
+    /// recorded output (empty string if the macro produced no text turn).
+    async fn state_macro(self: &Arc<Self>, req: hyper::Request<Incoming>) -> Result<AppResponse> {
+        #[derive(Deserialize)]
+        struct Body {
+            name: String,
+            #[serde(default)]
+            text: Option<String>,
+        }
+        let body: Body = read_json_body(req).await?;
+        let abort = create_abort_signal();
+        macro_execute(&self.config, &body.name, body.text.as_deref(), abort).await?;
+        let last = self
+            .config
+            .read()
+            .last_message
+            .as_ref()
+            .map(|m| m.output.clone())
+            .unwrap_or_default();
+        Ok(json_response(
+            StatusCode::OK,
+            json!({ "ok": true, "kind": "macro", "name": body.name, "output": last }),
+        ))
+    }
+}
+
+/// Read an optional query-string parameter from the request URI. Returns
+/// `None` if absent or empty. Trivial loop avoids pulling in another dep.
+fn query_param(req: &hyper::Request<Incoming>, key: &str) -> Option<String> {
+    req.uri().query().and_then(|q| {
+        q.split('&').find_map(|kv| {
+            let (k, v) = kv.split_once('=')?;
+            if k == key {
+                Some(urlencoding::decode(v).ok()?.into_owned())
+            } else {
+                None
+            }
+        })
+    })
+}
+
+/// Collect the request body, decode as JSON, and deserialize. Errors map
+/// to `anyhow::Error` so they surface as 400 with a helpful message.
+async fn read_json_body<T: for<'de> Deserialize<'de>>(
+    req: hyper::Request<Incoming>,
+) -> Result<T> {
+    let bytes = req.collect().await?.to_bytes();
+    if bytes.is_empty() {
+        // Allow empty body when T can deserialize from `{}` (e.g. Default).
+        let value: Value = json!({});
+        return serde_json::from_value(value)
+            .map_err(|e| anyhow!("empty body cannot be parsed: {e}"));
+    }
+    serde_json::from_slice(&bytes).map_err(|e| anyhow!("invalid JSON: {e}"))
+}
+
+/// Build a plain text/plain status-only response. Used for 401/404/405 so
+/// `Authorization` failures and route misses look the same to a curl user.
+fn bridge_status_response(status: StatusCode, body: &str) -> Result<AppResponse> {
+    let resp = Response::builder()
+        .status(status)
+        .header("Content-Type", "text/plain; charset=utf-8")
+        .body(Full::new(Bytes::from(body.to_string())).boxed())?;
+    Ok(resp)
+}
+
+/// Build a `Content-Type: application/json` response with the given status.
+fn json_response(status: StatusCode, body: Value) -> AppResponse {
+    let bytes = body.to_string();
+    Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json; charset=utf-8")
+        .body(Full::new(Bytes::from(bytes)).boxed())
+        .expect("json_response build")
+}
+
+/// Constant-time byte comparison. We compare bridge tokens this way to
+/// avoid leaking length / prefix information through timing side channels.
+/// 32 hex chars per token, but the same routine handles bad-length inputs
+/// safely by short-circuiting to false.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 #[derive(Debug, Deserialize)]

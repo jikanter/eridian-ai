@@ -55,6 +55,20 @@ async fn main() -> Result<()> {
         process::exit(exit);
     }
 
+    // Phase 3: one-shot session conversion. Like --validate-mcp-config it
+    // short-circuits before the full config init so a broken config.yaml
+    // can't mask the conversion path. We load the session through a
+    // minimal Config (no models, no agents) since we only need the YAML
+    // schema to deserialize, not the runtime model.
+    if let Some(ref src) = cli.convert_session {
+        let exit = run_convert_session(
+            src,
+            &cli.convert_to,
+            cli.convert_out.as_deref(),
+        );
+        process::exit(exit);
+    }
+
     // MCP mode uses stdin as transport — don't consume it here
     let text = if cli.mcp { None } else { cli.text()? };
     let working_mode = if cli.mcp {
@@ -474,12 +488,161 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
             input.use_knowledge()?;
             start_directive(&config, input, cli.code, abort_signal).await
         }
-        true => {
+        true => launch_repl(&cli, &config).await,
+    }
+}
+
+/// Dispatch into the chosen REPL surface. The TTY check guards the
+/// built-in Reedline REPL only — pi manages its own terminal lifecycle
+/// and is happy to run with stdio piped (e.g. inside an integration test
+/// harness), so we let it through.
+async fn launch_repl(cli: &Cli, config: &GlobalConfig) -> Result<()> {
+    match choose_repl(cli) {
+        ReplChoice::Legacy => {
             if !*IS_STDOUT_TERMINAL {
                 bail!("No TTY for REPL")
             }
-            start_interactive(&config).await
+            start_interactive(config).await
         }
+        ReplChoice::Pi { strict: true } => crate::repl::pi::launch_pi(config).await,
+        ReplChoice::Pi { strict: false } => {
+            // Soft default: fall back to the legacy REPL when pi isn't
+            // installed, so the upgrade doesn't strand users without an
+            // interactive surface. Print a one-line note so the change is
+            // visible and discoverable.
+            if which::which("pi").is_err() {
+                eprintln!(
+                    "aichat: `pi` not on PATH; using the built-in REPL. Install pi at\n\
+                     https://pi.dev for the new REPL surface, or pass --legacy-repl to\n\
+                     silence this message. `--pi-repl` requires pi and will error if missing.",
+                );
+                if !*IS_STDOUT_TERMINAL {
+                    bail!("No TTY for REPL")
+                }
+                return start_interactive(config).await;
+            }
+            crate::repl::pi::launch_pi(config).await
+        }
+    }
+}
+
+/// True when the REPL invocation should hand off to the pi coding-agent
+/// harness. Driven by the `--pi-repl` flag or the `AICHAT_REPL=pi` env var;
+/// suppressed by `--legacy-repl` so users can opt back into the built-in
+/// REPL even with the env var set.
+/// Phase 3: one-shot session conversion entry point. Resolves `src` to a
+/// session file on disk, deserializes it, and writes the chosen output
+/// format to either `out_path` or stdout. Returns the process exit code.
+fn run_convert_session(src: &str, target: &str, out_path: Option<&str>) -> i32 {
+    if target != "pi" {
+        eprintln!(
+            "--convert-session: target '{target}' is not supported. Only 'pi' is recognised."
+        );
+        return 2;
+    }
+
+    // Resolve the source. A path with a separator or an existing file goes
+    // through unchanged; a bare name is looked up against the configured
+    // sessions directory (same lookup rule as Config::session_file).
+    let path = resolve_session_source(src);
+    let yaml = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to read session file '{}': {e}", path.display());
+            return 1;
+        }
+    };
+    let session: crate::config::Session = match serde_yaml::from_str(&yaml) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to parse session YAML '{}': {e}", path.display());
+            return 1;
+        }
+    };
+
+    // `cwd` recorded in the pi header. Pi uses this to group sessions by
+    // working directory; the user's current shell CWD is the right value
+    // — they ran the conversion from where they intend to resume.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    let write_result: Result<()> = match out_path {
+        Some(p) => {
+            // Buffered file writer. Pi's loader streams line-by-line so
+            // we don't need to commit atomically.
+            let f = match std::fs::File::create(p) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("Failed to create output file '{p}': {e}");
+                    return 1;
+                }
+            };
+            let mut buf = std::io::BufWriter::new(f);
+            session.export_to_pi_jsonl(&cwd, &mut buf)
+        }
+        None => {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            session.export_to_pi_jsonl(&cwd, &mut handle)
+        }
+    };
+
+    if let Err(e) = write_result {
+        eprintln!("Conversion failed: {e}");
+        return 1;
+    }
+    0
+}
+
+/// Resolve a --convert-session argument to a real path. Mirrors the
+/// lookup rule in `Config::session_file`: an explicit path (anything with
+/// a separator, or an existing file) wins, otherwise we treat the input
+/// as a session name and join against `$AICHAT_SESSIONS_DIR` (or the
+/// platform default if unset).
+fn resolve_session_source(src: &str) -> std::path::PathBuf {
+    let as_path = std::path::PathBuf::from(src);
+    if src.contains(std::path::MAIN_SEPARATOR) || as_path.exists() {
+        return as_path;
+    }
+    if let Ok(dir) = std::env::var("AICHAT_SESSIONS_DIR") {
+        return std::path::PathBuf::from(dir).join(format!("{src}.yaml"));
+    }
+    // Fall back to the conventional location under the user's config dir.
+    // We don't try to be exhaustive here — anyone with a non-standard
+    // layout can pass the absolute path explicitly.
+    let cfg_dir = std::env::var_os("AICHAT_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::config_dir().map(|p| p.join("aichat")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    cfg_dir.join("sessions").join(format!("{src}.yaml"))
+}
+
+/// Decision for which REPL to spawn. Pi is the default after the Phase 4
+/// cutover; `--legacy-repl` and `AICHAT_REPL=legacy` keep the built-in
+/// Reedline REPL available indefinitely so the two surfaces can be tested
+/// side-by-side. `--pi-repl` / `AICHAT_REPL=pi` are still accepted but are
+/// redundant with the new default — they keep working so existing setups
+/// don't break.
+///
+/// "Strict pi" means: hard-error if pi isn't on PATH (user explicitly
+/// asked for pi). "Soft pi" means: warn and fall back to the legacy REPL
+/// if pi isn't on PATH (user just ran `aichat`).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ReplChoice {
+    Pi { strict: bool },
+    Legacy,
+}
+
+fn choose_repl(cli: &Cli) -> ReplChoice {
+    if cli.legacy_repl {
+        return ReplChoice::Legacy;
+    }
+    if cli.pi_repl {
+        return ReplChoice::Pi { strict: true };
+    }
+    match std::env::var("AICHAT_REPL").as_deref() {
+        Ok("legacy") => ReplChoice::Legacy,
+        Ok("pi") => ReplChoice::Pi { strict: true },
+        _ => ReplChoice::Pi { strict: false },
     }
 }
 
