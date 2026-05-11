@@ -2,6 +2,8 @@
 
 **Status (2026-05-11):** **Partially scaffolded.** Basic preflight stage validation (existence + capability compatibility) ships in `src/config/preflight.rs::validate_pipeline_stages()` and runs implicitly before pipeline execution. The full contract-testing surface — JSON Schema containment between adjacent stages and a standalone `--check` flag — is **not implemented**.
 
+> **Note for the next agent picking this up:** 15A's *validation logic* already exists in [`src/config/preflight.rs`](../../src/config/preflight.rs) and runs as part of pipeline execution; what's missing is a *user-invokable surface*. Shipping 15C (`--check`) is therefore mostly **"expose `validate_pipeline_stages()` to the CLI without executing the pipeline"**, not a from-scratch build. 15B (cross-stage schema containment) is the only item that needs net-new logic.
+
 | Item | Description | Status |
 |---|---|---|
 | 15A | Pipeline schema compatibility check at authoring time (`showboat validate-pipeline`) | **Partial** — stage existence + capability checks live in `src/config/preflight.rs`; runs implicitly at execution time, not standalone |

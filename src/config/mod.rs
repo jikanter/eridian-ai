@@ -13,7 +13,7 @@ pub use self::resolver::{
 pub use self::input::Input;
 pub use self::role::{
     run_lifecycle_hooks, validate_schema, validate_schema_detailed, validate_schema_traced,
-    KnowledgeBinding, Role, RoleExample, RoleLike, RolePipelineStage, CODE_ROLE,
+    KnowledgeBinding, Role, RoleExample, RoleLike, RolePipelineStage, RolePublicView, CODE_ROLE,
     CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
 };
 pub use self::prompt::Prompt;
