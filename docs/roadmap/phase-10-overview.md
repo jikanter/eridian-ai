@@ -2,13 +2,15 @@
 
 *Merges existing Phase 10 resilience with Theme 3 (cost-aware routing).*
 
+**Status (2026-05-11):** Resilience items shipped. Cost-aware routing (10D `model_policy:`) was scoped here but never built — deferred indefinitely. The ROADMAP summary line "API retry, stage cache, stage retry, model fallback" reflects what actually shipped.
+
 | Item | Description | Status |
 |---|---|---|
-| 10A | API-level retry with exponential backoff (`src/client/retry.rs`) | -- |
-| 10B | Pipeline stage output cache (content-addressable, `sha256(role+model+input)`, configurable TTL) | -- |
-| 10C | Pipeline stage retry (configurable `stage_retries:`, retryable error classification) | -- |
-| 10D | Cost-aware model routing (`model_policy:` on roles) | -- |
-| 10E | Pipeline model fallback (`fallback_models:` chain on stage failure) | -- |
+| 10A | API-level retry with exponential backoff (`src/client/retry.rs`) | **Done** |
+| 10B | Pipeline stage output cache (content-addressable, `sha256(role+model+input)`, configurable TTL) | **Done** (`src/cache.rs`) |
+| 10C | Pipeline stage retry (configurable `stage_retries:`, retryable error classification) | **Done** |
+| 10D | Cost-aware model routing (`model_policy:` on roles) | **Deferred** — not implemented; design retained below for reference |
+| 10E | Pipeline model fallback (`fallback_models:` chain on stage failure) | **Done** |
 
 **10D Design — Cost-Aware Model Routing:**
 

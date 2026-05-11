@@ -1,11 +1,13 @@
 # Phase 13: Authoring & Teaching : Overview - Epic 3
 
+**Status (2026-05-11):** **Planned — not yet started.** No items below have been implemented in code. Designs preserved for future work.
+
 | Item | Description | Status |
 |---|---|---|
-| 13A | `--fork-role <source> <new-name>` (creates pre-populated `extends:` file) | -- |
-| 13B | Schema mismatch errors as teaching moments (side-by-side diff with suggestion) | -- |
-| 13C | Built-in guardrail role examples (PII detection, prompt injection, topic restriction) | -- |
-| 13D | `--explain-role <name>` (human-readable description of what a role does and how it composes) | -- |
+| 13A | `--fork-role <source> <new-name>` (creates pre-populated `extends:` file) | Planned |
+| 13B | Schema mismatch errors as teaching moments (side-by-side diff with suggestion) | Planned |
+| 13C | Built-in guardrail role examples (PII detection, prompt injection, topic restriction) | Planned |
+| 13D | `--explain-role <name>` (human-readable description of what a role does and how it composes) | Planned |
 
 **13A Design — Fork Role:**
 
