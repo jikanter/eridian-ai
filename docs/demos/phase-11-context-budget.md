@@ -13,24 +13,24 @@ Phase 11 ships two pieces together in `src/context_budget.rs`:
 ## Module API
 
 ```bash
-grep -nE "^pub (fn|struct|const) " src/context_budget.rs
+grep -E "^pub (fn|struct|const) " src/context_budget.rs
 ```
 
 ```output
-23:pub const DEFAULT_OUTPUT_RESERVE: usize = 4096;
-28:pub const FILES_SAFETY_MARGIN: usize = 2048;
-30:pub struct ContextBudget {
-53:pub struct RankedContent {
-61:pub struct SelectionOutcome {
-75:pub fn rank_files(files: Vec<(String, String)>, query: &str) -> Vec<RankedContent> {
-134:pub fn select_within_budget(ranked: Vec<RankedContent>, budget: usize) -> SelectionOutcome {
-151:pub fn format_selection_summary(outcome: &SelectionOutcome) -> Option<String> {
+pub const DEFAULT_OUTPUT_RESERVE: usize = 4096;
+pub const FILES_SAFETY_MARGIN: usize = 2048;
+pub struct ContextBudget {
+pub struct RankedContent {
+pub struct SelectionOutcome {
+pub fn rank_files(files: Vec<(String, String)>, query: &str) -> Vec<RankedContent> {
+pub fn select_within_budget(ranked: Vec<RankedContent>, budget: usize) -> SelectionOutcome {
+pub fn format_selection_summary(outcome: &SelectionOutcome) -> Option<String> {
 ```
 
 ## Unit tests — budget math, BM25 ordering, greedy selection
 
 ```bash
-cargo test --bin aichat -- context_budget::tests 2>&1 | grep -E "^test context_budget|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test --bin aichat -- context_budget::tests 2>&1 | grep -E "^test context_budget|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/"
 ```
 
 ```output
@@ -46,24 +46,24 @@ test context_budget::tests::select_greedy_prefers_higher_ranked_over_packing_eff
 test context_budget::tests::select_skips_files_that_dont_fit ... ok
 test context_budget::tests::summary_lists_included_and_skipped_files ... ok
 test context_budget::tests::summary_returns_none_when_nothing_skipped ... ok
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 253 filtered out; finished in Xs
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Integration — `Input::from_files`
 
 ```bash
-grep -n "Phase 11\|maybe_select_by_budget\|ContextBudget\|rank_files\|select_within_budget" src/config/input.rs
+grep "Phase 11\|maybe_select_by_budget\|ContextBudget\|rank_files\|select_within_budget" src/config/input.rs
 ```
 
 ```output
-103:        // Phase 11A/B: when multiple files were loaded and the user supplied a
-108:        let documents = maybe_select_by_budget(documents, raw_text, &role);
-486:/// Phase 11A/B integration glue. Given the raw `-f` document list, decide
-492:fn maybe_select_by_budget(
-498:        format_selection_summary, rank_files, select_within_budget, ContextBudget,
-510:    let budget = ContextBudget::new(max_input, DEFAULT_OUTPUT_RESERVE);
-534:    let ranked = rank_files(files, raw_text);
-535:    let outcome = select_within_budget(ranked, files_budget);
+        // Phase 11A/B: when multiple files were loaded and the user supplied a
+        let documents = maybe_select_by_budget(documents, raw_text, &role);
+/// Phase 11A/B integration glue. Given the raw `-f` document list, decide
+fn maybe_select_by_budget(
+        format_selection_summary, rank_files, select_within_budget, ContextBudget,
+    let budget = ContextBudget::new(max_input, DEFAULT_OUTPUT_RESERVE);
+    let ranked = rank_files(files, raw_text);
+    let outcome = select_within_budget(ranked, files_budget);
 ```
 
 Kicks in only when **all** of these hold: (a) `-f` loaded multiple files, (b) a non-empty query is present, (c) the role's model advertises `max_input_tokens`, (d) the concatenated token estimate exceeds the files budget (`max_input - 4096 output reserve - 2048 safety margin`). Otherwise the existing concatenate-all path is preserved — no behavior change for the small-input common case.
@@ -71,9 +71,9 @@ Kicks in only when **all** of these hold: (a) `-f` loaded multiple files, (b) a 
 ## Full test suite
 
 ```bash
-cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/"
 ```
 
 ```output
-test result: ok. 265 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```

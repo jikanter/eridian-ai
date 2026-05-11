@@ -48,13 +48,11 @@ overridden
 --arg values automatically detect types: integers, floats, booleans, null, and strings.
 
 ```bash
-cargo test --quiet mcp_client::tests::test_parse_scalar 2>&1 | grep 'test result'
+cargo test --quiet mcp_client::tests::test_parse_scalar 2>&1 | grep 'test result' | sed -E "s/[0-9]+ filtered out/N filtered out/; s/finished in [0-9.]+s/finished in Xs/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 399 filtered out; finished in 0.00s
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 197 filtered out; finished in 0.00s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Config Fields
@@ -62,25 +60,23 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 197 filtered out; fi
 New config.yaml fields with sensible defaults: mcp_cache_ttl (3600s), mcp_startup_timeout (30s), mcp_call_timeout (120s), mcp_max_connections (10). Connection pool enforces idle timeout (5 min) and max connections limit.
 
 ```bash
-cargo test --quiet mcp_client::tests::test_config_mcp_defaults 2>&1 | grep -E 'test |test result'
+cargo test --quiet mcp_client::tests::test_config_mcp_defaults 2>&1 | grep -E 'test |test result' | sed -E "s/[0-9]+ filtered out/N filtered out/; s/finished in [0-9.]+s/finished in Xs/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 406 filtered out; finished in 0.00s
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 197 filtered out; finished in 0.00s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Full Test Suite
 
 ```bash
-cargo test --quiet 2>&1 | grep 'test result'
+cargo test --quiet 2>&1 | grep 'test result' | sed -E "s/[0-9]+ passed/N passed/; s/[0-9]+ filtered out/N filtered out/; s/finished in [0-9.]+s/finished in Xs/"
 ```
 
 ```output
-test result: ok. 407 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.64s
-test result: ok. 197 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Error Handling

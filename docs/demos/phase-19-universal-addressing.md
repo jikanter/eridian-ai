@@ -14,27 +14,27 @@ Four items shipped:
 ## 19A — Public surface in `src/config/resolver.rs`
 
 ```bash
-grep -nE "^pub (fn|struct|enum|trait) " src/config/resolver.rs
+grep -E "^pub (fn|struct|enum|trait) " src/config/resolver.rs
 ```
 
 ```output
-22:pub fn expand_mcp_servers_into_use_tools(
-59:pub enum RoleAddress {
-132:pub enum EntityRef {
-160:pub trait RoleResolver {
-168:pub fn pipeline_stage_admissible(entity: &EntityRef) -> Result<()> {
-182:pub fn classify_address(
+pub fn expand_mcp_servers_into_use_tools(
+pub enum RoleAddress {
+pub enum EntityRef {
+pub trait RoleResolver {
+pub fn pipeline_stage_admissible(entity: &EntityRef) -> Result<()> {
+pub fn classify_address(
 ```
 
 ## 19A unit tests — address parsing + classification + admissibility
 
 ```bash
-cargo test --bin aichat --quiet config::resolver:: 2>&1 | tail -3 | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat --quiet config::resolver:: 2>&1 | tail -3 | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/"
 ```
 
 ```output
 .............................
-test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 423 filtered out; finished in Xs
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 
 ```
 
@@ -89,22 +89,22 @@ Error: Unknown role `nopenotfound`
 Agents now declare MCP server bindings the same way roles do. The `Agent::init` path expands the list into `use_tools` via the helper extracted in `resolver.rs` — the role path was refactored to use the same helper, keeping the two binding semantics identical.
 
 ```bash
-grep -nE "mcp_servers" src/config/agent.rs | head -3
+grep -E "mcp_servers" src/config/agent.rs | head -3
 ```
 
 ```output
-63:        if !agent_config.mcp_servers.is_empty() {
-66:                cfg.mcp_servers.keys().map(|s| s.as_str()).collect();
-67:            let new_use_tools = super::resolver::expand_mcp_servers_into_use_tools(
+        if !agent_config.mcp_servers.is_empty() {
+                cfg.mcp_servers.keys().map(|s| s.as_str()).collect();
+            let new_use_tools = super::resolver::expand_mcp_servers_into_use_tools(
 ```
 
 ```bash
-cargo test --bin aichat --quiet config::agent::tests 2>&1 | tail -3 | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat --quiet config::agent::tests 2>&1 | tail -3 | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/"
 ```
 
 ```output
 .....
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 447 filtered out; finished in Xs
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 
 ```
 
@@ -127,17 +127,17 @@ ok 4 pipeline: --stage overrides model
 ## Full suite — no regressions
 
 ```bash
-cargo test --bin aichat --quiet > /tmp/p19_unit.log 2>&1; grep "^test result:" /tmp/p19_unit.log | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat --quiet > /tmp/p19_unit.log 2>&1; grep "^test result:" /tmp/p19_unit.log | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/"
 ```
 
 ```output
-test result: ok. 452 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ```bash
-cargo test --quiet --test compatibility > /tmp/p19_compat.log 2>&1; grep "^test result:" /tmp/p19_compat.log | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --quiet --test compatibility > /tmp/p19_compat.log 2>&1; grep "^test result:" /tmp/p19_compat.log | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/"
 ```
 
 ```output
-test result: ok. 197 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```

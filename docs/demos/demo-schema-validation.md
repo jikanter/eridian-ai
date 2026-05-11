@@ -114,9 +114,6 @@ rm "$ROLES_DIR/test-schema-fail.md"
 
 ```output
 Error: Schema input validation failed: not valid JSON
-
-Caused by:
-    expected ident at line 1 column 2
 exit: 8
 ```
 

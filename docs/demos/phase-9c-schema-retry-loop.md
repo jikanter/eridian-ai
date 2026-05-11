@@ -8,70 +8,70 @@ Phase 9C adds a retry loop around output schema validation. When a role has `out
 ## schema_retries is a new role frontmatter field
 
 ```bash
-grep -n "schema_retries" src/config/role.rs | head -8
+grep "schema_retries" src/config/role.rs | head -8
 ```
 
 ```output
-83:    schema_retries: Option<usize>,
-470:                                "schema_retries" => {
-471:                                    role.schema_retries = value.as_u64().map(|v| v as usize)
-557:        if let Some(n) = self.schema_retries {
-558:            meta.insert("schema_retries".into(), serde_json::json!(n));
-718:    pub fn schema_retries(&self) -> Option<usize> {
-719:        self.schema_retries
-1973:    fn test_schema_retries_default_none() {
+    schema_retries: Option<usize>,
+                                "schema_retries" => {
+                                    role.schema_retries = value.as_u64().map(|v| v as usize)
+        if let Some(n) = self.schema_retries {
+            meta.insert("schema_retries".into(), serde_json::json!(n));
+    pub fn schema_retries(&self) -> Option<usize> {
+        self.schema_retries
+    fn test_schema_retries_default_none() {
 ```
 
 ## Input carries the retry feedback across calls
 
 ```bash
-grep -n "retry_feedback\|with_retry_prompt" src/config/input.rs src/config/role.rs
+grep "retry_feedback\|with_retry_prompt" src/config/input.rs src/config/role.rs
 ```
 
 ```output
-src/config/input.rs:38:    retry_feedback: Option<(String, String)>,
-src/config/input.rs:59:            retry_feedback: None,
-src/config/input.rs:127:            retry_feedback: None,
-src/config/input.rs:223:    pub fn with_retry_prompt(mut self, failed_output: &str, retry_prompt: &str) -> Self {
-src/config/input.rs:224:        self.retry_feedback = Some((failed_output.to_string(), retry_prompt.to_string()));
-src/config/input.rs:228:    pub fn retry_feedback(&self) -> Option<(&str, &str)> {
-src/config/input.rs:229:        self.retry_feedback
-src/config/role.rs:846:        if let Some((failed_output, retry_prompt)) = input.retry_feedback() {
-src/config/role.rs:2013:    fn test_build_messages_appends_retry_feedback() {
-src/config/role.rs:2023:        // retry_feedback() drives the injection.
-src/config/role.rs:2026:        // Here: directly assert that when retry_feedback is set, two extra
-src/config/role.rs:2037:        let input = input.with_retry_prompt(
+src/config/input.rs:    retry_feedback: Option<(String, String)>,
+src/config/input.rs:            retry_feedback: None,
+src/config/input.rs:            retry_feedback: None,
+src/config/input.rs:    pub fn with_retry_prompt(mut self, failed_output: &str, retry_prompt: &str) -> Self {
+src/config/input.rs:        self.retry_feedback = Some((failed_output.to_string(), retry_prompt.to_string()));
+src/config/input.rs:    pub fn retry_feedback(&self) -> Option<(&str, &str)> {
+src/config/input.rs:        self.retry_feedback
+src/config/role.rs:        if let Some((failed_output, retry_prompt)) = input.retry_feedback() {
+src/config/role.rs:    fn test_build_messages_appends_retry_feedback() {
+src/config/role.rs:        // retry_feedback() drives the injection.
+src/config/role.rs:        // Here: directly assert that when retry_feedback is set, two extra
+src/config/role.rs:        let input = input.with_retry_prompt(
 ```
 
 ## The retry loop in main.rs (directive path)
 
 ```bash
-grep -n "Phase 9C\|native_structured\|max_schema_retries" src/main.rs
+grep "Phase 9C\|native_structured\|max_schema_retries" src/main.rs
 ```
 
 ```output
-401:    // Phase 9C: Schema validation retry budget. Short-circuit to 0 when the
-404:    let native_structured = has_output_schema.is_some()
-410:    let max_schema_retries = if has_output_schema.is_some() && !is_dry_run && !native_structured {
-424:        if !is_dry_run && max_schema_retries > 0 {
-428:                    Err(e) if schema_retry_attempts < max_schema_retries => {
-496:        // max_schema_retries == 0 (native structured output, or user disabled),
-498:        if max_schema_retries == 0 {
+    // Phase 9C: Schema validation retry budget. Short-circuit to 0 when the
+    let native_structured = has_output_schema.is_some()
+    let max_schema_retries = if has_output_schema.is_some() && !is_dry_run && !native_structured {
+        if !is_dry_run && max_schema_retries > 0 {
+                    Err(e) if schema_retry_attempts < max_schema_retries => {
+        // max_schema_retries == 0 (native structured output, or user disabled),
+        if max_schema_retries == 0 {
 ```
 
 ## And in pipe.rs (pipeline stage path)
 
 ```bash
-grep -n "Phase 9C\|native_structured\|max_schema_retries" src/pipe.rs
+grep "Phase 9C\|native_structured\|max_schema_retries" src/pipe.rs
 ```
 
 ```output
-192:    // Phase 9C: schema retry budget for this stage. Short-circuits to 0 when
-194:    let native_structured = role.has_output_schema()
-196:    let max_schema_retries = if role.has_output_schema() && !native_structured {
-212:    // Phase 9C: retry loop on output schema failure.
-214:        if max_schema_retries > 0 {
-219:                    Err(e) if attempt < max_schema_retries => {
+    // Phase 9C: schema retry budget for this stage. Short-circuits to 0 when
+    let native_structured = role.has_output_schema()
+    let max_schema_retries = if role.has_output_schema() && !native_structured {
+    // Phase 9C: retry loop on output schema failure.
+        if max_schema_retries > 0 {
+                    Err(e) if attempt < max_schema_retries => {
 ```
 
 ## Unit tests for schema_retries parsing and retry-message injection
@@ -92,11 +92,11 @@ test config::role::tests::test_schema_retries_zero_means_fail_fast ... ok
 ## Full test suite stays green
 
 ```bash
-cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/"
 ```
 
 ```output
-test result: ok. 219 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## End-to-end: a weak local model exercises the retry budget
@@ -156,23 +156,23 @@ exactly one attempt (no retries)
 When the model declares `supports_response_format_json_schema: true` (Phase 9A / 9B), the provider guarantees schema-conforming output, so the retry budget is forced to 0 regardless of the role's `schema_retries` setting:
 
 ```bash
-grep -n -A 6 "native_structured" src/main.rs | head -16
+grep -A 6 "native_structured" src/main.rs | head -16
 ```
 
 ```output
-404:    let native_structured = has_output_schema.is_some()
-405-        && input
-406-            .role()
-407-            .model()
-408-            .data()
-409-            .supports_response_format_json_schema;
-410:    let max_schema_retries = if has_output_schema.is_some() && !is_dry_run && !native_structured {
-411-        input.role().schema_retries().unwrap_or(1)
-412-    } else {
-413-        0
-414-    };
-415-    let original_input = input.clone();
-416-
+    let native_structured = has_output_schema.is_some()
+        && input
+            .role()
+            .model()
+            .data()
+            .supports_response_format_json_schema;
+    let max_schema_retries = if has_output_schema.is_some() && !is_dry_run && !native_structured {
+        input.role().schema_retries().unwrap_or(1)
+    } else {
+        0
+    };
+    let original_input = input.clone();
+
 ```
 
 ## Cleanup

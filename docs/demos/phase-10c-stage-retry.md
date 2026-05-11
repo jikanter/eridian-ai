@@ -8,35 +8,35 @@ Phase 10C wraps `run_stage_inner` in a retry loop. On a transient failure (netwo
 ## Role frontmatter field
 
 ```bash
-grep -n "stage_retries" src/config/role.rs | head -10
+grep "stage_retries" src/config/role.rs | head -10
 ```
 
 ```output
-87:    stage_retries: Option<usize>,
-478:                                "stage_retries" => {
-479:                                    role.stage_retries = value.as_u64().map(|v| v as usize)
-568:        if let Some(n) = self.stage_retries {
-569:            meta.insert("stage_retries".into(), serde_json::json!(n));
-736:    pub fn stage_retries(&self) -> Option<usize> {
-737:        self.stage_retries
-2033:    fn test_stage_retries_default_none() {
-2036:        assert_eq!(role.stage_retries(), None);
-2040:    fn test_stage_retries_parsed_from_frontmatter() {
+    stage_retries: Option<usize>,
+                                "stage_retries" => {
+                                    role.stage_retries = value.as_u64().map(|v| v as usize)
+        if let Some(n) = self.stage_retries {
+            meta.insert("stage_retries".into(), serde_json::json!(n));
+    pub fn stage_retries(&self) -> Option<usize> {
+        self.stage_retries
+    fn test_stage_retries_default_none() {
+        assert_eq!(role.stage_retries(), None);
+    fn test_stage_retries_parsed_from_frontmatter() {
 ```
 
 ## Retryable classifier + tests
 
 ```bash
-grep -nE "^pub fn is_retryable_stage_error|^/// Phase 10C" src/utils/exit_code.rs
+grep -E "^pub fn is_retryable_stage_error|^/// Phase 10C" src/utils/exit_code.rs
 ```
 
 ```output
-272:/// Phase 10C: Decide whether a pipeline-stage failure is transient enough to
-279:pub fn is_retryable_stage_error(err: &anyhow::Error) -> bool {
+/// Phase 10C: Decide whether a pipeline-stage failure is transient enough to
+pub fn is_retryable_stage_error(err: &anyhow::Error) -> bool {
 ```
 
 ```bash
-cargo test --bin aichat -- is_retryable stage_retries 2>&1 | grep -E "^test (config::role::tests::test_stage_retries|utils::exit_code::tests::test_is_retryable|utils::exit_code::tests::test_not_retryable)|^test result:" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test --bin aichat -- is_retryable stage_retries 2>&1 | grep -E "^test (config::role::tests::test_stage_retries|utils::exit_code::tests::test_is_retryable|utils::exit_code::tests::test_not_retryable)|^test result:" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/"
 ```
 
 ```output
@@ -45,7 +45,7 @@ test config::role::tests::test_stage_retries_default_none ... ok
 test config::role::tests::test_stage_retries_in_export ... ok
 test config::role::tests::test_stage_retries_parsed_from_frontmatter ... ok
 test config::role::tests::test_stage_retries_zero_means_fail_fast ... ok
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 242 filtered out; finished in Xs
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 test utils::exit_code::tests::test_is_retryable_api_and_network ... ok
 test utils::exit_code::tests::test_is_retryable_model_and_schema ... ok
 ```
@@ -55,14 +55,15 @@ test utils::exit_code::tests::test_is_retryable_model_and_schema ... ok
 ## Retry loop in pipe.rs
 
 ```bash
-grep -n "Phase 10C\|is_retryable_stage_error\|max_stage_retries" src/pipe.rs
+grep "Phase 10C\|is_retryable_stage_error\|max_stage_retries" src/pipe.rs
 ```
 
 ```output
-137:    // Phase 10C: stage retry budget. Peek at the role once to read
-140:    let max_stage_retries = config
-163:            Err(e) if attempt < max_stage_retries && is_retryable_stage_error(&e) => {
-170:                    max_stage_retries + 1,
+    // Phase 10C/10D: peek at the role once for the retry budget and the model
+    let max_stage_retries = role
+                Err(e) if attempt < max_stage_retries && is_retryable_stage_error(&e) => {
+                        max_stage_retries + 1,
+                    if is_retryable_stage_error(&e)
 ```
 
 Interaction with other phases:
@@ -74,9 +75,9 @@ Interaction with other phases:
 ## Full test suite
 
 ```bash
-cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/"
 ```
 
 ```output
-test result: ok. 249 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```

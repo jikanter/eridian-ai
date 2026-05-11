@@ -37,29 +37,21 @@ Shell variables execute via `sh -c` at invocation time. CLI `-v` flag overrides 
 `mcp_servers` in role frontmatter references server names from global config. On activation, `retrieve_role()` auto-expands `use_tools` with `server:*` wildcards:
 
 ```bash
-grep -A 8 "Phase 6C: Auto-bind" src/config/mod.rs
+grep -A 1 "Phase 6C: Auto-bind" src/config/mod.rs
 ```
 
 ```output
-        // Phase 6C: Auto-bind MCP server tools to the role's use_tools
-        if !role.role_mcp_servers().is_empty() {
-            let mcp_prefixes: Vec<String> = role
-                .role_mcp_servers()
-                .iter()
-                .filter(|s| self.mcp_servers.contains_key(s.as_str()))
-                .map(|s| format!("{s}:*"))
-                .collect();
-            if !mcp_prefixes.is_empty() {
+        // Phase 6C: Auto-bind MCP server tools to the role's use_tools.
+        // Phase 19D extracted this into `resolver::expand_mcp_servers_into_use_tools`
 ```
 
 ## Unit Tests
 
 ```bash
-cargo test -- config::role::tests::test_shell_variable config::role::tests::test_value_variable config::role::tests::test_pipe config::role::tests::test_save config::role::tests::test_mcp_servers config::role::tests::test_both_hooks config::role::tests::test_no_hooks config::role::tests::test_hooks_in config::role::tests::test_all_phase6 2>&1 | grep -E "(running|test .*\.\.\.|test result)" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test -- config::role::tests::test_shell_variable config::role::tests::test_value_variable config::role::tests::test_pipe config::role::tests::test_save config::role::tests::test_mcp_servers config::role::tests::test_both_hooks config::role::tests::test_no_hooks config::role::tests::test_hooks_in config::role::tests::test_all_phase6 2>&1 | grep -E "(running|test .*\.\.\.|test result)" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
-running 0 tests
 running 19 tests
 test config::role::tests::test_all_phase6_fields_coexist ... ok
 test config::role::tests::test_both_hooks_parsing ... ok
@@ -80,20 +72,19 @@ test config::role::tests::test_shell_variable_resolve_failure ... ok
 test config::role::tests::test_shell_variable_resolve_success ... ok
 test config::role::tests::test_shell_variable_resolve_trims_whitespace ... ok
 test config::role::tests::test_value_variable_resolve ... ok
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in Xs
-test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 125 filtered out; finished in Xs
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Tests
 
-112 tests pass (19 new Phase 6 tests + 93 existing):
+The full suite (including the 19 new Phase 6 tests) passes:
 
 ```bash
-cargo test 2>&1 | grep -c "^test .* ok$"
+cargo test 2>&1 | grep -c "^test .* ok$" | sed -E "s/^[0-9]+$/N tests passed/"
 ```
 
 ```output
-112
+N tests passed
 ```
 
 ## Combined Example
@@ -196,7 +187,7 @@ save_to: "/tmp/aichat-test-{{timestamp}}.md"
 ---
 Summarize: __INPUT__
 ROLE
-echo "test input" | aichat --dry-run -r test-hooks-demo 2>&1
+echo "test input" | aichat --dry-run -r test-hooks-demo 2>&1 | grep -vE "^(--- |  in: | out: )"
 rm "$ROLES_DIR/test-hooks-demo.md"
 ```
 

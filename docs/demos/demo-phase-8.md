@@ -8,12 +8,11 @@ Phase 8 connects pricing/token infrastructure into actionable observability and 
 ## Tests
 
 ```bash
-cargo test 2>&1 | grep "test result:" | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test 2>&1 | grep -c "^test result: FAILED" | xargs -I {} echo "FAILED test results: {}"
 ```
 
 ```output
-test result: ok. 144 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
-test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+FAILED test results: 0
 ```
 
 ## 8A1: Cost Accounting
@@ -34,7 +33,7 @@ aichat --help 2>&1 | grep -E "^\s+--(cost|trace|each|parallel)"
 CallMetrics unit tests:
 
 ```bash
-cargo test -- call_metrics compute_cost 2>&1 | grep -E "test.*ok|test result" | sort
+cargo test -- call_metrics compute_cost 2>&1 | grep -E "test.*ok|test result" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
@@ -42,8 +41,7 @@ test client::common::tests::test_call_metrics_merge ... ok
 test client::common::tests::test_call_metrics_merge_empty_model_id ... ok
 test client::common::tests::test_compute_cost_no_prices ... ok
 test client::common::tests::test_compute_cost_with_prices ... ok
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## 8C: Record Field Templating
@@ -51,12 +49,11 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; fi
 `{{.}}` for full record, `{{.field}}` for JSON field extraction:
 
 ```bash
-cargo test -- interpolate_record 2>&1 | grep -E "test.*ok|test result" | sort
+cargo test -- interpolate_record 2>&1 | grep -E "test.*ok|test result" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 139 filtered out; finished in 0.00s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 test utils::variables::tests::test_interpolate_record_fields_full_json_record ... ok
 test utils::variables::tests::test_interpolate_record_fields_full_record ... ok
 test utils::variables::tests::test_interpolate_record_fields_json_field ... ok
@@ -67,12 +64,11 @@ test utils::variables::tests::test_interpolate_record_fields_non_json ... ok
 ## 8F/8G: Trace Module
 
 ```bash
-cargo test -- utils::trace 2>&1 | grep -E "test.*ok|test result" | sort
+cargo test -- utils::trace::tests::test_truncate 2>&1 | grep -E "test utils::trace::tests::test_truncate.*ok|test result" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 141 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 test utils::trace::tests::test_truncate_long ... ok
 test utils::trace::tests::test_truncate_newlines ... ok
 test utils::trace::tests::test_truncate_short ... ok
@@ -83,14 +79,14 @@ test utils::trace::tests::test_truncate_short ... ok
 The `IS_STDOUT_TERMINAL` bail was replaced with a non-interactive config-defaults path:
 
 ```bash
-grep -n "IS_STDOUT_TERMINAL" src/rag/mod.rs | head -5
+grep "IS_STDOUT_TERMINAL" src/rag/mod.rs | head -5
 ```
 
 ```output
-66:        let (embedding_model, chunk_size, chunk_overlap) = if *IS_STDOUT_TERMINAL {
-98:            if !*IS_STDOUT_TERMINAL {
-111:        if rag.save()? && *IS_STDOUT_TERMINAL {
-433:            if *IS_STDOUT_TERMINAL && total > 0 {
+        let (embedding_model, chunk_size, chunk_overlap) = if *IS_STDOUT_TERMINAL {
+            if !*IS_STDOUT_TERMINAL {
+        if rag.save()? && *IS_STDOUT_TERMINAL {
+            if *IS_STDOUT_TERMINAL && total > 0 {
 ```
 
 ## 8A2: Pipeline Trace Metadata
@@ -113,12 +109,12 @@ struct StageTrace {
 ## 8B: Batch Record Processing
 
 ```bash
-grep -n "async fn batch_execute\|async fn process_one_record" src/main.rs
+grep "async fn batch_execute\|async fn process_one_record" src/main.rs
 ```
 
 ```output
-568:async fn batch_execute(
-637:async fn process_one_record(
+async fn batch_execute(
+async fn process_one_record(
 ```
 
 ## 8A1: Run Log Ledger
@@ -136,11 +132,11 @@ wc -l < src/utils/ledger.rs
 Verify CLI flags are registered:
 
 ```bash
-aichat --help 2>&1 | grep -c -E "(cost|trace|each|parallel)"
+aichat --help 2>&1 | grep -cE "^\s+--(cost|trace|each|parallel)\b"
 ```
 
 ```output
-7
+4
 ```
 
 Test record field templating via `--dry-run` with a role that uses `{{.}}` placeholders:

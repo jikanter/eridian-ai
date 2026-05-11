@@ -8,7 +8,7 @@ Extends `--trace` to emit `[schema]` events when input or output schema validati
 ## Unit Tests
 
 ```bash
-cargo test -- config::role::tests::test_validate_schema_detailed 2>&1 | grep "^test " | sort
+cargo test -- config::role::tests::test_validate_schema_detailed 2>&1 | grep "^test " | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
@@ -19,19 +19,15 @@ test config::role::tests::test_validate_schema_detailed_preserves_raw_text ... o
 test config::role::tests::test_validate_schema_detailed_success ... ok
 test config::role::tests::test_validate_schema_detailed_terse_error_format ... ok
 test config::role::tests::test_validate_schema_detailed_type_mismatch_has_paths ... ok
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 196 filtered out; finished in 0.00s
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 188 filtered out; finished in 0.02s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ```bash
-cargo test -- utils::trace::tests 2>&1 | grep "^test " | sort
+cargo test -- utils::trace::tests 2>&1 | grep "^test " | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 196 filtered out; finished in 0.00s
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 189 filtered out; finished in 0.00s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 test utils::trace::tests::test_emit_schema_validation_fail_no_panic ... ok
 test utils::trace::tests::test_emit_schema_validation_jsonl_to_file ... ok
 test utils::trace::tests::test_emit_schema_validation_pass_no_panic ... ok

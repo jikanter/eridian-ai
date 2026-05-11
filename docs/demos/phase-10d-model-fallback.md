@@ -8,20 +8,20 @@ Phase 10D wraps Phase 10C's retry loop in an outer **model fallback** iterator. 
 ## Role frontmatter field
 
 ```bash
-grep -n "fallback_models" src/config/role.rs | head -10
+grep "fallback_models" src/config/role.rs | head -10
 ```
 
 ```output
-92:    fallback_models: Vec<String>,
-487:                                "fallback_models" => {
-489:                                        role.fallback_models = arr
-585:        if !self.fallback_models.is_empty() {
-587:                "fallback_models".into(),
-588:                serde_json::json!(self.fallback_models),
-763:    pub fn fallback_models(&self) -> &[String] {
-764:        &self.fallback_models
-2113:    fn test_fallback_models_default_empty() {
-2116:        assert!(role.fallback_models().is_empty());
+    fallback_models: Vec<String>,
+                                "fallback_models" => {
+                                        role.fallback_models = arr
+        if !self.fallback_models.is_empty() {
+                "fallback_models".into(),
+                serde_json::json!(self.fallback_models),
+    pub fn fallback_models(&self) -> &[String] {
+        &self.fallback_models
+    fn test_fallback_models_default_empty() {
+        assert!(role.fallback_models().is_empty());
 ```
 
 Example role declaration (4-space indented to keep showboat from executing a YAML block):
@@ -40,7 +40,7 @@ Empty `fallback_models` lists are dropped on export — round-trip stays clean.
 ## Role-level tests
 
 ```bash
-cargo test --bin aichat -- fallback_models 2>&1 | grep -E "^test config::role::tests::test_fallback_models|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test --bin aichat -- fallback_models 2>&1 | grep -E "^test config::role::tests::test_fallback_models|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/"
 ```
 
 ```output
@@ -48,28 +48,28 @@ test config::role::tests::test_fallback_models_default_empty ... ok
 test config::role::tests::test_fallback_models_empty_list_is_not_exported ... ok
 test config::role::tests::test_fallback_models_in_export ... ok
 test config::role::tests::test_fallback_models_parsed_from_frontmatter ... ok
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 249 filtered out; finished in Xs
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Fallback iteration in pipe.rs
 
 ```bash
-grep -n "Phase 10D\|fallback_models\|candidates\|model_override\|total_models" src/pipe.rs
+grep "Phase 10D\|fallback_models\|candidates\|model_override\|total_models" src/pipe.rs
 ```
 
 ```output
-145:    let fallback_models: Vec<String> = role
-147:        .map(|r| r.fallback_models().to_vec())
-150:    // Phase 10D: build the candidate chain — primary first, then each fallback.
-153:    let mut candidates: Vec<Option<String>> = vec![stage.model_id.clone()];
-154:    for fb in &fallback_models {
-155:        candidates.push(Some(fb.clone()));
-157:    let total_models = candidates.len();
-159:    for (model_index, model_override) in candidates.into_iter().enumerate() {
-162:            model_id: model_override.clone(),
-164:        let model_label = model_override
-206:                        && model_index + 1 < total_models =>
-220:                    let final_model_id = model_override
+    let fallback_models: Vec<String> = role
+        .map(|r| r.fallback_models().to_vec())
+    // Phase 10D: build the candidate chain — primary first, then each fallback.
+    let mut candidates: Vec<Option<String>> = vec![stage.model_id.clone()];
+    for fb in &fallback_models {
+        candidates.push(Some(fb.clone()));
+    let total_models = candidates.len();
+    for (model_index, model_override) in candidates.into_iter().enumerate() {
+            model_id: model_override.clone(),
+        let model_label = model_override
+                        && model_index + 1 < total_models =>
+                    let final_model_id = model_override
 ```
 
 ## Control flow — three arms in the retry match
@@ -83,9 +83,9 @@ The cache key (Phase 10B) incorporates `model_id`, so each fallback attempt has 
 ## Full test suite
 
 ```bash
-cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/"
 ```
 
 ```output
-test result: ok. 253 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```

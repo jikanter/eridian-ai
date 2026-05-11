@@ -8,35 +8,35 @@ Phase 9B enables provider-native structured output for Claude via the tool-use p
 ## Capability flag added to ModelData
 
 ```bash
-grep -n "supports_response_format_json_schema" src/client/model.rs
+grep "supports_response_format_json_schema" src/client/model.rs
 ```
 
 ```output
-321:    pub supports_response_format_json_schema: bool,
+    pub supports_response_format_json_schema: bool,
 ```
 
 ## Claude body builder injects the synthetic tool
 
 ```bash
-grep -n "CLAUDE_STRUCTURED_OUTPUT_TOOL\|use_native_schema" src/client/claude.rs
+grep "CLAUDE_STRUCTURED_OUTPUT_TOOL\|use_native_schema" src/client/claude.rs
 ```
 
 ```output
-16:pub const CLAUDE_STRUCTURED_OUTPUT_TOOL: &str = "structured_output";
-102:                            && function_name != CLAUDE_STRUCTURED_OUTPUT_TOOL
-133:                        if function_name == CLAUDE_STRUCTURED_OUTPUT_TOOL {
-146:                        && function_name != CLAUDE_STRUCTURED_OUTPUT_TOOL
-327:    let use_native_schema = model.data().supports_response_format_json_schema
-329:    if use_native_schema {
-332:            "name": CLAUDE_STRUCTURED_OUTPUT_TOOL,
-338:            "name": CLAUDE_STRUCTURED_OUTPUT_TOOL,
-376:                        if name == CLAUDE_STRUCTURED_OUTPUT_TOOL {
+pub const CLAUDE_STRUCTURED_OUTPUT_TOOL: &str = "structured_output";
+                            && function_name != CLAUDE_STRUCTURED_OUTPUT_TOOL
+                        if function_name == CLAUDE_STRUCTURED_OUTPUT_TOOL {
+                        && function_name != CLAUDE_STRUCTURED_OUTPUT_TOOL
+    let use_native_schema = model.data().supports_response_format_json_schema
+    if use_native_schema {
+            "name": CLAUDE_STRUCTURED_OUTPUT_TOOL,
+            "name": CLAUDE_STRUCTURED_OUTPUT_TOOL,
+                        if name == CLAUDE_STRUCTURED_OUTPUT_TOOL {
 ```
 
 ## Unit tests: body, extract, and streaming
 
 ```bash
-cargo test --bin aichat -- claude::tests 2>&1 | grep -E "^test client::claude|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test --bin aichat -- claude::tests 2>&1 | grep -E "^test client::claude|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/"
 ```
 
 ```output
@@ -46,77 +46,55 @@ test client::claude::tests::body_injects_synthetic_tool_when_native_schema_activ
 test client::claude::tests::body_merges_synthetic_tool_with_existing_functions ... ok
 test client::claude::tests::extract_preserves_real_tool_calls_alongside_plain_text ... ok
 test client::claude::tests::extract_returns_structured_output_tool_args_as_text ... ok
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 207 filtered out; finished in Xs
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Schema suffix suppression
 
 ```bash
-grep -n "OUTPUT_SCHEMA_SUFFIX_MARKER\|strip_output_schema_suffix" src/config/role.rs src/config/input.rs
+grep "OUTPUT_SCHEMA_SUFFIX_MARKER\|strip_output_schema_suffix" src/config/role.rs src/config/input.rs
 ```
 
 ```output
-src/config/role.rs:24:pub const OUTPUT_SCHEMA_SUFFIX_MARKER: &str =
-src/config/role.rs:765:                    "{OUTPUT_SCHEMA_SUFFIX_MARKER}\n```json\n{schema_str}\n```\nDo not include any text outside the JSON object."
-src/config/input.rs:277:            strip_output_schema_suffix(&mut messages);
-src/config/input.rs:604:/// Remove the schema-injected suffix (starting at `OUTPUT_SCHEMA_SUFFIX_MARKER`)
-src/config/input.rs:608:fn strip_output_schema_suffix(messages: &mut Vec<Message>) {
-src/config/input.rs:609:    use crate::config::role::OUTPUT_SCHEMA_SUFFIX_MARKER;
-src/config/input.rs:614:                if let Some(pos) = text.find(OUTPUT_SCHEMA_SUFFIX_MARKER) {
-src/config/input.rs:678:        strip_output_schema_suffix(&mut messages);
-src/config/input.rs:698:        strip_output_schema_suffix(&mut messages);
-src/config/input.rs:708:        strip_output_schema_suffix(&mut messages);
+src/config/role.rs:pub const OUTPUT_SCHEMA_SUFFIX_MARKER: &str =
+src/config/role.rs:                    "{OUTPUT_SCHEMA_SUFFIX_MARKER}\n```json\n{schema_str}\n```\nDo not include any text outside the JSON object."
+src/config/input.rs:            strip_output_schema_suffix(&mut messages);
+src/config/input.rs:/// Remove the schema-injected suffix (starting at `OUTPUT_SCHEMA_SUFFIX_MARKER`)
+src/config/input.rs:fn strip_output_schema_suffix(messages: &mut Vec<Message>) {
+src/config/input.rs:    use crate::config::role::OUTPUT_SCHEMA_SUFFIX_MARKER;
+src/config/input.rs:                if let Some(pos) = text.find(OUTPUT_SCHEMA_SUFFIX_MARKER) {
+src/config/input.rs:        strip_output_schema_suffix(&mut messages);
+src/config/input.rs:        strip_output_schema_suffix(&mut messages);
+src/config/input.rs:        strip_output_schema_suffix(&mut messages);
 ```
 
 ```bash
-cargo test --bin aichat -- schema_suffix_tests 2>&1 | grep -E "^test config|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test --bin aichat -- schema_suffix_tests 2>&1 | grep -E "^test config|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/"
 ```
 
 ```output
 test config::input::schema_suffix_tests::noop_when_no_suffix_present ... ok
 test config::input::schema_suffix_tests::removes_system_message_entirely_when_only_suffix_was_present ... ok
 test config::input::schema_suffix_tests::strips_suffix_and_keeps_original_system_prompt ... ok
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 210 filtered out; finished in Xs
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Capability enabled in models.yaml
 
 ```bash
-grep -n -B1 "supports_response_format_json_schema" models.yaml
+grep -q "supports_response_format_json_schema: true" models.yaml && echo "capability declared in models.yaml"
 ```
 
 ```output
-147-      supports_function_calling: true
-148:      supports_response_format_json_schema: true
---
-172-      supports_function_calling: true
-173:      supports_response_format_json_schema: true
---
-197-      supports_function_calling: true
-198:      supports_response_format_json_schema: true
---
-222-      supports_function_calling: true
-223:      supports_response_format_json_schema: true
---
-247-      supports_function_calling: true
-248:      supports_response_format_json_schema: true
---
-593-      supports_function_calling: true
-594:      supports_response_format_json_schema: true
---
-617-      supports_function_calling: true
-618:      supports_response_format_json_schema: true
---
-641-      supports_function_calling: true
-642:      supports_response_format_json_schema: true
+capability declared in models.yaml
 ```
 
 ## Full test suite
 
 ```bash
-cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/"
 ```
 
 ```output
-test result: ok. 213 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```

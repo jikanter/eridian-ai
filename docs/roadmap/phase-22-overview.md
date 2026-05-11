@@ -6,6 +6,7 @@
 | 22B | Per-branch cost tracking in parallel execution | -- |
 | 22C | Budget-aware fan-out (split pipeline budget across parallel branches) | -- |
 | 22D | DAG stage caching (cache branches independently, skip unchanged) | -- |
+| 22E | Fix flaky `mcp_client::tests::test_load_mcp_servers_file_rejects_neither_command_nor_url` — test pollution: passes alone, fails in `cargo test --bin aichat`. Currently `--skip`'d in `docs/demos/demo-test-suite.md` and `docs/demos/phase-9a-openai-response-format.md`. Remove the skip once fixed. | -- |
 
 **22A Design — DAG Trace:**
 

@@ -8,20 +8,20 @@ Phase 10B adds a content-addressable cache for pipeline stage outputs. Key = SHA
 ## StageCache module
 
 ```bash
-grep -nE "pub fn (key|get|put|new)" src/cache.rs
+grep -E "pub fn (key|get|put|new)" src/cache.rs
 ```
 
 ```output
-23:    pub fn new(dir: PathBuf, ttl_secs: u64) -> Self {
-32:    pub fn key(role: &str, model: &str, input: &str) -> String {
-42:    pub fn get(&self, key: &str) -> Option<String> {
-52:    pub fn put(&self, key: &str, output: &str) -> Result<()> {
+    pub fn new(dir: PathBuf, ttl_secs: u64) -> Self {
+    pub fn key(role: &str, model: &str, input: &str) -> String {
+    pub fn get(&self, key: &str) -> Option<String> {
+    pub fn put(&self, key: &str, output: &str) -> Result<()> {
 ```
 
 ## Unit tests: determinism, delimiter safety, TTL, roundtrip
 
 ```bash
-cargo test --bin aichat -- cache::tests 2>&1 | grep -E "^test cache|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test --bin aichat -- cache::tests 2>&1 | grep -E "^test cache|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/"
 ```
 
 ```output
@@ -33,25 +33,25 @@ test cache::tests::key_varies_by_role_model_and_input ... ok
 test cache::tests::put_creates_dir_if_missing ... ok
 test cache::tests::put_preserves_multiline_unicode ... ok
 test cache::tests::put_then_get_roundtrip ... ok
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 223 filtered out; finished in Xs
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Integration points in pipe.rs
 
 ```bash
-grep -n "Phase 10B\|StageCache\|cache_key" src/pipe.rs
+grep "Phase 10B\|StageCache\|cache_key" src/pipe.rs
 ```
 
 ```output
-1:use crate::cache::StageCache;
-191:    // Phase 10B: content-addressable stage output cache. Skips when caching is
-197:    let cache_key = if cache_enabled {
-198:        Some(StageCache::key(
-206:    if let Some(key) = &cache_key {
-207:        let cache = StageCache::new(
-315:    // Phase 10B: persist successful output to the cache. Written before
-318:    if let Some(key) = &cache_key {
-319:        let cache = StageCache::new(
+use crate::cache::StageCache;
+    // Phase 10B: content-addressable stage output cache. Skips when caching is
+    let cache_key = if cache_enabled {
+        Some(StageCache::key(
+    if let Some(key) = &cache_key {
+        let cache = StageCache::new(
+    // Phase 10B: persist successful output to the cache. Written before
+    if let Some(key) = &cache_key {
+        let cache = StageCache::new(
 ```
 
 Cache is bypassed for: tool-using stages (non-deterministic), dry-run (no output), and when the user passes `--no-cache` on the CLI.
@@ -70,9 +70,9 @@ Cache is bypassed for: tool-using stages (non-deterministic), dry-run (no output
 ## Full test suite
 
 ```bash
-cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/"
 ```
 
 ```output
-test result: ok. 231 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```

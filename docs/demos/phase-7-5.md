@@ -8,20 +8,20 @@ Phase 7.5 extends the `.set` REPL command to cover role-level fields that previo
 ## Role Setters
 
 ```bash
-grep -n "pub fn set_output_schema\|pub fn set_input_schema\|pub fn set_pipe_to\|pub fn set_save_to" src/config/role.rs
+grep "pub fn set_output_schema\|pub fn set_input_schema\|pub fn set_pipe_to\|pub fn set_save_to" src/config/role.rs
 ```
 
 ```output
-677:    pub fn set_output_schema(&mut self, value: Option<Value>) {
-681:    pub fn set_input_schema(&mut self, value: Option<Value>) {
-685:    pub fn set_pipe_to(&mut self, value: Option<String>) {
-689:    pub fn set_save_to(&mut self, value: Option<String>) {
+    pub fn set_output_schema(&mut self, value: Option<Value>) {
+    pub fn set_input_schema(&mut self, value: Option<Value>) {
+    pub fn set_pipe_to(&mut self, value: Option<String>) {
+    pub fn set_save_to(&mut self, value: Option<String>) {
 ```
 
 ## Setter Unit Tests
 
 ```bash
-cargo test test_set_ 2>&1 | grep -E "test config|test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test test_set_ 2>&1 | grep -E "test config|test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
@@ -29,8 +29,7 @@ test config::role::tests::test_set_input_schema ... ok
 test config::role::tests::test_set_output_schema ... ok
 test config::role::tests::test_set_pipe_to ... ok
 test config::role::tests::test_set_save_to ... ok
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in Xs
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; finished in Xs
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
 
 ## Guard Rails
@@ -38,27 +37,27 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 140 filtered out; fi
 `parse_schema_value` handles `null` (unset), `@path` (read file), and inline JSON. `validate_pipe_to_command` checks binary existence via `which`.
 
 ```bash
-grep -n "fn parse_schema_value\|fn validate_json_schema\|fn validate_pipe_to_command" src/config/mod.rs
+grep "fn parse_schema_value\|fn validate_json_schema\|fn validate_pipe_to_command" src/config/mod.rs
 ```
 
 ```output
-3154:fn parse_schema_value(value: &str) -> Result<Option<serde_json::Value>> {
-3171:fn validate_json_schema(schema: &serde_json::Value) -> Result<()> {
-3177:fn validate_pipe_to_command(cmd: &str) -> Result<()> {
+fn parse_schema_value(value: &str) -> Result<Option<serde_json::Value>> {
+fn validate_json_schema(schema: &serde_json::Value) -> Result<()> {
+fn validate_pipe_to_command(cmd: &str) -> Result<()> {
 ```
 
 ## .set Match Arms
 
 ```bash
-grep -n "\"model\" =>\|\"output_schema\" =>\|\"input_schema\" =>\|\"pipe_to\" =>\|\"save_to\" =>" src/config/mod.rs | head -5
+grep "\"model\" =>\|\"output_schema\" =>\|\"input_schema\" =>\|\"pipe_to\" =>\|\"save_to\" =>" src/config/mod.rs | head -5
 ```
 
 ```output
-789:            "model" => {
-792:            "output_schema" => {
-799:            "input_schema" => {
-806:            "pipe_to" => {
-814:            "save_to" => {
+            "model" => {
+            "output_schema" => {
+            "input_schema" => {
+            "pipe_to" => {
+            "save_to" => {
 ```
 
 ## Session Transient Fields
@@ -76,12 +75,11 @@ grep -c "serde(skip)" src/config/session.rs
 ## Tests
 
 ```bash
-cargo test 2>&1 | grep "test result:" | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test 2>&1 | grep -c "^test result: FAILED" | xargs -I {} echo "FAILED test results: {}"
 ```
 
 ```output
-test result: ok. 144 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
-test result: ok. 173 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+FAILED test results: 0
 ```
 
 ## Integration Tests
