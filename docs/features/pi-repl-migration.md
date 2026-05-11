@@ -8,7 +8,7 @@ available behind `--legacy-repl` (or `AICHAT_REPL=legacy`) indefinitely
 so the two surfaces can be tested side-by-side. There is no scheduled
 removal date for the legacy REPL.
 
-The user guide is in [`docs/repl-pi.md`](../repl-pi.md). This file covers
+The user guide is in [`docs/features/repl-pi.md`](repl-pi.md). This file covers
 the *move* — what to do with what you already have.
 
 ---
@@ -41,7 +41,7 @@ Try a few of your usual flows in the pi launch:
 - `/info` (or `/info role`) to confirm context
 
 If something is missing, see the mapping table in
-[`docs/repl-pi.md`](../repl-pi.md#slash-command-mapping). Several
+[`docs/features/repl-pi.md`](repl-pi.md#slash-command-mapping). Several
 lower-priority dot-commands are not yet bridged; they fall under the
 follow-up phase.
 

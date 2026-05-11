@@ -4,7 +4,7 @@ This directory holds requirements, plans, and design notes that span more than o
 
 - **aichat** (this repo) — the CLI / runtime / MCP server-and-client. Origin: [github.com/jikanter/aichat-private](https://github.com/jikanter/aichat-private).
 - **llm-functions** ([github.com/jikanter/personal-llm-functions](https://github.com/jikanter/personal-llm-functions)) — tool and agent declarations consumed by aichat. Symlinked from `~/Library/Application Support/aichat/functions` in development.
-- **harness interface** — a future surface (TBD) that will let other clients (Claude Code, Cursor, etc.) consume aichat's exposed roles, tools, and MCP-pool servers as a single unit.
+- **harness interface** — a future surface ([pi](https://pi.dev)) that will let other clients (Claude Code, Cursor, etc.) consume aichat's exposed roles, tools, and MCP-pool servers as a single unit.
 
 ## Dependency management
 
