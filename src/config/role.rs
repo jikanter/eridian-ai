@@ -1035,6 +1035,77 @@ fn compose_role_content(parts: &RawRoleParts) -> String {
     }
 }
 
+/// Phase 16F / 16G: federation-safe projection of a `Role`.
+///
+/// Designed for the `/v1/roles` and `/v1/roles/{name}` endpoints. Surfaces
+/// only the fields a remote caller needs to decide whether to invoke the
+/// role and what shape its I/O takes. Deliberately omits anything the
+/// server's operator would consider sensitive:
+///
+/// - `prompt` body (may contain proprietary instructions, secrets, internal
+///   tone/voice guidance)
+/// - shell-injective variable defaults (`{shell: "cmd"}`) — those are
+///   commands, not data
+/// - `pipe_to` / `save_to` (server-local shell commands and filesystem paths)
+/// - `mcp_servers` / `use_tools` (internal binding wiring)
+/// - pipeline stage definitions beyond a length count (stage role names are
+///   server-local identifiers; exposing them leaks the server's role
+///   namespace)
+///
+/// Schemas (`input_schema`, `output_schema`) are included verbatim: they are
+/// the contract the remote caller needs to satisfy.
+#[derive(Debug, Clone, Serialize)]
+pub struct RolePublicView {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    pub has_pipeline: bool,
+    pub pipeline_length: usize,
+    /// Phase 14B port summary, e.g. `"text"`, `"json{a, b}"`, `"any"`.
+    pub port_input: String,
+    pub port_output: String,
+}
+
+impl From<&Role> for RolePublicView {
+    fn from(role: &Role) -> Self {
+        RolePublicView {
+            name: role.name().to_string(),
+            description: role.description().map(str::to_string),
+            tags: role.tags().map(<[String]>::to_vec),
+            capabilities: role.capabilities().to_vec(),
+            // Prefer the user-declared model_id; fall back to the resolved
+            // model's id if one is attached, otherwise omit.
+            model: role
+                .model_id()
+                .map(str::to_string)
+                .or_else(|| {
+                    let id = role.model.id();
+                    if id.is_empty() {
+                        None
+                    } else {
+                        Some(id)
+                    }
+                }),
+            input_schema: role.input_schema().cloned(),
+            output_schema: role.output_schema().cloned(),
+            has_pipeline: role.is_pipeline(),
+            pipeline_length: role.pipeline().map(<[PipelineNode]>::len).unwrap_or(0),
+            port_input: role.port_input_summary(),
+            port_output: role.port_output_summary(),
+        }
+    }
+}
+
 impl Role {
     pub fn resolve(name: &str) -> Result<Self> {
         let mut visited = Vec::new();
@@ -3656,5 +3727,109 @@ merge:
         assert!(mergers.contains(&"inner-merge".to_string()));
         assert!(mergers.contains(&"outer-merge".to_string()));
         assert_eq!(mergers.len(), 2);
+    }
+
+    // ---- Phase 16F/16G: RolePublicView ----
+
+    #[test]
+    fn public_view_redacts_prompt_body() {
+        let content = r#"---
+description: A summarizer
+---
+INTERNAL: secret system prompt body that must not leak."#;
+        let role = Role::new("summarize", content);
+        let view = RolePublicView::from(&role);
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(
+            !json.contains("INTERNAL"),
+            "prompt body must not leak via public view: {json}"
+        );
+        assert!(
+            !json.contains("secret"),
+            "prompt body must not leak via public view: {json}"
+        );
+    }
+
+    #[test]
+    fn public_view_exposes_metadata_and_schemas() {
+        let content = r#"---
+description: Classifies text
+tags: [text, classification]
+capabilities: [text-classification, label]
+model: openai:gpt-4o
+input_schema:
+  type: string
+output_schema:
+  type: object
+  properties:
+    label: { type: string }
+---
+Secret prompt."#;
+        let role = Role::new("classify", content);
+        let view = RolePublicView::from(&role);
+        assert_eq!(view.name, "classify");
+        assert_eq!(view.description.as_deref(), Some("Classifies text"));
+        assert_eq!(
+            view.tags.as_deref(),
+            Some(&["text".to_string(), "classification".to_string()][..])
+        );
+        assert_eq!(
+            view.capabilities,
+            vec!["text-classification".to_string(), "label".to_string()]
+        );
+        assert_eq!(view.model.as_deref(), Some("openai:gpt-4o"));
+        assert!(view.input_schema.is_some());
+        assert!(view.output_schema.is_some());
+    }
+
+    #[test]
+    fn public_view_reports_pipeline_shape_without_stage_names() {
+        let content = r#"---
+description: Multi-stage role
+pipeline:
+  - role: stage-one
+  - role: stage-two
+  - role: stage-three
+---
+"#;
+        let role = Role::new("pipe", content);
+        let view = RolePublicView::from(&role);
+        assert!(view.has_pipeline);
+        assert_eq!(view.pipeline_length, 3);
+        // Stage role names belong to the server's namespace; the public view
+        // must not echo them.
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(!json.contains("stage-one"), "stage names leaked: {json}");
+        assert!(!json.contains("stage-two"), "stage names leaked: {json}");
+        assert!(!json.contains("stage-three"), "stage names leaked: {json}");
+    }
+
+    #[test]
+    fn public_view_port_signatures_default_to_text() {
+        // No schema means free-form text I/O — Phase 14B convention.
+        let role = Role::new("plain", "---\n---\n");
+        let view = RolePublicView::from(&role);
+        assert_eq!(view.port_input, "any");
+        assert_eq!(view.port_output, "text");
+    }
+
+    #[test]
+    fn public_view_skips_empty_optional_fields_in_json() {
+        let role = Role::new("bare", "---\n---\n");
+        let view = RolePublicView::from(&role);
+        let json: serde_json::Value = serde_json::to_value(&view).unwrap();
+        let obj = json.as_object().unwrap();
+        // Required fields always present
+        assert!(obj.contains_key("name"));
+        assert!(obj.contains_key("has_pipeline"));
+        assert!(obj.contains_key("pipeline_length"));
+        assert!(obj.contains_key("port_input"));
+        assert!(obj.contains_key("port_output"));
+        // Optional fields elided when empty
+        assert!(!obj.contains_key("description"));
+        assert!(!obj.contains_key("tags"));
+        assert!(!obj.contains_key("capabilities"));
+        assert!(!obj.contains_key("input_schema"));
+        assert!(!obj.contains_key("output_schema"));
     }
 }

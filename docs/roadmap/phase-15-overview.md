@@ -1,10 +1,14 @@
 # Phase 15: Contract Testing : Overview - Epic 4
 
+**Status (2026-05-11):** **Partially scaffolded.** Basic preflight stage validation (existence + capability compatibility) ships in `src/config/preflight.rs::validate_pipeline_stages()` and runs implicitly before pipeline execution. The full contract-testing surface — JSON Schema containment between adjacent stages and a standalone `--check` flag — is **not implemented**.
+
+> **Note for the next agent picking this up:** 15A's *validation logic* already exists in [`src/config/preflight.rs`](../../src/config/preflight.rs) and runs as part of pipeline execution; what's missing is a *user-invokable surface*. Shipping 15C (`--check`) is therefore mostly **"expose `validate_pipeline_stages()` to the CLI without executing the pipeline"**, not a from-scratch build. 15B (cross-stage schema containment) is the only item that needs net-new logic.
+
 | Item | Description | Status |
 |---|---|---|
-| 15A | Pipeline schema compatibility check at authoring time (`showboat validate-pipeline`) | -- |
-| 15B | Cross-stage schema containment validation (output N satisfies input N+1) | -- |
-| 15C | `--check` flag for validating role/pipeline definitions without execution | -- |
+| 15A | Pipeline schema compatibility check at authoring time (`showboat validate-pipeline`) | **Partial** — stage existence + capability checks live in `src/config/preflight.rs`; runs implicitly at execution time, not standalone |
+| 15B | Cross-stage schema containment validation (output N satisfies input N+1) | Planned — no JSON Schema subset checking exists yet |
+| 15C | `--check` flag for validating role/pipeline definitions without execution | Planned — no standalone validation flag exists |
 
 **15A Design — Authoring-Time Validation:**
 
