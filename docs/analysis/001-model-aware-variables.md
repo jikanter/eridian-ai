@@ -3,6 +3,8 @@
 **Status:** Draft
 **Branch:** `spec/model-aware-variables`
 **Affects:** `src/utils/variables.rs`, `src/config/role.rs`, `src/config/agent.rs`
+**Development Status**: 
+
 
 ## Problem
 
