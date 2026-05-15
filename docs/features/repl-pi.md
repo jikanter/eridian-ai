@@ -137,9 +137,14 @@ Limitations of the converter:
 
 Each `--pi-repl` launch:
 
-1. Binds an ephemeral port on `127.0.0.1` (no external listener).
-2. Mints a 32-hex-char bearer token (`uuid::Uuid::simple()`, ~122 bits of
-   entropy).
+1. Probes `127.0.0.1:8000-9000` for an already-running aichat server it
+   can authenticate against. If one is found it is **reused**; otherwise
+   aichat binds an ephemeral port on `127.0.0.1` (no external listener)
+   and starts a private in-process server.
+2. For a private server, mints a 32-hex-char bearer token
+   (`uuid::Uuid::simple()`, ~122 bits of entropy). For a reused server,
+   uses the `AICHAT_BRIDGE_TOKEN` you exported (reuse only happens when
+   that token authenticates against the target).
 3. Exposes the URL + token to the spawned `pi` via `AICHAT_BRIDGE_URL`
    and `AICHAT_BRIDGE_TOKEN` env vars.
 4. The aichat server rejects any `/v1/state/*` request without the
@@ -148,6 +153,11 @@ Each `--pi-repl` launch:
 
 The CLI `--serve` mode does **not** see these routes — when
 `AICHAT_BRIDGE_TOKEN` is unset at server start, `/v1/state/*` returns 404.
+
+For how to export `AICHAT_BRIDGE_TOKEN` to share one long-lived server
+across REPL sessions, and how the 8000–9000 probe decides what to reuse,
+see [`server.md`](server.md). Set `AICHAT_NO_SERVER_PROBE=1` to skip the
+probe entirely and always start a private server.
 
 ## Troubleshooting
 

@@ -1522,6 +1522,23 @@ fn query_param(req: &hyper::Request<Incoming>, key: &str) -> Option<String> {
     })
 }
 
+/// Read a boolean-ish query-string flag from a URI. Treats `?key`, `?key=1`,
+/// `?key=true`, `?key=yes`, and `?key=on` as `true`; everything else (absent
+/// or any other value) as `false`. Case-insensitive on the value.
+fn query_flag(uri: &hyper::Uri, key: &str) -> bool {
+    let Some(query) = uri.query() else {
+        return false;
+    };
+    query.split('&').any(|kv| match kv.split_once('=') {
+        Some((k, v)) if k == key => matches!(
+            v.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Some(_) => false,
+        None => kv == key,
+    })
+}
+
 /// Collect the request body, decode as JSON, and deserialize. Errors map
 /// to `anyhow::Error` so they surface as 400 with a helpful message.
 async fn read_json_body<T: for<'de> Deserialize<'de>>(

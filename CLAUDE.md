@@ -16,7 +16,7 @@ Read these files for background before starting work:
 - @docs/architecture/architecture.md
 
 ## Deliverable
-A multi-tool for integrated interactions with AI models.A useful set of extensions to the pi harness for interaction with the tool.
+A multi-tool for integrated interactions with AI models.A useful set of extensions to the pi harness for interaction with the tool.User documentation in docs/features
 
 ## Hard
 
@@ -29,6 +29,7 @@ A multi-tool for integrated interactions with AI models.A useful set of extensio
 - This tool should function using the "one tool per job" unix ethos
 - This tool should use the 'showboat' command to demo its work. Use the output of `showboat --help` to understand how to implement.
 - Implement both repl and batch interaction surfaces for functionality
+- User docs live in docs/features. Docs catering more to agents live in the rest of the docs/ folder.
 - Read through the files in the https://github.com/simonw/showboat/blob/main/docs/plans/ and add any skills to the project.
 
 ## Ask First
