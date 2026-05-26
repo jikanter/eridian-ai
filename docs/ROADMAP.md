@@ -1,6 +1,6 @@
 # Eridian Roadmap
 
-**Last updated:** 2026-05-23
+**Last updated:** 2026-05-26
 
 ## Vision
 
@@ -38,6 +38,7 @@ One row per phase. "Sub-phases" lists the granular state; "Last update" is the m
 | 6 Universal Addressing | 20 | Remote & federated | 20A–D **Done** | 2026-05-11 | [phase-20-overview.md](roadmap/phase-20-overview.md) |
 | 7 DAG Execution | 21 | DAG primitives | 21A–D **Done** | 2026-05-11 | [phase-21-overview.md](roadmap/phase-21-overview.md) |
 | 7 DAG Execution | 22 | DAG observability & budget | 22A–E **Planned** | — | [phase-22-overview.md](roadmap/phase-22-overview.md) |
+| 7 DAG Execution | 36 | Pipeline stage config isolation | 36A–D **Planned** | 2026-05-26 | [phase-36-overview.md](roadmap/phase-36-overview.md) |
 | 8 Feedback Loop | 23 | Role evaluation | 23A–D **Planned** | — | [phase-23-overview.md](roadmap/phase-23-overview.md) |
 | 8 Feedback Loop | 24 | Regression & distillation | 24A–D **Planned** | — | [phase-24-overview.md](roadmap/phase-24-overview.md) |
 | 9 Knowledge Evolution | 25 | Knowledge compilation | **Done** (rewritten 2026-04-16) | — | [phase-25-knowledge-compilation.md](roadmap/phase-25-knowledge-compilation.md) |
@@ -48,13 +49,15 @@ One row per phase. "Sub-phases" lists the granular state; "Last update" is the m
 | 11 Bridge Retirement | 31 | MCP pool hardening | 31A–E **Done** | 2026-05-11 | [phase-31-overview.md](roadmap/phase-31-overview.md) |
 | 12 Developer Experience | 30 | Macro compilation | 30A–D **Done** | — | [phase-30-macro-compilation.md](roadmap/phase-30-macro-compilation.md) |
 | 13 Pi as REPL Surface | 32 | Pi cutover | 32A–D **Done** | 2026-05-11 | [repl-pi.md](features/repl-pi.md) |
+| 14 Memory Surface | 34 | Auto-memory wiring | 34A–D **Planned** | 2026-05-26 | [phase-34-overview.md](roadmap/phase-34-overview.md) |
+| 14 Memory Surface | 35 | Knowledge-MCP protocol | 35A–D **Planned** | 2026-05-26 | [phase-35-overview.md](roadmap/phase-35-overview.md) |
 
 ---
 
 ## Active Track
 
 Sequential critical path: **Phase 11D → Phase 13 → Phase 15B/C → Phase 33 → Phase 22**. Phase 33 (typed input surface) slots after 15B/C because 33D extends the same containment-check logic into adjacent-stage shape validation.
-Parallel independent tracks: **Epic 8** (Phases 23–24, role evaluation) and **Epic 10** (Phases 28–29, agent evolution).
+Parallel independent tracks: **Epic 8** (Phases 23–24, role evaluation), **Epic 10** (Phases 28–29, agent evolution), and **Epic 14 Memory Surface** (Phase 34 → Phase 35, Posture-C dual-store wiring from the 2026-05-24 divergence playbook). **Pipeline isolation** (Phase 36) slots after Phase 22 inside Epic 7 and extends the existing model-restore pattern in `run_stage`.
 Deferred: **Phase 18** (server discovery/estimation), **Phase 16A–E** (server hardening beyond what Phase 20 federation required).
 
 ---
