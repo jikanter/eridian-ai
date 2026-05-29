@@ -116,8 +116,8 @@ The three new directories are siblings of the existing `stages/` directory. They
 ## What 37 does *not* try to solve
 
 - **L4 (multi-turn context reuse) as a separate cache.** L4 is mostly subsumed by L3 once prefix-stability is enforced (37B2). The remaining gap — session compression invalidating the prefix mid-conversation — is flagged in the overview as a follow-up. Not in 37's scope.
-- **Distributed cache.** The cache is per-machine. A team sharing roles via git does not share cache entries. Could be added later (S3/Redis backend) but the cost-benefit on a CLI is poor: the hit rate gain from sharing across machines is modest and the operational complexity is high.
-- **Cache warming.** No "pre-populate the cache from a corpus" CLI command. The cache fills naturally as users invoke roles; warming is a YAGNI feature for a CLI that has yet to ship the basic cache.
+- **Distributed cache.** (Future Phase Work — now [Phase 39](phase-39-overview.md)) : Within Phase 37 the cache is per-machine; a team sharing roles via git does not share cache entries. The original "cost-benefit on a CLI is poor" reasoning stands *for the default build* — so [Phase 39](phase-39-overview.md) ports LiteLLM's Redis/S3/GCS/Azure backends **cargo-gated** behind the [Phase 38](phase-38-overview.md) `CacheBackend` trait, off by default and adding zero dependencies unless opted in. [Phase 39D](phase-39-overview.md) adds the opt-in cross-machine team cache (shared back tier, per-namespace). See [`EVAL-0004`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) §2.8/§3.2.
+- **Cache warming.** No "pre-populate the cache from a corpus" CLI command in 37. The cache fills naturally as users invoke roles. (Becomes trivial once [Phase 41B](phase-41-overview.md) makes entries addressable by key — still not on 37's critical path.)
 - **Cache compression.** Stored response bodies are uncompressed text. A 4 KiB response at zero compression is fine on modern disk; gzip-on-disk could be added later but is not on the critical path.
 - **Cross-provider cache transfer.** A response from Claude Sonnet 4.6 is not a cache hit for the same prompt to OpenAI gpt-5. The cache key includes `model_id` precisely because models produce different responses.
 
@@ -136,7 +136,9 @@ Already enumerated in detail in EVAL-0002 §6. Re-stated here in the order they 
 ## References
 
 - [`docs/analysis/open-harness/EVAL-0002-full-caching.md`](../analysis/open-harness/EVAL-0002-full-caching.md) — the gap inventory; this phase implements its recommendations.
+- [`docs/analysis/open-harness/EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) — LiteLLM feature-for-feature parity map; the 37→41 sub-track that turns this phase's `StageCache` into a pluggable-backend stack.
 - [`phase-37-overview.md`](phase-37-overview.md) — the table, the per-item designs, and the file list. Read first.
+- [Phase 38](phase-38-overview.md) / [39](phase-39-overview.md) / [40](phase-40-overview.md) / [41](phase-41-overview.md) — the rest of the caching sub-track.
 - [`docs/analysis/open-harness/CLAUDE.md`](../analysis/open-harness/CLAUDE.md) — the open-harness workstream that 37E coordinates with.
 - [`src/cache.rs`](../../src/cache.rs) — the existing primitive being broadened.
 - [`src/repl/pi.rs`](../../src/repl/pi.rs) — why 37D is the pi integration.

@@ -156,6 +156,11 @@ pub struct Role {
     #[serde(skip_serializing_if = "Option::is_none")]
     pipeline: Option<Vec<PipelineNode>>,
 
+    // Phase 11D: dollar budget for the whole pipeline, divided across stages
+    // by `budget_weight`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pipeline_budget_usd: Option<f64>,
+
     // Phase 6B: Lifecycle hooks
     #[serde(skip_serializing_if = "Option::is_none")]
     pipe_to: Option<String>,
@@ -230,6 +235,11 @@ pub struct RolePipelineStage {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Phase 11D: relative share of the pipeline's `pipeline_budget_usd`.
+    /// `None` means the implicit default of 1.0. See
+    /// [`crate::context_budget::allocate_stage_budgets`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_weight: Option<f64>,
 }
 
 // Phase 21: DAG primitives — a pipeline is a list of `PipelineNode`s. The
@@ -1213,6 +1223,10 @@ impl Role {
                                         );
                                     }
                                 }
+                                // Phase 11D: total dollar budget for the pipeline.
+                                "pipeline_budget_usd" => {
+                                    role.pipeline_budget_usd = value.as_f64();
+                                }
                                 "extends" => role.extends = value.as_str().map(|v| v.to_string()),
                                 "include" => {
                                     if let Some(arr) = value.as_array() {
@@ -1353,6 +1367,9 @@ impl Role {
         }
         if let Some(pipeline) = &self.pipeline {
             meta.insert("pipeline".into(), serde_json::json!(pipeline));
+        }
+        if let Some(budget) = self.pipeline_budget_usd {
+            meta.insert("pipeline_budget_usd".into(), serde_json::json!(budget));
         }
         if let Some(pipe_to) = &self.pipe_to {
             meta.insert("pipe_to".into(), Value::String(pipe_to.clone()));
@@ -1650,6 +1667,12 @@ impl Role {
     /// fallbacks — the error propagates after primary retries exhaust.
     pub fn fallback_models(&self) -> &[String] {
         &self.fallback_models
+    }
+
+    /// Phase 11D: Total dollar budget for this role's pipeline, divided
+    /// across stages by `budget_weight`. `None` means no budget enforced.
+    pub fn pipeline_budget_usd(&self) -> Option<f64> {
+        self.pipeline_budget_usd
     }
 
     /// Phase 26C: Knowledge-base bindings declared by this role.
@@ -2033,6 +2056,440 @@ fn save_output_to_path(template: &str, output: &str) -> Result<()> {
         path.display()
     );
     Ok(())
+}
+
+/// Phase 13A: produce the contents of a new role file that `extends:` an
+/// existing one. The parent's metadata is inspected so the new file's
+/// frontmatter carries commented-out hints for the fields the parent
+/// declares (model/temperature/top_p/use_tools/input_schema/output_schema).
+/// The parent prompt body is *not* duplicated — it is inherited via the
+/// extends chain. Pure function so it can be unit-tested without touching
+/// the filesystem.
+pub fn render_forked_role(source_name: &str, parent_metadata: &serde_json::Map<String, Value>) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    out.push_str("---\n");
+    let _ = writeln!(out, "extends: {source_name}");
+
+    // Order the hint lines the way a reader scans frontmatter: model first,
+    // then sampling, then I/O contracts, then tools. Each commented line
+    // shows the parent's current value so the fork starts as a no-op
+    // override the user can quickly toggle on.
+    let hint_keys: &[&str] = &[
+        "model",
+        "temperature",
+        "top_p",
+        "use_tools",
+        "input_schema",
+        "output_schema",
+    ];
+    for key in hint_keys {
+        if let Some(value) = parent_metadata.get(*key) {
+            push_commented_yaml_field(&mut out, key, value);
+        } else {
+            push_commented_placeholder(&mut out, key);
+        }
+    }
+    out.push_str("---\n");
+
+    // Encourage the writer to put *additions* here. The parent prompt is
+    // inherited; this body is appended after it during resolution (see
+    // `resolve_role_content`).
+    out.push_str("# Add your prompt additions here. The parent prompt is inherited.\n");
+    out
+}
+
+/// Phase 13A: format a single frontmatter field as YAML and prefix each line
+/// with `# ` so it sits in the new file as a hint, not an active override.
+/// Handles scalar values inline and falls back to multi-line emission for
+/// objects/arrays (input_schema, output_schema).
+fn push_commented_yaml_field(out: &mut String, key: &str, value: &Value) {
+    use std::fmt::Write;
+
+    match value {
+        Value::String(s) => {
+            let _ = writeln!(out, "# {key}: {}", yaml_scalar(s));
+        }
+        Value::Bool(b) => {
+            let _ = writeln!(out, "# {key}: {b}");
+        }
+        Value::Number(n) => {
+            let _ = writeln!(out, "# {key}: {n}");
+        }
+        Value::Null => {
+            let _ = writeln!(out, "# {key}: null");
+        }
+        _ => {
+            // Object/array — emit on multiple lines so the YAML stays valid
+            // when the user uncomments.
+            let yaml = serde_yaml::to_string(value).unwrap_or_else(|_| "{}".to_string());
+            let _ = writeln!(out, "# {key}:");
+            for line in yaml.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                let _ = writeln!(out, "#   {line}");
+            }
+        }
+    }
+}
+
+fn push_commented_placeholder(out: &mut String, key: &str) {
+    use std::fmt::Write;
+
+    let placeholder = match key {
+        "model" => "claude:claude-sonnet-4-6",
+        "temperature" => "0.7",
+        "top_p" => "1.0",
+        "use_tools" => "search,fs",
+        "input_schema" => "{ type: object, properties: { ... } }",
+        "output_schema" => "{ type: object, properties: { ... } }",
+        _ => "<value>",
+    };
+    let _ = writeln!(out, "# {key}: {placeholder}");
+}
+
+/// Quote a YAML scalar only if it'd be parsed as something other than a
+/// plain string (contains a colon, leading dash, etc). Good enough for the
+/// commented hints — the user is going to read and edit these by hand.
+fn yaml_scalar(s: &str) -> String {
+    let needs_quotes = s.is_empty()
+        || s.starts_with(' ')
+        || s.starts_with('-')
+        || s.starts_with('#')
+        || s.contains(':')
+        || s.contains('"')
+        || s.contains('\'')
+        || s.contains('\n');
+    if needs_quotes {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Phase 13A: source role lookup that exposes its raw frontmatter (not the
+/// resolved/merged one). Used by `fork_role` so the hint comments reflect
+/// what the parent actually declares — without inheriting its own parent's
+/// fields a second time.
+pub fn read_role_raw_metadata(name: &str) -> Result<serde_json::Map<String, Value>> {
+    let content = read_raw_role_content(name)?;
+    let parts = parse_raw_frontmatter(&content);
+    Ok(parts.metadata)
+}
+
+/// Phase 13B: format a multi-line teaching error for a pipeline stage whose
+/// input failed schema validation. Shows the actual JSON keys produced by
+/// the upstream stage (or the raw text if non-JSON) alongside the consumer
+/// schema's required/declared properties, plus a hint suggesting a transform
+/// role between the two. Returns `None` when the input parses but is not an
+/// object — there's no key-level diff to compute in that case, so the caller
+/// should fall back to the terse error.
+pub fn format_pipeline_input_schema_error(
+    stage_num: usize,
+    role_name: &str,
+    schema: &Value,
+    input_text: &str,
+    underlying: &str,
+) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "pipeline stage {stage_num} input schema validation failed (role '{role_name}'):"
+    );
+    let _ = writeln!(out, "  {}", underlying.trim());
+
+    let (consumer_required, consumer_props) = schema_object_field_names(schema);
+    let produced = parse_input_field_names(input_text);
+
+    out.push('\n');
+    match produced {
+        Some(ref keys) => {
+            let _ = writeln!(out, "  Stage {} produced: {}", stage_num - 1, format_field_list(keys));
+        }
+        None => {
+            let preview: String = input_text.chars().take(60).collect();
+            let suffix = if input_text.chars().count() > 60 { "..." } else { "" };
+            let _ = writeln!(
+                out,
+                "  Stage {} produced: <non-JSON> {:?}{}",
+                stage_num - 1,
+                preview,
+                suffix
+            );
+        }
+    }
+    let consumer_summary = if !consumer_required.is_empty() {
+        format_field_list(&consumer_required)
+    } else if !consumer_props.is_empty() {
+        format_field_list(&consumer_props)
+    } else {
+        "<no declared properties>".to_string()
+    };
+    let _ = writeln!(out, "  Stage {stage_num} expects: {consumer_summary}");
+
+    if let Some(producer_keys) = produced {
+        let missing: Vec<&String> = consumer_required
+            .iter()
+            .filter(|k| !producer_keys.contains(k))
+            .collect();
+        let extra: Vec<&String> = producer_keys
+            .iter()
+            .filter(|k| !consumer_props.contains(k) && !consumer_required.contains(k))
+            .collect();
+        if !missing.is_empty() {
+            let _ = writeln!(
+                out,
+                "  Missing fields: {}",
+                missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+        if !extra.is_empty() {
+            let _ = writeln!(
+                out,
+                "  Extra fields: {}",
+                extra.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+    out.push('\n');
+    out.push_str(
+        "  hint: shape mismatches between adjacent stages are usually fixed by a\n\
+         \x20       transform role between them. To start one:\n\
+         \x20       aichat --fork-role <parent> my-adapter\n",
+    );
+    out
+}
+
+fn schema_object_field_names(schema: &Value) -> (Vec<String>, Vec<String>) {
+    let required = schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let props = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .map(|obj| obj.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    (required, props)
+}
+
+fn parse_input_field_names(input_text: &str) -> Option<Vec<String>> {
+    let parsed: Value = serde_json::from_str(input_text.trim()).ok()?;
+    let obj = parsed.as_object()?;
+    Some(obj.keys().cloned().collect())
+}
+
+fn format_field_list(keys: &[String]) -> String {
+    if keys.is_empty() {
+        "{}".to_string()
+    } else {
+        format!("{{ {} }}", keys.join(", "))
+    }
+}
+
+/// Phase 13D: snapshot of a resolved role's authoring-relevant fields, in a
+/// form that's easy to render either as human-readable text or as JSON.
+/// Lives here so both the CLI renderer and any future surface (server,
+/// pi extension) can reuse the same shape.
+#[derive(Debug, Clone, Serialize)]
+pub struct RoleExplanation {
+    pub name: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    pub builtin: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    pub input: String,
+    pub output: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub knowledge: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fallback_models: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipe_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_to: Option<String>,
+    pub has_pipeline: bool,
+    pub pipeline_stage_count: usize,
+    pub pipeline_has_dag: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pipeline_stage_roles: Vec<String>,
+    pub embedded_input: bool,
+    pub prompt_length: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_extends: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub raw_includes: Vec<String>,
+}
+
+/// Phase 13D: build an explanation for the given role name. The role is
+/// loaded via the normal resolution path (so `extends:` is applied and the
+/// prompt is fully materialized) AND its raw frontmatter is re-read to
+/// expose the `extends:`/`include:` declarations that resolution would
+/// otherwise flatten away.
+pub fn build_role_explanation(name: &str) -> Result<RoleExplanation> {
+    let role = Role::resolve(name)?;
+
+    // Re-read the raw file so we can show extends/include even after
+    // resolution has merged them.
+    let raw = parse_raw_frontmatter(&read_raw_role_content(name)?);
+
+    // A role is "builtin" iff there's no user-config file shadowing it.
+    let on_disk = Config::list_roles(false);
+    let builtin = !on_disk.contains(&name.to_string())
+        && Role::list_builtin_role_names().contains(&name.to_string());
+    let source_path = if builtin {
+        Some(format!("<builtin asset: {name}.md>"))
+    } else if on_disk.contains(&name.to_string()) {
+        Some(Config::role_file(name).display().to_string())
+    } else {
+        None
+    };
+
+    let tools_str = role.use_tools().unwrap_or_default();
+    let tools: Vec<String> = tools_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let knowledge = if role.knowledge_bindings().is_empty() {
+        None
+    } else {
+        Some(
+            role.knowledge_bindings()
+                .iter()
+                .map(|b| b.name.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let pipeline_stage_roles: Vec<String> = role
+        .pipeline_all_stages()
+        .iter()
+        .map(|s| s.role.clone())
+        .collect();
+
+    Ok(RoleExplanation {
+        name: role.name().to_string(),
+        description: role.description_or_derived(),
+        source_path,
+        builtin,
+        model: role.model_id().map(String::from),
+        temperature: role.temperature(),
+        top_p: role.top_p(),
+        capabilities: role.capabilities().to_vec(),
+        tags: role.tags().map(|s| s.to_vec()).unwrap_or_default(),
+        input: role.port_input_summary(),
+        output: role.port_output_summary(),
+        tools,
+        knowledge,
+        fallback_models: role.fallback_models().to_vec(),
+        pipe_to: role.pipe_to().map(String::from),
+        save_to: role.save_to().map(String::from),
+        has_pipeline: role.is_pipeline(),
+        pipeline_stage_count: role.pipeline_all_stages().len(),
+        pipeline_has_dag: role.pipeline_has_dag(),
+        pipeline_stage_roles,
+        embedded_input: role.is_embedded_prompt(),
+        prompt_length: role.prompt().len(),
+        raw_extends: raw.extends,
+        raw_includes: raw.includes,
+    })
+}
+
+/// Phase 13D: render an explanation as human-readable text. JSON output is
+/// handled by the caller via `serde_json::to_string_pretty(&exp)`.
+pub fn format_role_explanation(exp: &RoleExplanation) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "Role: {}", exp.name);
+    if !exp.description.is_empty() {
+        let _ = writeln!(out, "  description: {}", exp.description);
+    }
+    if let Some(path) = &exp.source_path {
+        let _ = writeln!(out, "  source: {path}");
+    }
+    if let Some(model) = &exp.model {
+        let _ = writeln!(out, "  model: {model}");
+    } else {
+        out.push_str("  model: <default>\n");
+    }
+    if !exp.fallback_models.is_empty() {
+        let _ = writeln!(out, "  fallback_models: [{}]", exp.fallback_models.join(", "));
+    }
+    if let Some(t) = exp.temperature {
+        let _ = writeln!(out, "  temperature: {t}");
+    }
+    if let Some(p) = exp.top_p {
+        let _ = writeln!(out, "  top_p: {p}");
+    }
+    let _ = writeln!(out, "  in: {}  out: {}", exp.input, exp.output);
+    if !exp.capabilities.is_empty() {
+        let _ = writeln!(out, "  capabilities: [{}]", exp.capabilities.join(", "));
+    }
+    if !exp.tags.is_empty() {
+        let _ = writeln!(out, "  tags: [{}]", exp.tags.join(", "));
+    }
+    if !exp.tools.is_empty() {
+        let _ = writeln!(out, "  tools: [{}]", exp.tools.join(", "));
+    }
+    if let Some(kbs) = &exp.knowledge {
+        let _ = writeln!(out, "  knowledge: [{}]", kbs.join(", "));
+    }
+    if let Some(parent) = &exp.raw_extends {
+        let _ = writeln!(out, "  extends: {parent}");
+    }
+    if !exp.raw_includes.is_empty() {
+        let _ = writeln!(out, "  includes: [{}]", exp.raw_includes.join(", "));
+    }
+    if exp.has_pipeline {
+        let kind = if exp.pipeline_has_dag { "DAG" } else { "sequential" };
+        let _ = writeln!(
+            out,
+            "  pipeline: {} stage{} ({kind})",
+            exp.pipeline_stage_count,
+            if exp.pipeline_stage_count == 1 { "" } else { "s" }
+        );
+        if !exp.pipeline_stage_roles.is_empty() {
+            let _ = writeln!(out, "    stages: {}", exp.pipeline_stage_roles.join(" -> "));
+        }
+    }
+    if let Some(pipe) = &exp.pipe_to {
+        let _ = writeln!(out, "  pipe_to: {pipe}");
+    }
+    if let Some(save) = &exp.save_to {
+        let _ = writeln!(out, "  save_to: {save}");
+    }
+    let _ = writeln!(
+        out,
+        "  prompt: {} char{}{}",
+        exp.prompt_length,
+        if exp.prompt_length == 1 { "" } else { "s" },
+        if exp.embedded_input { " (embeds __INPUT__)" } else { "" }
+    );
+    out
 }
 
 /// Phase 14B: render a JSON Schema fragment into a one-line human-readable
@@ -3244,6 +3701,92 @@ Prompt."#;
         );
     }
 
+    // ---- Phase 11D: Pipeline budget propagation ----
+
+    #[test]
+    fn test_pipeline_budget_usd_default_none() {
+        let content = "---\nmodel: a\n---\nPrompt.";
+        let role = Role::new("no-budget", content);
+        assert_eq!(role.pipeline_budget_usd(), None);
+    }
+
+    #[test]
+    fn test_pipeline_budget_usd_parsed_from_frontmatter() {
+        let content = r#"---
+pipeline_budget_usd: 0.05
+pipeline:
+  - role: extract
+  - role: review
+---
+Prompt."#;
+        let role = Role::new("budgeted-pipeline", content);
+        assert_eq!(role.pipeline_budget_usd(), Some(0.05));
+    }
+
+    #[test]
+    fn test_pipeline_budget_usd_in_export() {
+        let content = r#"---
+pipeline_budget_usd: 0.10
+---
+Prompt."#;
+        let role = Role::new("export-budget", content);
+        let exported = role.export();
+        assert!(
+            exported.contains("pipeline_budget_usd"),
+            "budget must round-trip: {exported}"
+        );
+        assert!(exported.contains("0.1"));
+    }
+
+    #[test]
+    fn test_pipeline_budget_allocates_proportionally_via_allocator() {
+        // End-to-end: role frontmatter → pipeline_sequential() → allocator.
+        // Verifies the wiring `invoke_role`/`run()` rely on lines up: a 4 USD
+        // budget split across stages with weights [default=1, 2, default=1]
+        // gives [1.0, 2.0, 1.0] (totals 4.0).
+        let content = r#"---
+pipeline_budget_usd: 4.0
+pipeline:
+  - role: extract
+  - role: review
+    budget_weight: 2.0
+  - role: format
+---
+Prompt."#;
+        let role = Role::new("alloc-end-to-end", content);
+        let total = role.pipeline_budget_usd().expect("budget set");
+        let weights: Vec<Option<f64>> = role
+            .pipeline_sequential()
+            .unwrap()
+            .iter()
+            .map(|s| s.budget_weight)
+            .collect();
+        let shares = crate::context_budget::allocate_stage_budgets(&weights, total);
+        assert_eq!(shares.len(), 3);
+        assert!((shares[0] - 1.0).abs() < 1e-9);
+        assert!((shares[1] - 2.0).abs() < 1e-9);
+        assert!((shares[2] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_pipeline_stage_budget_weight_parsed() {
+        let content = r#"---
+pipeline_budget_usd: 1.0
+pipeline:
+  - role: extract
+  - role: review
+    budget_weight: 2.0
+  - role: format
+---
+Prompt."#;
+        let role = Role::new("weighted-stages", content);
+        let stages = role.pipeline_sequential().expect("sequential pipeline");
+        assert_eq!(stages.len(), 3);
+        assert_eq!(stages[0].budget_weight, None);
+        assert_eq!(stages[1].budget_weight, Some(2.0));
+        assert_eq!(stages[2].budget_weight, None);
+    }
+
     // ---- Phase 26C: Knowledge-base bindings ----
 
     #[test]
@@ -3718,6 +4261,7 @@ Body."#;
         let node = PipelineNode::Stage(RolePipelineStage {
             role: " ".into(),
             model: None,
+            budget_weight: None,
         });
         let err = node.structural_check().unwrap_err();
         assert!(err.to_string().contains("empty role"));

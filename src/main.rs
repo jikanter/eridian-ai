@@ -32,7 +32,7 @@ use crate::render::render_error;
 use crate::repl::Repl;
 use crate::utils::*;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use inquire::Text;
 use parking_lot::RwLock;
@@ -93,6 +93,10 @@ async fn main() -> Result<()> {
         || cli.list_macros
         || cli.list_sessions
         || cli.list_tools
+        // Phase 13A/D: --fork-role writes a file and exits; --explain-role
+        // reads role frontmatter and exits. Neither needs an LLM client.
+        || !cli.fork_role.is_empty()
+        || cli.explain_role.is_some()
         // Phase 25E/26E: read-only knowledge ops don't need heavy config setup.
         || cli.knowledge_list
         || cli.knowledge_stat.is_some()
@@ -214,6 +218,18 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
         };
         render_role_list(&roles, cli.verbose, cli.output_format)?;
         return Ok(());
+    }
+    // Phase 13A: --fork-role <SOURCE> <NEW_NAME>. Creates a new role file in
+    // the user's roles directory pre-populated with `extends: <SOURCE>` and
+    // commented-out parent fields so the user can edit them in place.
+    if !cli.fork_role.is_empty() {
+        return run_fork_role(&cli.fork_role, cli.output_format);
+    }
+    // Phase 13D: --explain-role <NAME>. Prints a human-readable description
+    // of what the role does and how it composes. Pair with `-o json` for
+    // machine consumption.
+    if let Some(name) = &cli.explain_role {
+        return run_explain_role(name, cli.output_format);
     }
     if cli.find_role {
         // At least one filter must be present, otherwise --find-role is just a
@@ -1244,6 +1260,90 @@ fn render_role_list(
             parts.push(format!("pipeline: {n} {label}{}", if n == 1 { "" } else { "s" }));
         }
         println!("  {:<width$}  {}", r.name(), parts.join("  "), width = name_width);
+    }
+    Ok(())
+}
+
+/// Phase 13A: create a new role file that inherits from `SOURCE`.
+///
+/// The new file ships with `extends: SOURCE` plus a hint comment per
+/// field the parent declares (model, temperature, top_p, use_tools,
+/// input_schema, output_schema). The user uncomments the line they want
+/// to override — a 5-minute editing task collapses to a 5-second command,
+/// and the user picks up that `extends:` exists on the way.
+fn run_fork_role(args: &[String], output_format: Option<crate::cli::OutputFormat>) -> Result<()> {
+    if args.len() != 2 {
+        bail!("--fork-role takes exactly two values: <SOURCE> <NEW_NAME>");
+    }
+    let source = &args[0];
+    let new_name = &args[1];
+
+    if new_name.trim().is_empty() {
+        bail!("--fork-role: new name must not be empty");
+    }
+    // Same constraints `Config::role_file` would otherwise paper over —
+    // refuse path traversal so the new file always lands in `roles_dir`.
+    if new_name.contains('/') || new_name.contains('\\') || new_name.starts_with('.') {
+        bail!(
+            "--fork-role: invalid new role name '{new_name}' — must be a bare role name with no path separators or leading dot"
+        );
+    }
+
+    // Resolve the source to validate it. If this fails the user gets a
+    // helpful "unknown role" error before any file is created.
+    let _resolved = config::Role::resolve(source)
+        .with_context(|| format!("--fork-role: source role '{source}' could not be resolved"))?;
+
+    let target_path = config::Config::role_file(new_name);
+    if target_path.exists() {
+        bail!(
+            "--fork-role: target file {} already exists — pick a different NEW_NAME or remove the existing file",
+            target_path.display()
+        );
+    }
+    if let Some(parent_dir) = target_path.parent() {
+        std::fs::create_dir_all(parent_dir).with_context(|| {
+            format!("--fork-role: failed to create roles directory {}", parent_dir.display())
+        })?;
+    }
+
+    let parent_metadata = config::read_role_raw_metadata(source)
+        .with_context(|| format!("--fork-role: failed to read parent metadata for '{source}'"))?;
+    let body = config::render_forked_role(source, &parent_metadata);
+    std::fs::write(&target_path, &body)
+        .with_context(|| format!("--fork-role: failed to write {}", target_path.display()))?;
+
+    match output_format {
+        Some(crate::cli::OutputFormat::Json) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "source": source,
+                    "new_name": new_name,
+                    "path": target_path.display().to_string(),
+                }))?
+            );
+        }
+        _ => {
+            println!("Created {}", target_path.display());
+            println!("  extends: {source}");
+            println!("  Uncomment the fields you want to override, then edit the prompt body.");
+        }
+    }
+    Ok(())
+}
+
+/// Phase 13D: print a human-readable explanation of a role's composition.
+fn run_explain_role(name: &str, output_format: Option<crate::cli::OutputFormat>) -> Result<()> {
+    let exp = config::build_role_explanation(name)
+        .with_context(|| format!("--explain-role: failed to resolve role '{name}'"))?;
+    match output_format {
+        Some(crate::cli::OutputFormat::Json) => {
+            println!("{}", serde_json::to_string_pretty(&exp)?);
+        }
+        _ => {
+            print!("{}", config::format_role_explanation(&exp));
+        }
     }
     Ok(())
 }

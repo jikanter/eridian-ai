@@ -20,6 +20,31 @@
 | Proxy gateway (LiteLLM/Redis) | **37D** | The pi REPL already routes through the in-process server via `AICHAT_BRIDGE_URL` ([`src/repl/pi.rs`](../../src/repl/pi.rs)); turning `serve.rs` into an L1-at-gateway is the pi integration. |
 | *(not in spec — added)* Provider prompt cache (L3) | **37B** | Largest single cost win (90% read discount on Anthropic; 50% on OpenAI; up to 90% on Gemini 2.5). Self-contained to the client layer. |
 
+## The caching sub-track (37 → 41)
+
+Phase 37 builds the *layers* of response caching against the concrete
+[`StageCache`](../../src/cache.rs). A feature-for-feature study of
+[LiteLLM's caching subsystem](https://github.com/BerriAI/litellm/tree/main/litellm/caching) —
+the most complete open-source treatment of the problem — surfaced a set of *horizontal
+abstractions* that cut across these layers and are worth porting. That study and its
+traceability map live in
+[`EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md)
+(97% feature coverage; the distributed third gated behind cargo features). The result is a
+cohesive **caching sub-track within Epic 2**:
+
+| Phase | Scope | LiteLLM analogue |
+|---|---|---|
+| **37** (this doc) | L1 exact / L2 semantic / L3 provider layers, accounting, trace, pi integration | the layered model + `cache_control` emission |
+| [**38**](phase-38-overview.md) | `CacheBackend` trait, in-memory/disk/dual backends, cache-control protocol, modes | `BaseCache`, `InMemoryCache`, `DiskCache`, `DualCache`, `DynamicCacheControl` |
+| [**39**](phase-39-overview.md) | Distributed/remote backends (Redis/S3/GCS/Azure), **cargo-gated** | `RedisCache`, `S3Cache`, `GCSCache`, `AzureBlobCache` |
+| [**40**](phase-40-overview.md) | Embedding & rerank caching (RAG) | embedding caching + `supported_call_types` |
+| [**41**](phase-41-overview.md) | Admin & observability surface (ping/health/delete, model-group, CLI) | `/cache/ping`, `delete_cache_keys`, `caching_groups`, `enable/disable_cache` |
+
+37 lands first because nothing is a pluggable backend until 38's trait exists, and nothing
+is measurable until 37A's accounting and 37E's trace event exist. The two abstractions 37
+itself defers — a backend trait and distributed storage — are 38A and 39 respectively, with
+the "what 37 does not solve" notes below updated to point at them.
+
 ## 37A Design — Cache accounting
 
 `CallMetrics` ([`src/client/common.rs:340`](../../src/client/common.rs)) today carries `input_tokens` / `output_tokens` only. The Claude streaming extractor silently drops `cache_creation_input_tokens` and `cache_read_input_tokens`; OpenAI drops `prompt_tokens_details.cached_tokens`; Gemini drops `cachedContentTokenCount`. The `cacheRead` / `cacheWrite` keys in [`src/config/session.rs:1128`](../../src/config/session.rs) are hard-coded zeros in the pi-export shim — a placeholder, not a measurement.
@@ -314,6 +339,11 @@ Per project guideline ("*Always* add integration tests via bats in addition to u
 ## References
 
 - [`docs/analysis/open-harness/EVAL-0002-full-caching.md`](../analysis/open-harness/EVAL-0002-full-caching.md) — the gap inventory this phase implements
+- [`docs/analysis/open-harness/EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) — the LiteLLM feature-for-feature parity map driving the 37→41 sub-track
+- [Phase 38 overview](phase-38-overview.md) — `CacheBackend` trait + cache-control protocol (the abstraction 37 sits on)
+- [Phase 39 overview](phase-39-overview.md) — distributed/remote backends (cargo-gated)
+- [Phase 40 overview](phase-40-overview.md) — embedding/rerank caching
+- [Phase 41 overview](phase-41-overview.md) — cache admin & observability surface
 - [`src/cache.rs`](../../src/cache.rs) — existing `StageCache` primitive being broadened
 - [`src/repl/pi.rs`](../../src/repl/pi.rs) — pi launcher; explains why 37D is the pi integration
 - [`docs/features/repl-pi.md`](../features/repl-pi.md) — pi REPL surface; user-facing impact of 37D

@@ -146,6 +146,85 @@ pub fn select_within_budget(ranked: Vec<RankedContent>, budget: usize) -> Select
     SelectionOutcome { selected, skipped }
 }
 
+/// Phase 11D: allocate a pipeline's total dollar budget across N stages by
+/// `budget_weight`. Stages without an explicit weight default to 1.0. A zero
+/// or negative weight is treated as the default — a stage that runs always
+/// gets at least its share, never silently zero. With an empty `weights`
+/// slice or a zero `total_usd`, returns an all-zeros vector of matching
+/// length (the no-op case).
+pub fn allocate_stage_budgets(weights: &[Option<f64>], total_usd: f64) -> Vec<f64> {
+    let effective: Vec<f64> = weights
+        .iter()
+        .map(|w| match w {
+            Some(v) if *v > 0.0 => *v,
+            _ => 1.0,
+        })
+        .collect();
+    let total_weight: f64 = effective.iter().sum();
+    if total_weight <= 0.0 || total_usd <= 0.0 {
+        return vec![0.0; weights.len()];
+    }
+    effective
+        .iter()
+        .map(|w| (w / total_weight) * total_usd)
+        .collect()
+}
+
+/// Phase 11D: turn a per-stage dollar budget into a maximum input-token cap.
+/// Subtracts the cost of the reserved output tokens first; whatever dollars
+/// remain are converted to input tokens at the model's input price.
+///
+/// Prices are in `$/Mtok` (matching the `model.input_price` / `output_price`
+/// units already used by `compute_cost`). A zero `input_price_per_million`
+/// means the input is free; return `usize::MAX` so the caller treats the
+/// budget as "no cap" rather than dividing by zero.
+pub fn budget_usd_to_input_token_cap(
+    budget_usd: f64,
+    input_price_per_million: f64,
+    output_reserve_tokens: usize,
+    output_price_per_million: f64,
+) -> usize {
+    if input_price_per_million <= 0.0 {
+        return usize::MAX;
+    }
+    let output_cost = (output_reserve_tokens as f64) * output_price_per_million / 1_000_000.0;
+    let input_dollars = (budget_usd - output_cost).max(0.0);
+    let tokens = input_dollars * 1_000_000.0 / input_price_per_million;
+    if !tokens.is_finite() || tokens <= 0.0 {
+        return 0;
+    }
+    tokens.floor() as usize
+}
+
+/// Phase 11D: shrink `text` until `estimate_token_length` reports a value at
+/// or below `token_cap`. Truncation is from the tail by character to keep the
+/// head of the input (typically the user's instruction / latest message)
+/// intact. Returns the trimmed text and a `was_truncated` signal so the
+/// caller can emit a warning rather than silently dropping content.
+pub fn truncate_to_token_budget(text: &str, token_cap: usize) -> (String, bool) {
+    if estimate_token_length(text) <= token_cap {
+        return (text.to_string(), false);
+    }
+    if token_cap == 0 {
+        return (String::new(), true);
+    }
+    // Binary-search over the char-prefix length until the estimate fits.
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2;
+        let candidate: String = chars[..mid].iter().collect();
+        if estimate_token_length(&candidate) <= token_cap {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let trimmed: String = chars[..lo].iter().collect();
+    (trimmed, true)
+}
+
 /// Format a short multi-line summary of a selection outcome for stderr.
 /// Returns `None` when nothing was skipped — no noise when the budget is fine.
 pub fn format_selection_summary(outcome: &SelectionOutcome) -> Option<String> {
@@ -359,6 +438,109 @@ mod tests {
         assert_eq!(outcome.selected[1].path, "low");
         assert_eq!(outcome.skipped.len(), 1);
         assert_eq!(outcome.skipped[0].path, "mid");
+    }
+
+    // ---- Phase 11D: allocate_stage_budgets ----
+
+    #[test]
+    fn allocate_equal_share_when_no_weights() {
+        let weights = vec![None, None, None, None];
+        let shares = allocate_stage_budgets(&weights, 0.40);
+        assert_eq!(shares.len(), 4);
+        for s in &shares {
+            assert!((s - 0.10).abs() < 1e-9, "each stage gets 1/4: {s}");
+        }
+    }
+
+    #[test]
+    fn allocate_proportional_to_weights() {
+        // 1 + 2 + 1 = 4 total weight; shares: 1/4, 2/4, 1/4
+        let weights = vec![None, Some(2.0), Some(1.0)];
+        let shares = allocate_stage_budgets(&weights, 1.0);
+        assert!((shares[0] - 0.25).abs() < 1e-9);
+        assert!((shares[1] - 0.50).abs() < 1e-9);
+        assert!((shares[2] - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn allocate_empty_returns_empty() {
+        let shares = allocate_stage_budgets(&[], 5.00);
+        assert!(shares.is_empty());
+    }
+
+    #[test]
+    fn allocate_zero_total_returns_all_zeros() {
+        let weights = vec![Some(1.0), Some(2.0)];
+        let shares = allocate_stage_budgets(&weights, 0.0);
+        assert_eq!(shares, vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn allocate_treats_zero_or_negative_weight_as_default() {
+        // A user-set weight of 0 or negative is nonsensical for a stage that
+        // is actually going to run; fall back to the implicit 1.0 default
+        // rather than silently zeroing the stage's budget.
+        let weights = vec![Some(0.0), Some(-1.0), Some(2.0)];
+        let shares = allocate_stage_budgets(&weights, 4.0);
+        // Effective weights: 1.0, 1.0, 2.0 → total 4.0
+        assert!((shares[0] - 1.0).abs() < 1e-9);
+        assert!((shares[1] - 1.0).abs() < 1e-9);
+        assert!((shares[2] - 2.0).abs() < 1e-9);
+    }
+
+    // ---- Phase 11D: budget_usd_to_input_token_cap ----
+
+    #[test]
+    fn budget_to_tokens_subtracts_output_reservation_cost_first() {
+        // $0.01 budget; input $1/Mtok, output $2/Mtok; reserve 1000 output tokens.
+        // Output reservation cost = 1000 * 2 / 1_000_000 = $0.002
+        // Remaining for input = $0.008
+        // Input tokens = 0.008 * 1_000_000 / 1 = 8000
+        let cap = budget_usd_to_input_token_cap(0.01, 1.0, 1000, 2.0);
+        assert_eq!(cap, 8000);
+    }
+
+    #[test]
+    fn budget_to_tokens_saturates_to_zero_when_reserve_exceeds_budget() {
+        // Output reservation alone costs more than the budget → zero input tokens.
+        // Reserve 1000 * $2/Mtok = $0.002; budget $0.001 → 0.
+        let cap = budget_usd_to_input_token_cap(0.001, 1.0, 1000, 2.0);
+        assert_eq!(cap, 0);
+    }
+
+    #[test]
+    fn budget_to_tokens_returns_usize_max_when_input_price_is_zero() {
+        // A free input model has no token cap — return usize::MAX as the
+        // "unconstrained" sentinel so the caller treats the budget as a no-op.
+        let cap = budget_usd_to_input_token_cap(0.05, 0.0, 1000, 2.0);
+        assert_eq!(cap, usize::MAX);
+    }
+
+    // ---- Phase 11D: truncate_to_token_budget ----
+
+    #[test]
+    fn truncate_short_text_is_passthrough() {
+        let text = "hello world";
+        let (out, was_truncated) = truncate_to_token_budget(text, 100);
+        assert_eq!(out, text);
+        assert!(!was_truncated);
+    }
+
+    #[test]
+    fn truncate_long_text_shrinks_to_fit_and_signals() {
+        // Build a long enough text that the estimate clearly exceeds the cap.
+        let text = "word ".repeat(1000); // ~1300 tokens by estimate
+        let (out, was_truncated) = truncate_to_token_budget(&text, 100);
+        assert!(was_truncated, "long text under tiny cap should truncate");
+        assert!(out.len() < text.len());
+        assert!(estimate_token_length(&out) <= 100);
+    }
+
+    #[test]
+    fn truncate_zero_budget_yields_empty_and_signals() {
+        let (out, was_truncated) = truncate_to_token_budget("any text at all", 0);
+        assert_eq!(out, "");
+        assert!(was_truncated);
     }
 
     // ---- format_selection_summary ----

@@ -25,8 +25,12 @@ One row per phase. "Sub-phases" lists the granular state; "Last update" is the m
 | 1 Core Platform | 0–8 | Foundation | all **Done** | — | [completed-epics.md](archive/roadmap/completed-epics.md) |
 | 2 Runtime Intelligence | 9 | Schema fidelity | 9A–D **Done** | 2026-03-16 | [phase-9-overview.md](roadmap/phase-9-overview.md) |
 | 2 Runtime Intelligence | 10 | Resilience & retry | 10A–D **Done**; `model_policy` ruled out | 2026-05-11 | [phase-10-overview.md](roadmap/phase-10-overview.md) |
-| 2 Runtime Intelligence | 11 | Context budget | 11A/B **Done**, 11C **Superseded**, 11D **Planned** | 2026-05-11 | [phase-11-overview.md](roadmap/phase-11-overview.md) |
-| 2 Runtime Intelligence | 37 | Transparent response caching | 37A–F **Planned** | 2026-05-27 | [phase-37-overview.md](roadmap/phase-37-overview.md) |
+| 2 Runtime Intelligence | 11 | Context budget | 11A/B **Done**, 11C **Superseded**, 11D **Done** | 2026-05-28 | [phase-11-overview.md](roadmap/phase-11-overview.md) |
+| 2 Runtime Intelligence | 37 | Transparent response caching | 37A–F **Planned** | 2026-05-29 | [phase-37-overview.md](roadmap/phase-37-overview.md) |
+| 2 Runtime Intelligence | 38 | Cache backend abstraction & control protocol | 38A–E **Planned** | 2026-05-29 | [phase-38-overview.md](roadmap/phase-38-overview.md) |
+| 2 Runtime Intelligence | 39 | Distributed & remote cache backends (cargo-gated) | 39A–D **Planned** | 2026-05-29 | [phase-39-overview.md](roadmap/phase-39-overview.md) |
+| 2 Runtime Intelligence | 40 | Auxiliary-call caching (embeddings & rerank) | 40A–D **Planned** | 2026-05-29 | [phase-40-overview.md](roadmap/phase-40-overview.md) |
+| 2 Runtime Intelligence | 41 | Cache observability & admin parity | 41A–D **Planned** | 2026-05-29 | [phase-41-overview.md](roadmap/phase-41-overview.md) |
 | 3 Composition UX | 12 | Discoverability | 12A–D **Done** | 2026-05-04 | [phase-12-overview.md](roadmap/phase-12-overview.md) |
 | 3 Composition UX | 13 | Authoring & teaching | 13A–D **Planned** | 2026-05-11 | [phase-13-overview.md](roadmap/phase-13-overview.md) |
 | 4 Typed Ports | 14 | Capability manifests | 14A–D **Done** | 2026-05-04 | [phase-14-overview.md](roadmap/phase-14-overview.md) |
@@ -57,15 +61,15 @@ One row per phase. "Sub-phases" lists the granular state; "Last update" is the m
 
 ## Active Track
 
-Sequential critical path: **Phase 11D → Phase 13 → Phase 15B/C → Phase 33 → Phase 22**. Phase 33 (typed input surface) slots after 15B/C because 33D extends the same containment-check logic into adjacent-stage shape validation.
-Parallel independent tracks: **Epic 8** (Phases 23–24, role evaluation), **Epic 10** (Phases 28–29, agent evolution), **Epic 14 Memory Surface** (Phase 34 → Phase 35, Posture-C dual-store wiring from the 2026-05-24 divergence playbook), and **Phase 37 Transparent Response Caching** (Epic 2; sequenced 37A → 37B → 37C → 37D → 37E with 37F deferred; the pi integration is 37D, which turns `serve.rs` into the L1-at-gateway every pi turn flows through). **Pipeline isolation** (Phase 36) slots after Phase 22 inside Epic 7 and extends the existing model-restore pattern in `run_stage`.
+Sequential critical path: **Phase 13 → Phase 15B/C → Phase 33 → Phase 22**. Phase 33 (typed input surface) slots after 15B/C because 33D extends the same containment-check logic into adjacent-stage shape validation. (Phase 11D shipped 2026-05-28; pipeline budget propagation now ships with the `pipeline_budget_usd:` / `budget_weight:` surface and tail-truncation in `run_stage_inner`.)
+Parallel independent tracks: **Epic 8** (Phases 23–24, role evaluation), **Epic 10** (Phases 28–29, agent evolution), **Epic 14 Memory Surface** (Phase 34 → Phase 35, Posture-C dual-store wiring from the 2026-05-24 divergence playbook), and the **Caching sub-track** (Epic 2, Phases **37 → 38 → 39 → 40 → 41**). The sub-track ports [LiteLLM's caching subsystem](https://github.com/BerriAI/litellm/tree/main/litellm/caching) feature-for-feature per [`EVAL-0004`](analysis/open-harness/EVAL-0004-litellm-cache-parity.md): **37** ships the L1/L2/L3 layers + accounting + trace + pi integration (sequenced 37A → 37B → 37C → 37D → 37E, 37F deferred; 37D turns `serve.rs` into the L1-at-gateway every pi turn flows through); **38** lands the `CacheBackend` trait + cache-control protocol that everything below plugs into; **39** adds cargo-gated Redis/S3/GCS/Azure backends (zero new default deps); **40** caches RAG embeddings/rerank; **41** completes the admin/observability surface. Strict ordering: 38 is blocked by 37A/37E; 39/40/41 are each blocked by 38A. **Pipeline isolation** (Phase 36) slots after Phase 22 inside Epic 7 and extends the existing model-restore pattern in `run_stage`.
 Deferred: **Phase 18** (server discovery/estimation), **Phase 16A–E** (server hardening beyond what Phase 20 federation required).
 
 ---
 
 ## References
 
-- **Architecture:** [architecture.md](architecture/architecture.md)
+- **Architecture:** [architecture.md](architecture/architecture.md) &#183; **Future-state diagram:** [architecture.svg](architecture.svg)
 - **Per-epic designs:** [analysis/](analysis/) (one `epic-N.md` per epic)
 - **Dependency graph:** [roadmap/dependencies.md](roadmap/dependencies.md)
 - **Success metrics:** [roadmap/success-metrics.md](roadmap/success-metrics.md)

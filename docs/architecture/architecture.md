@@ -1,5 +1,11 @@
 # Architecture Notes
 
+> **Future-state diagram:** [`docs/architecture.svg`](../architecture.svg) renders the whole
+> system top-to-bottom (surfaces → gateway → core → caching → providers → external) with the
+> open-harness observability rail. The caching subsystem (Phases 37→41, a LiteLLM
+> feature-for-feature port per [`EVAL-0004`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md))
+> is highlighted as the active build focus.
+
 ---
 
 ### Key Files

@@ -18,6 +18,11 @@ use std::path::Path;
 struct PipelineStage {
     role_name: String,
     model_id: Option<String>,
+    /// Phase 11D: pre-allocated dollar budget for this stage. `None` means
+    /// no enforcement; the stage runs with the model's native context window
+    /// as its only limit. When `Some`, `run_stage_inner` tail-truncates the
+    /// post-knowledge input text to fit `budget_usd_to_input_token_cap`.
+    budget_usd: Option<f64>,
 }
 
 /// Phase 17B: per-stage execution trace. Public so server-side invocation
@@ -47,35 +52,68 @@ struct PipelineDef {
     /// key. Either `stages:` or `pipeline:` must be set, not both.
     #[serde(default)]
     pipeline: Option<Vec<serde_json::Value>>,
+    /// Phase 11D: total dollar budget for the pipeline. Divided across
+    /// stages by `budget_weight`. `None` disables per-stage budget enforcement.
+    #[serde(default)]
+    budget_usd: Option<f64>,
 }
 
 #[derive(Deserialize)]
 struct PipelineStageDef {
     role: String,
+    #[serde(default)]
     model: Option<String>,
+    /// Phase 11D: relative share of the pipeline's `budget_usd`. Defaults
+    /// to 1.0 when unset.
+    #[serde(default)]
+    budget_weight: Option<f64>,
 }
 
 pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()> {
     // Phase 21: `--pipe-def` may carry a DAG; `--stage` is always sequential.
-    let nodes: Vec<PipelineNode> = if let Some(def_path) = &cli.pipe_def {
-        load_pipeline_def_nodes(def_path)?
-    } else if !cli.stages.is_empty() {
-        parse_stages(&cli.stages)?
-            .into_iter()
-            .map(|s| {
-                PipelineNode::Stage(RolePipelineStage {
-                    role: s.role_name,
-                    model: s.model_id,
-                })
-            })
-            .collect()
-    } else {
-        bail!("Pipeline requires --stage or --pipe-def");
-    };
+    // Phase 11D: `--pipe-def` files may also declare `budget_usd:` at the
+    // top level. CLI `--stage` form has no budget surface yet.
+    let (nodes, pipeline_budget_usd): (Vec<PipelineNode>, Option<f64>) =
+        if let Some(def_path) = &cli.pipe_def {
+            load_pipeline_def_nodes(def_path)?
+        } else if !cli.stages.is_empty() {
+            (
+                parse_stages(&cli.stages)?
+                    .into_iter()
+                    .map(|s| {
+                        PipelineNode::Stage(RolePipelineStage {
+                            role: s.role_name,
+                            model: s.model_id,
+                            budget_weight: None,
+                        })
+                    })
+                    .collect(),
+                None,
+            )
+        } else {
+            bail!("Pipeline requires --stage or --pipe-def");
+        };
 
     if nodes.is_empty() {
         bail!("Pipeline has no stages");
     }
+
+    // Phase 11D: allocate per-top-level-node dollar budgets. Only leaf Stage
+    // nodes carry a `budget_weight`; nested DAG nodes (parallel/switch) get
+    // `None` here and consume their parent's full budget — DAG-aware
+    // sub-allocation is a follow-up.
+    let per_node_budgets: Option<Vec<f64>> = pipeline_budget_usd
+        .filter(|b| *b > 0.0)
+        .map(|total| {
+            let weights: Vec<Option<f64>> = nodes
+                .iter()
+                .map(|n| match n {
+                    PipelineNode::Stage(s) => s.budget_weight,
+                    _ => None,
+                })
+                .collect();
+            crate::context_budget::allocate_stage_budgets(&weights, total)
+        });
 
     // Phase 9D + 21D: pre-flight validate every stage reachable through the
     // DAG (parallel branches + switch arms count) before any LLM call.
@@ -110,6 +148,7 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
     let mut stage_traces: Vec<StageTrace> = Vec::new();
     for (i, node) in nodes.iter().enumerate() {
         let is_last = i == node_count - 1;
+        let stage_budget = per_node_budgets.as_ref().map(|v| v[i]);
         let (output, mut traces) = run_node(
             &config,
             node,
@@ -118,6 +157,7 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
             &input_text,
             is_last,
             None,
+            stage_budget,
             abort_signal.clone(),
         )
         .await?;
@@ -196,6 +236,7 @@ async fn run_stage(
         let attempt_stage = PipelineStage {
             role_name: stage.role_name.clone(),
             model_id: model_override.clone(),
+            budget_usd: stage.budget_usd,
         };
         let model_label = model_override
             .clone()
@@ -398,6 +439,36 @@ async fn run_stage_inner(
 
     let client = input.create_client()?;
 
+    // Phase 11D: per-stage budget enforcement. Convert the dollar budget into
+    // an input-token cap using the resolved model's prices, then tail-truncate
+    // the post-knowledge input text to fit. Truncation is preferred over
+    // hard-failing — losing the bottom of a long context is recoverable, a
+    // refused pipeline run is not. We clear `patched_text` first so the
+    // post-knowledge text is the one being capped.
+    if let Some(budget_usd) = stage.budget_usd {
+        let model_data = client.model().data();
+        let input_price = model_data.input_price.unwrap_or(0.0);
+        let output_price = model_data.output_price.unwrap_or(0.0);
+        let cap = crate::context_budget::budget_usd_to_input_token_cap(
+            budget_usd,
+            input_price,
+            crate::context_budget::DEFAULT_OUTPUT_RESERVE,
+            output_price,
+        );
+        let current = input.text();
+        let (trimmed, was_truncated) =
+            crate::context_budget::truncate_to_token_budget(&current, cap);
+        if was_truncated {
+            let original_tokens = crate::utils::estimate_token_length(&current);
+            eprintln!(
+                "Stage budget: role '{}' input truncated {original_tokens} → {cap} tokens (budget ${budget_usd:.4})",
+                stage.role_name
+            );
+            input.clear_patch();
+            input.set_text(trimmed);
+        }
+    }
+
     // Phase 10B: content-addressable stage output cache. Skips when caching is
     // disabled (`--no-cache`), on dry-run, or for tool-using stages (tool calls
     // carry non-deterministic side effects and must not be replayed).
@@ -583,12 +654,16 @@ fn parse_stages(stage_specs: &[String]) -> Result<Vec<PipelineStage>> {
                 Some((role, model)) => (role.to_string(), Some(model.to_string())),
                 None => (spec.to_string(), None),
             };
-            Ok(PipelineStage { role_name, model_id })
+            Ok(PipelineStage {
+                role_name,
+                model_id,
+                budget_usd: None,
+            })
         })
         .collect()
 }
 
-fn load_pipeline_def_nodes(path: &str) -> Result<Vec<PipelineNode>> {
+fn load_pipeline_def_nodes(path: &str) -> Result<(Vec<PipelineNode>, Option<f64>)> {
     let path = Path::new(path);
     let content = if path.exists() {
         std::fs::read_to_string(path)
@@ -623,24 +698,25 @@ fn load_pipeline_def_nodes(path: &str) -> Result<Vec<PipelineNode>> {
         );
     }
 
-    if let Some(items) = def.pipeline {
+    let nodes = if let Some(items) = def.pipeline {
         items
             .iter()
             .map(crate::config::role::parse_pipeline_node)
             .collect::<Result<Vec<_>>>()
-            .context("Failed to parse `pipeline:` node list")
+            .context("Failed to parse `pipeline:` node list")?
     } else {
-        Ok(def
-            .stages
+        def.stages
             .into_iter()
             .map(|s| {
                 PipelineNode::Stage(RolePipelineStage {
                     role: s.role,
                     model: s.model,
+                    budget_weight: s.budget_weight,
                 })
             })
-            .collect())
-    }
+            .collect()
+    };
+    Ok((nodes, def.budget_usd))
 }
 
 /// Phase 17B: aggregated result of invoking a role end-to-end. Returned by
@@ -704,6 +780,8 @@ pub async fn invoke_role(
     // for concurrent / conditional execution. Purely sequential pipelines
     // keep the existing flat-list fast path so behavior is unchanged for
     // pre-DAG callers.
+    let pipeline_budget_usd = role.pipeline_budget_usd();
+
     if role.pipeline_has_dag() {
         let nodes = role.pipeline().expect("DAG implies pipeline present").to_vec();
         let stage_tuples = collect_preflight_stages(&nodes);
@@ -711,10 +789,26 @@ pub async fn invoke_role(
         crate::config::preflight::validate_pipeline_dag_structure(&nodes)
             .context("Pipeline DAG validation failed")?;
 
+        // Phase 11D: same top-level allocation as `run()` — only leaf Stage
+        // nodes get a per-stage share; nested DAG nodes carry `None`.
+        let per_node_budgets: Option<Vec<f64>> = pipeline_budget_usd
+            .filter(|b| *b > 0.0)
+            .map(|total| {
+                let weights: Vec<Option<f64>> = nodes
+                    .iter()
+                    .map(|n| match n {
+                        PipelineNode::Stage(s) => s.budget_weight,
+                        _ => None,
+                    })
+                    .collect();
+                crate::context_budget::allocate_stage_budgets(&weights, total)
+            });
+
         let node_count = nodes.len();
         let mut current = input_text.to_string();
         let mut traces: Vec<StageTrace> = Vec::new();
         for (i, node) in nodes.iter().enumerate() {
+            let stage_budget = per_node_budgets.as_ref().map(|v| v[i]);
             let (out, mut t) = run_node(
                 config,
                 node,
@@ -723,6 +817,7 @@ pub async fn invoke_role(
                 &current,
                 false,
                 None,
+                stage_budget,
                 abort_signal.clone(),
             )
             .await?;
@@ -747,19 +842,32 @@ pub async fn invoke_role(
     }
 
     let pipeline_stages: Vec<PipelineStage> = if let Some(stages) = role.pipeline_sequential() {
+        // Phase 11D: allocate the role's `pipeline_budget_usd` proportionally
+        // across stages by `budget_weight`.
+        let per_stage_budgets: Option<Vec<f64>> = pipeline_budget_usd
+            .filter(|b| *b > 0.0)
+            .map(|total| {
+                let weights: Vec<Option<f64>> =
+                    stages.iter().map(|s| s.budget_weight).collect();
+                crate::context_budget::allocate_stage_budgets(&weights, total)
+            });
         stages
             .iter()
-            .map(|s| PipelineStage {
+            .enumerate()
+            .map(|(i, s)| PipelineStage {
                 role_name: s.role.clone(),
                 model_id: s.model.clone(),
+                budget_usd: per_stage_budgets.as_ref().map(|v| v[i]),
             })
             .collect()
     } else {
         // Non-pipeline role: run it as a single-stage pipeline so we get the
-        // same retry / fallback / preflight machinery for free.
+        // same retry / fallback / preflight machinery for free. The whole
+        // `pipeline_budget_usd` (if any) applies to this single stage.
         vec![PipelineStage {
             role_name: role_name.to_string(),
             model_id: None,
+            budget_usd: pipeline_budget_usd.filter(|b| *b > 0.0),
         }]
     };
 
@@ -839,12 +947,27 @@ pub async fn invoke_role_streaming(
     // but the SSE channel sees each branch's End event when its future
     // resolves. For purely sequential pipelines, behavior is identical to
     // the pre-Phase-21 implementation.
+    let pipeline_budget_usd = role.pipeline_budget_usd();
+
     if role.pipeline_has_dag() {
         let nodes = role.pipeline().expect("DAG implies pipeline present").to_vec();
         let stage_tuples = collect_preflight_stages(&nodes);
         crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
         crate::config::preflight::validate_pipeline_dag_structure(&nodes)
             .context("Pipeline DAG validation failed")?;
+
+        let per_node_budgets: Option<Vec<f64>> = pipeline_budget_usd
+            .filter(|b| *b > 0.0)
+            .map(|total| {
+                let weights: Vec<Option<f64>> = nodes
+                    .iter()
+                    .map(|n| match n {
+                        PipelineNode::Stage(s) => s.budget_weight,
+                        _ => None,
+                    })
+                    .collect();
+                crate::context_budget::allocate_stage_budgets(&weights, total)
+            });
 
         let node_count = nodes.len();
         let mut current = input_text.to_string();
@@ -865,6 +988,7 @@ pub async fn invoke_role_streaming(
                 role: leaf_label.clone(),
                 model_override: None,
             });
+            let stage_budget = per_node_budgets.as_ref().map(|v| v[i]);
             let (out, mut t) = run_node(
                 config,
                 node,
@@ -873,6 +997,7 @@ pub async fn invoke_role_streaming(
                 &current,
                 false,
                 None,
+                stage_budget,
                 abort_signal.clone(),
             )
             .await?;
@@ -913,17 +1038,27 @@ pub async fn invoke_role_streaming(
     }
 
     let pipeline_stages: Vec<PipelineStage> = if let Some(stages) = role.pipeline_sequential() {
+        let per_stage_budgets: Option<Vec<f64>> = pipeline_budget_usd
+            .filter(|b| *b > 0.0)
+            .map(|total| {
+                let weights: Vec<Option<f64>> =
+                    stages.iter().map(|s| s.budget_weight).collect();
+                crate::context_budget::allocate_stage_budgets(&weights, total)
+            });
         stages
             .iter()
-            .map(|s| PipelineStage {
+            .enumerate()
+            .map(|(i, s)| PipelineStage {
                 role_name: s.role.clone(),
                 model_id: s.model.clone(),
+                budget_usd: per_stage_budgets.as_ref().map(|v| v[i]),
             })
             .collect()
     } else {
         vec![PipelineStage {
             role_name: role_name.to_string(),
             model_id: None,
+            budget_usd: pipeline_budget_usd.filter(|b| *b > 0.0),
         }]
     };
 
@@ -1015,6 +1150,7 @@ pub async fn run_inline_pipeline(
         .map(|s| PipelineStage {
             role_name: s.role.clone(),
             model_id: s.model.clone(),
+            budget_usd: None,
         })
         .collect();
     {
@@ -1104,6 +1240,8 @@ pub async fn run_pipeline_role(
 
     for (i, node) in nodes.iter().enumerate() {
         // Pipeline-as-tool: never print output, the caller consumes it.
+        // Phase 11D: pipeline-as-tool doesn't currently surface budget; the
+        // caller can set it via the role's `pipeline_budget_usd` when invoking.
         let (output, _traces) = run_node(
             config,
             node,
@@ -1111,6 +1249,7 @@ pub async fn run_pipeline_role(
             node_count,
             &current_input,
             false,
+            None,
             None,
             abort_signal.clone(),
         )
@@ -1135,6 +1274,7 @@ fn run_node<'a>(
     input_text: &'a str,
     is_last: bool,
     branch_label: Option<usize>,
+    stage_budget_usd: Option<f64>,
     abort_signal: AbortSignal,
 ) -> futures_util::future::BoxFuture<'a, Result<(String, Vec<StageTrace>)>> {
     Box::pin(async move {
@@ -1143,6 +1283,7 @@ fn run_node<'a>(
                 let stage = PipelineStage {
                     role_name: s.role.clone(),
                     model_id: s.model.clone(),
+                    budget_usd: stage_budget_usd,
                 };
                 let (output, metrics) = run_stage(
                     config,
@@ -1225,6 +1366,9 @@ async fn run_parallel(
             input_text,
             false,
             stamp,
+            // Phase 11D: nested DAG budget propagation deferred; branches
+            // consume their model's native context window for now.
+            None,
             abort_signal.clone(),
         )
     });
@@ -1257,6 +1401,7 @@ async fn run_parallel(
             let stage = PipelineStage {
                 role_name: role_name.clone(),
                 model_id: None,
+                budget_usd: None,
             };
             let concatenated = outputs.join("\n---\n");
             let (out, metrics) = run_stage(
@@ -1344,6 +1489,10 @@ async fn run_switch(
         input_text,
         is_last,
         branch_label,
+        // Phase 11D: switch arm inherits no per-stage budget — the routing
+        // decision happens after the prior stage's spend; arm-level budgets
+        // would need a separate config surface.
+        None,
         abort_signal,
     )
     .await

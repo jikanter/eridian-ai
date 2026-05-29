@@ -7,7 +7,7 @@
 | 13A | `--fork-role <source> <new-name>` (creates pre-populated `extends:` file) | Planned |
 | 13B | Schema mismatch errors as teaching moments (side-by-side diff with suggestion) | Planned |
 | 13C | Built-in guardrail role examples (PII detection, prompt injection, topic restriction) | Planned |
-| 13D | `--explain-role <name>` (human-readable description of what a role does and how it composes) | Planned |
+| 13D | `--explain-role <name>` ( human-readable description of what a role does and howit composes) | Planned |
 
 **13A Design — Fork Role:**
 
