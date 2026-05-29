@@ -27,7 +27,7 @@ One row per phase. "Sub-phases" lists the granular state; "Last update" is the m
 | 2 Runtime Intelligence | 10 | Resilience & retry | 10A–D **Done**; `model_policy` ruled out | 2026-05-11 | [phase-10-overview.md](roadmap/phase-10-overview.md) |
 | 2 Runtime Intelligence | 11 | Context budget | 11A/B **Done**, 11C **Superseded**, 11D **Planned** | 2026-05-11 | [phase-11-overview.md](roadmap/phase-11-overview.md) |
 | 3 Composition UX | 12 | Discoverability | 12A–D **Done** | 2026-05-04 | [phase-12-overview.md](roadmap/phase-12-overview.md) |
-| 3 Composition UX | 13 | Authoring & teaching | 13A–D **Planned** | 2026-05-11 | [phase-13-overview.md](roadmap/phase-13-overview.md) |
+| 3 Composition UX | 13 | Authoring & teaching | 13A–D **Done** | 2026-05-29 | [phase-13-overview.md](roadmap/phase-13-overview.md) |
 | 4 Typed Ports | 14 | Capability manifests | 14A–D **Done** | 2026-05-04 | [phase-14-overview.md](roadmap/phase-14-overview.md) |
 | 4 Typed Ports | 15 | Contract testing | 15A **Partial**, 15B/C **Planned** | 2026-05-11 | [phase-15-overview.md](roadmap/phase-15-overview.md) |
 | 4 Typed Ports | 33 | Typed input surface | 33A–E **Planned** | 2026-05-23 | [phase-33-overview.md](roadmap/phase-33-overview.md) |
@@ -56,7 +56,7 @@ One row per phase. "Sub-phases" lists the granular state; "Last update" is the m
 
 ## Active Track
 
-Sequential critical path: **Phase 11D → Phase 13 → Phase 15B/C → Phase 33 → Phase 22**. Phase 33 (typed input surface) slots after 15B/C because 33D extends the same containment-check logic into adjacent-stage shape validation.
+Sequential critical path: **Phase 11D → Phase 15B/C → Phase 33 → Phase 22** (Phase 13 **Done** 2026-05-29). Phase 33 (typed input surface) slots after 15B/C because 33D extends the same containment-check logic into adjacent-stage shape validation — and now also extends Phase 13B's `schema_field_diff` field-delta reporting.
 Parallel independent tracks: **Epic 8** (Phases 23–24, role evaluation), **Epic 10** (Phases 28–29, agent evolution), and **Epic 14 Memory Surface** (Phase 34 → Phase 35, Posture-C dual-store wiring from the 2026-05-24 divergence playbook). **Pipeline isolation** (Phase 36) slots after Phase 22 inside Epic 7 and extends the existing model-restore pattern in `run_stage`.
 Deferred: **Phase 18** (server discovery/estimation), **Phase 16A–E** (server hardening beyond what Phase 20 federation required).
 

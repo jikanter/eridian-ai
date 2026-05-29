@@ -1981,6 +1981,94 @@ pub fn validate_schema_traced(
     }
 }
 
+/// Phase 13B: a field-level comparison between actual JSON data and an
+/// `object`-typed JSON Schema. Drives the "teaching" schema-mismatch error
+/// that shows which fields the producer emitted, which the consumer expects,
+/// and the missing/extra delta between them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SchemaFieldDiff {
+    /// The data parsed as a JSON object (false when it was a scalar/array or
+    /// not JSON at all). When false, `present` is empty and every required
+    /// field counts as missing.
+    pub data_is_object: bool,
+    /// Top-level keys actually present in the data.
+    pub present: Vec<String>,
+    /// Property names declared by the schema.
+    pub expected: Vec<String>,
+    /// Required property names declared by the schema. Falls back to the full
+    /// `expected` set when the schema declares no explicit `required` list.
+    pub missing: Vec<String>,
+    /// Present keys the schema does not declare under `properties`.
+    pub extra: Vec<String>,
+}
+
+/// Phase 13B: compute a field-level diff of `text` (the producer's output)
+/// against an object schema (the consumer's expectation). Returns `None` for
+/// non-object schemas, where a property-name diff would be meaningless.
+pub fn schema_field_diff(schema: &Value, text: &str) -> Option<SchemaFieldDiff> {
+    if schema.get("type").and_then(|t| t.as_str()) != Some("object") {
+        return None;
+    }
+    let expected: Vec<String> = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    let required: Vec<String> = schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let data: Value = serde_json::from_str(text.trim()).unwrap_or(Value::Null);
+    let data_is_object = data.is_object();
+    let present: Vec<String> = data
+        .as_object()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+
+    // When the schema names no `required` fields, treat every declared
+    // property as expected for the purposes of the "missing" report — that is
+    // the most useful signal when a producer under-fills the shape.
+    let want: &[String] = if required.is_empty() {
+        &expected
+    } else {
+        &required
+    };
+    let missing: Vec<String> = want
+        .iter()
+        .filter(|f| !present.contains(f))
+        .cloned()
+        .collect();
+    let extra: Vec<String> = present
+        .iter()
+        .filter(|f| !expected.contains(f))
+        .cloned()
+        .collect();
+
+    Some(SchemaFieldDiff {
+        data_is_object,
+        present,
+        expected,
+        missing,
+        extra,
+    })
+}
+
+/// Phase 13B: render a set of field names as `{ a, b, c }`, or `{ }` when the
+/// set is empty. Used in the teaching schema-mismatch error.
+pub fn format_field_set(fields: &[String]) -> String {
+    if fields.is_empty() {
+        "{ }".to_string()
+    } else {
+        format!("{{ {} }}", fields.join(", "))
+    }
+}
+
 /// Phase 6B: Execute lifecycle hooks after LLM output is generated.
 pub fn run_lifecycle_hooks(role: &Role, output: &str) -> Result<()> {
     if let Some(pipe_to) = role.pipe_to() {
@@ -3845,5 +3933,67 @@ pipeline:
         assert!(!obj.contains_key("capabilities"));
         assert!(!obj.contains_key("input_schema"));
         assert!(!obj.contains_key("output_schema"));
+    }
+
+    // ----- Phase 13B: schema-mismatch teaching diff -----
+
+    #[test]
+    fn test_schema_field_diff_missing_and_extra() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "content": {}, "language": {} },
+            "required": ["content", "language"]
+        });
+        let diff = schema_field_diff(&schema, r#"{"text": "hi", "summary": "yo"}"#).unwrap();
+        assert!(diff.data_is_object);
+        let mut present = diff.present.clone();
+        present.sort();
+        assert_eq!(present, vec!["summary".to_string(), "text".to_string()]);
+        assert_eq!(diff.missing, vec!["content".to_string(), "language".to_string()]);
+        // `summary` and `text` are not in the schema's properties.
+        let mut extra = diff.extra.clone();
+        extra.sort();
+        assert_eq!(extra, vec!["summary".to_string(), "text".to_string()]);
+    }
+
+    #[test]
+    fn test_schema_field_diff_falls_back_to_properties_when_no_required() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "a": {}, "b": {} }
+        });
+        // No `required` list → every declared property is treated as expected.
+        let diff = schema_field_diff(&schema, r#"{"a": 1}"#).unwrap();
+        assert_eq!(diff.missing, vec!["b".to_string()]);
+        assert!(diff.extra.is_empty());
+    }
+
+    #[test]
+    fn test_schema_field_diff_non_object_data() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "x": {} },
+            "required": ["x"]
+        });
+        // Producer emitted plain text, not a JSON object.
+        let diff = schema_field_diff(&schema, "just some prose").unwrap();
+        assert!(!diff.data_is_object);
+        assert!(diff.present.is_empty());
+        assert_eq!(diff.missing, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn test_schema_field_diff_none_for_non_object_schema() {
+        let schema = serde_json::json!({ "type": "string" });
+        assert!(schema_field_diff(&schema, "\"hello\"").is_none());
+    }
+
+    #[test]
+    fn test_format_field_set() {
+        assert_eq!(format_field_set(&[]), "{ }");
+        assert_eq!(
+            format_field_set(&["a".to_string(), "b".to_string()]),
+            "{ a, b }"
+        );
     }
 }

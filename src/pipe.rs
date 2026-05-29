@@ -210,6 +210,7 @@ async fn run_stage(
             let result = run_stage_inner(
                 config,
                 &attempt_stage,
+                stage_index,
                 input_text,
                 is_last,
                 abort_signal.clone(),
@@ -336,6 +337,7 @@ async fn resolve_stage_entity(
 async fn run_stage_inner(
     config: &GlobalConfig,
     stage: &PipelineStage,
+    stage_index: usize,
     input_text: &str,
     is_last: bool,
     abort_signal: AbortSignal,
@@ -386,7 +388,20 @@ async fn run_stage_inner(
         .map(crate::utils::trace::TraceEmitter::new);
 
     if let Some(schema) = role.input_schema() {
-        validate_schema_traced("input", schema, input_text, trace_emitter.as_ref())?;
+        if let Err(e) =
+            validate_schema_traced("input", schema, input_text, trace_emitter.as_ref())
+        {
+            // Phase 13B: turn an adjacent-stage shape mismatch into a teaching
+            // moment — show what the previous stage produced vs what this stage
+            // expects, the missing/extra fields, and a fork-role hint. Falls
+            // back to the terse validator error for non-object schemas.
+            if let Some(teaching) =
+                format_stage_input_mismatch(stage_index, &stage.role_name, schema, input_text)
+            {
+                bail!("{teaching}");
+            }
+            return Err(e);
+        }
     }
 
     let has_tools = role.use_tools().is_some();
@@ -1368,4 +1383,132 @@ fn print_final_output(config: &GlobalConfig, output: &str) -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+/// Phase 13B: render a teaching-oriented error body when a pipeline stage's
+/// input schema rejects the data the previous stage produced. Frames the
+/// failure as a producer→consumer field mismatch (what was produced, what is
+/// expected, the missing/extra delta) and points at `--fork-role` as the way
+/// to author a reshaping adapter. `stage_index` is 0-based.
+///
+/// Returns `None` when the stage's input schema isn't object-shaped — a
+/// property-name diff would be meaningless there, so the caller keeps the
+/// terse validator error.
+fn format_stage_input_mismatch(
+    stage_index: usize,
+    role_name: &str,
+    schema: &serde_json::Value,
+    prior_output: &str,
+) -> Option<String> {
+    use std::fmt::Write;
+    let diff = crate::config::schema_field_diff(schema, prior_output)?;
+    let n = stage_index + 1;
+
+    let mut msg = String::new();
+    // Keep the exact phrase `classify_error` matches so this still maps to the
+    // schema-validation exit code rather than the generic one.
+    let _ = writeln!(msg, "Schema input validation failed.");
+    let _ = writeln!(msg);
+
+    let produced = if diff.data_is_object {
+        crate::config::format_field_set(&diff.present)
+    } else {
+        "(non-JSON text)".to_string()
+    };
+    let expects = crate::config::format_field_set(&diff.expected);
+    if stage_index == 0 {
+        let _ = writeln!(msg, "  Input provided:    {produced}");
+    } else {
+        let _ = writeln!(msg, "  Stage {} produced:  {produced}", stage_index);
+    }
+    let _ = writeln!(msg, "  Stage {n} expects:   {expects}  (role '{role_name}')");
+
+    if !diff.missing.is_empty() {
+        let _ = writeln!(msg);
+        let _ = writeln!(msg, "  Missing fields: {}", diff.missing.join(", "));
+    }
+    if !diff.extra.is_empty() {
+        if diff.missing.is_empty() {
+            let _ = writeln!(msg);
+        }
+        let _ = writeln!(msg, "  Extra fields:   {}", diff.extra.join(", "));
+    }
+
+    let _ = writeln!(msg);
+    if stage_index == 0 {
+        let _ = writeln!(
+            msg,
+            "  hint: stage {n} expects fields the input doesn't provide."
+        );
+    } else {
+        let _ = writeln!(
+            msg,
+            "  hint: stage {n} (role '{role_name}') expects fields stage {} didn't produce.",
+            stage_index
+        );
+        let _ = writeln!(
+            msg,
+            "        Insert a transform role between stages {} and {n} to reshape the data:",
+            stage_index
+        );
+        let _ = writeln!(msg, "          aichat --fork-role <source-role> my-adapter");
+    }
+    Some(msg.trim_end().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_mismatch_shows_produced_expected_and_delta() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "content": {}, "language": {} },
+            "required": ["content", "language"]
+        });
+        let msg = format_stage_input_mismatch(
+            1, // 0-based → stage 2
+            "review",
+            &schema,
+            r#"{"text": "x", "summary": "y"}"#,
+        )
+        .expect("object schema yields a teaching diff");
+
+        // Classifier signal phrase is preserved.
+        assert!(msg.contains("Schema input validation failed"));
+        // Producer/consumer framing.
+        assert!(msg.contains("Stage 1 produced"));
+        assert!(msg.contains("Stage 2 expects"));
+        assert!(msg.contains("role 'review'"));
+        // Field-level delta.
+        assert!(msg.contains("Missing fields: content, language"));
+        assert!(msg.contains("Extra fields:"));
+        assert!(msg.contains("text"));
+        assert!(msg.contains("summary"));
+        // Fork-role hint.
+        assert!(msg.contains("--fork-role"));
+        assert!(msg.contains("between stages 1 and 2"));
+    }
+
+    #[test]
+    fn input_mismatch_first_stage_frames_against_input() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "q": {} },
+            "required": ["q"]
+        });
+        let msg = format_stage_input_mismatch(0, "first", &schema, "plain text").unwrap();
+        assert!(msg.contains("Input provided"));
+        assert!(msg.contains("(non-JSON text)"));
+        assert!(msg.contains("Stage 1 expects"));
+        // No cross-stage transform hint for the first stage.
+        assert!(!msg.contains("--fork-role"));
+    }
+
+    #[test]
+    fn input_mismatch_none_for_non_object_schema() {
+        let schema = serde_json::json!({ "type": "string" });
+        assert!(format_stage_input_mismatch(1, "r", &schema, "\"hi\"").is_none());
+    }
 }

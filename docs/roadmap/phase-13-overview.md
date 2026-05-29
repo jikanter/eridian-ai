@@ -1,13 +1,37 @@
 # Phase 13: Authoring & Teaching : Overview - Epic 3
 
-**Status (2026-05-11):** **Planned — not yet started.** No items below have been implemented in code. Designs preserved for future work.
+**Status (2026-05-29):** **Done.** All four items shipped. User docs:
+[features/authoring.md](../features/authoring.md). Tests:
+`tests/integration/authoring.sh` (12 bats cases) plus unit tests in
+`src/config/role.rs` (`schema_field_diff`, `format_field_set`) and `src/pipe.rs`
+(`format_stage_input_mismatch`).
 
 | Item | Description | Status |
 |---|---|---|
-| 13A | `--fork-role <source> <new-name>` (creates pre-populated `extends:` file) | Planned |
-| 13B | Schema mismatch errors as teaching moments (side-by-side diff with suggestion) | Planned |
-| 13C | Built-in guardrail role examples (PII detection, prompt injection, topic restriction) | Planned |
-| 13D | `--explain-role <name>` (human-readable description of what a role does and how it composes) | Planned |
+| 13A | `--fork-role <source> <new-name>` (creates pre-populated `extends:` file) | **Done** |
+| 13B | Schema mismatch errors as teaching moments (field delta + fork-role hint) | **Done** |
+| 13C | Built-in guardrail role examples (PII detection, prompt injection, topic restriction) | **Done** |
+| 13D | `--explain-role <name>` (human-readable description of what a role does and how it composes) | **Done** |
+
+**Files touched:**
+- `src/cli.rs` — `--fork-role` (2-arg) and `--explain-role` flags.
+- `src/main.rs` — `run_fork_role` / `build_fork_role_content`,
+  `run_explain_role` / `print_role_explanation` / `print_pipeline_node`;
+  both wired into the `info_flag` short-circuit set and dispatched in `run()`.
+- `src/config/role.rs` — `schema_field_diff` + `format_field_set` (13B field diff).
+- `src/pipe.rs` — `format_stage_input_mismatch`, called from `run_stage_inner`
+  when a stage's input schema rejects the prior stage's output (`stage_index`
+  threaded through `run_stage` → `run_stage_inner`).
+- `assets/roles/guardrail-{pii,injection,topic}.md` — embedded example roles.
+
+**Notes for future work:**
+- 13B's cross-stage "Stage N produced / Stage N+1 expects" framing fires on the
+  *input-schema* boundary (the genuine producer→consumer mismatch). A stage's
+  own *output-schema* failure still uses the terse validator message; enriching
+  that path is a natural follow-on if it proves useful.
+- The teaching error keeps the literal phrase `Schema input validation failed`
+  so `classify_error` still maps it to the schema-validation family before the
+  pipeline wrapper re-tags it as a `PipelineStage` error.
 
 **13A Design — Fork Role:**
 

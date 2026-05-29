@@ -13,10 +13,11 @@ pub use self::resolver::{
 };
 pub use self::input::Input;
 pub use self::role::{
-    run_lifecycle_hooks, validate_schema, validate_schema_detailed, validate_schema_traced,
-    KnowledgeBinding, MergeStrategy, ParallelNode, PipelineNode, Predicate, Role, RoleExample,
-    RoleLike, RolePipelineStage, RolePublicView, SwitchBranch, SwitchNode, CODE_ROLE,
-    CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
+    format_field_set, run_lifecycle_hooks, schema_field_diff, validate_schema,
+    validate_schema_detailed, validate_schema_traced, KnowledgeBinding, MergeStrategy,
+    ParallelNode, PipelineNode, Predicate, Role, RoleExample, RoleLike, RolePipelineStage,
+    RolePublicView, SchemaFieldDiff, SwitchBranch, SwitchNode, CODE_ROLE, CREATE_TITLE_ROLE,
+    EXPLAIN_SHELL_ROLE, SHELL_ROLE,
 };
 pub use self::prompt::Prompt;
 pub use self::session::Session;

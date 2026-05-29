@@ -261,6 +261,16 @@ pub struct Cli {
     /// in `--list-roles` / `--find-role` output.
     #[clap(long)]
     pub verbose: bool,
+    /// Phase 13A: fork an existing role into a new `extends:` file. Takes the
+    /// source role and the new role name; writes `roles/<NEW_NAME>.md` with a
+    /// pre-populated `extends:` line and commented-out overridable fields.
+    #[clap(long = "fork-role", value_names = ["SOURCE", "NEW_NAME"], num_args = 2)]
+    pub fork_role: Vec<String>,
+    /// Phase 13D: print a human-readable explanation of what a role does and
+    /// how it composes (extends/include, model, tools, ports, pipeline,
+    /// capabilities). Honors `-o json` for a machine-readable view.
+    #[clap(long = "explain-role", value_name = "NAME")]
+    pub explain_role: Option<String>,
     /// List all prompts
     #[clap(long)]
     pub list_prompts: bool,
