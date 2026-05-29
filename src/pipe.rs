@@ -69,10 +69,13 @@ struct PipelineStageDef {
     budget_weight: Option<f64>,
 }
 
-pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()> {
-    // Phase 21: `--pipe-def` may carry a DAG; `--stage` is always sequential.
+/// Phase 21 / 15C: assemble the pipeline DAG from CLI flags. `--pipe-def`
+/// may carry a full DAG and a top-level `budget_usd:`; `--stage` is always a
+/// sequential leaf list with no budget surface. Shared by `run` (execution)
+/// and `run_check` (validation only — it discards the budget).
+fn build_pipeline_nodes(cli: &Cli) -> Result<(Vec<PipelineNode>, Option<f64>)> {
     // Phase 11D: `--pipe-def` files may also declare `budget_usd:` at the
-    // top level. CLI `--stage` form has no budget surface yet.
+    // top level; the CLI `--stage` form has no budget surface yet.
     let (nodes, pipeline_budget_usd): (Vec<PipelineNode>, Option<f64>) =
         if let Some(def_path) = &cli.pipe_def {
             load_pipeline_def_nodes(def_path)?
@@ -97,6 +100,11 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
     if nodes.is_empty() {
         bail!("Pipeline has no stages");
     }
+    Ok((nodes, pipeline_budget_usd))
+}
+
+pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()> {
+    let (nodes, pipeline_budget_usd) = build_pipeline_nodes(&cli)?;
 
     // Phase 11D: allocate per-top-level-node dollar budgets. Only leaf Stage
     // nodes carry a `budget_weight`; nested DAG nodes (parallel/switch) get
@@ -737,6 +745,433 @@ fn load_pipeline_def_nodes(path: &str) -> Result<(Vec<PipelineNode>, Option<f64>
             .collect()
     };
     Ok((nodes, def.budget_usd))
+}
+
+// ---------------------------------------------------------------------------
+// Phase 15C: `--check` — validate a role/pipeline definition without running it.
+// ---------------------------------------------------------------------------
+
+use crate::config::preflight::{
+    validate_pipeline_dag_cycles, validate_pipeline_dag_structure,
+    validate_pipeline_schema_containment, validate_pipeline_stages, BoundaryReport,
+    ContainmentVerdict,
+};
+
+/// Exit code 3 (ConfigError): the definition is invalid.
+const CHECK_EXIT_INVALID: i32 = 3;
+/// Exit code 2 (UsageError): nothing to check.
+const CHECK_EXIT_USAGE: i32 = 2;
+
+/// Phase 15C: entry point for `--check`. Validates the role named by `-r`, or
+/// the ad-hoc pipeline described by `--pipe --stage/--pipe-def`, without making
+/// any LLM call. Prints a human report (or JSON with `-o json`) and returns the
+/// process exit code: 0 valid, 3 invalid, 2 usage.
+pub async fn run_check(config: &GlobalConfig, cli: &Cli) -> Result<i32> {
+    let json = matches!(cli.output_format, Some(crate::cli::OutputFormat::Json));
+
+    if cli.pipe {
+        // `--check` validates structure/contracts; the budget is irrelevant.
+        let nodes = match build_pipeline_nodes(cli) {
+            Ok((n, _budget)) => n,
+            Err(e) => {
+                emit_check_error(json, "pipeline", &e.to_string());
+                return Ok(CHECK_EXIT_INVALID);
+            }
+        };
+        return Ok(check_pipeline(config, "<pipeline>", &nodes, json));
+    }
+
+    if let Some(role_name) = &cli.role {
+        return Ok(check_role(config, role_name, json));
+    }
+
+    // Nothing to check.
+    let msg = "--check requires a target: -r <role>, --pipe --stage <role>…, or --pipe --pipe-def <file>";
+    if json {
+        let payload = serde_json::json!({ "valid": false, "error": msg });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    } else {
+        eprintln!("error: {msg}");
+    }
+    Ok(CHECK_EXIT_USAGE)
+}
+
+/// Validate a single role. If it declares a `pipeline:`, defer to the pipeline
+/// checker; otherwise validate the role in isolation (existence, capability,
+/// and that its own declared schemas are valid JSON Schema).
+fn check_role(config: &GlobalConfig, role_name: &str, json: bool) -> i32 {
+    let role = {
+        let cfg = config.read();
+        match cfg.retrieve_role(role_name) {
+            Ok(r) => r,
+            Err(e) => {
+                emit_check_error(json, role_name, &format!("failed to load role: {e}"));
+                return CHECK_EXIT_INVALID;
+            }
+        }
+    };
+
+    if let Some(nodes) = role.pipeline() {
+        let nodes = nodes.to_vec();
+        return check_pipeline(config, role_name, &nodes, json);
+    }
+
+    // Standalone role: capability + schema-validity checks. Wrap as a
+    // single-stage list so `validate_pipeline_stages` covers model/tool fit.
+    let cfg = config.read();
+    let mut errors: Vec<String> = Vec::new();
+    let tuples = vec![(role_name.to_string(), None)];
+    if let Err(e) = validate_pipeline_stages(&cfg, &tuples) {
+        errors.push(e.to_string());
+    }
+    for (label, schema) in [
+        ("input_schema", role.input_schema()),
+        ("output_schema", role.output_schema()),
+    ] {
+        if let Some(s) = schema {
+            if let Err(e) = jsonschema::validator_for(s) {
+                errors.push(format!("{label} is not a valid JSON Schema: {e}"));
+            }
+        }
+    }
+
+    let input = role.port_input_summary();
+    let output = role.port_output_summary();
+    render_role_report(role_name, &input, &output, &errors, json)
+}
+
+/// Validate a pipeline DAG: existence + capability of every reachable stage,
+/// structural integrity, cycle-freedom, and (for sequential pipelines) the
+/// Phase 15B cross-stage schema containment at each boundary.
+fn check_pipeline(config: &GlobalConfig, entry: &str, nodes: &[PipelineNode], json: bool) -> i32 {
+    let cfg = config.read();
+    let mut errors: Vec<String> = Vec::new();
+
+    let stage_tuples = collect_preflight_stages(nodes);
+    if let Err(e) = validate_pipeline_stages(&cfg, &stage_tuples) {
+        errors.push(e.to_string());
+    }
+    if let Err(e) = validate_pipeline_dag_structure(nodes) {
+        errors.push(e.to_string());
+    }
+    if let Err(e) = validate_pipeline_dag_cycles(&cfg, entry, nodes) {
+        errors.push(e.to_string());
+    }
+
+    // Containment is only well-defined for a purely sequential pipeline, and
+    // only worth computing once the structural checks above pass (an unknown
+    // stage would just produce noise). Fan-out / switch DAGs are noted as
+    // unchecked — adjacent-stage shape validation across branches is Phase 33D.
+    let sequential = sequential_stage_tuples(nodes);
+    let boundaries: Vec<BoundaryReport> = match &sequential {
+        Some(seq) if errors.is_empty() => {
+            validate_pipeline_schema_containment(&cfg, seq)
+        }
+        _ => Vec::new(),
+    };
+
+    // Per-stage port descriptions for the report.
+    let ports: Vec<StagePort> = stage_tuples
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            let (input, output) = stage_ports(&cfg, name);
+            StagePort {
+                position: i + 1,
+                role: name.clone(),
+                input,
+                output,
+            }
+        })
+        .collect();
+
+    render_pipeline_report(
+        entry,
+        &ports,
+        &boundaries,
+        &errors,
+        sequential.is_none(),
+        json,
+    )
+}
+
+/// Flatten a pipeline into its sequential leaf-stage tuples, or `None` if any
+/// top-level node is a fan-out or switch (i.e. not purely sequential).
+fn sequential_stage_tuples(nodes: &[PipelineNode]) -> Option<Vec<(String, Option<String>)>> {
+    let mut out = Vec::with_capacity(nodes.len());
+    for n in nodes {
+        match n {
+            PipelineNode::Stage(s) => out.push((s.role.clone(), s.model.clone())),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// Resolve a stage name to its `(input_port, output_port)` summary strings.
+fn stage_ports(cfg: &Config, name: &str) -> (String, String) {
+    match cfg.classify_entity(name) {
+        Ok(EntityRef::Role(n)) => match cfg.retrieve_role(&n) {
+            Ok(role) => (role.port_input_summary(), role.port_output_summary()),
+            Err(_) => ("?".to_string(), "?".to_string()),
+        },
+        Ok(EntityRef::Agent(_)) => ("agent".to_string(), "agent".to_string()),
+        Ok(EntityRef::Remote { .. }) => ("remote".to_string(), "remote".to_string()),
+        _ => ("?".to_string(), "?".to_string()),
+    }
+}
+
+struct StagePort {
+    position: usize,
+    role: String,
+    input: String,
+    output: String,
+}
+
+/// Emit a top-level failure (couldn't even load/parse the definition).
+fn emit_check_error(json: bool, target: &str, message: &str) {
+    if json {
+        let payload = serde_json::json!({
+            "valid": false,
+            "target": target,
+            "errors": [message],
+        });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    } else {
+        eprintln!("check failed: {message}");
+    }
+}
+
+fn render_role_report(
+    role_name: &str,
+    input: &str,
+    output: &str,
+    errors: &[String],
+    json: bool,
+) -> i32 {
+    let valid = errors.is_empty();
+    if json {
+        let payload = serde_json::json!({
+            "valid": valid,
+            "target": role_name,
+            "kind": "role",
+            "input": input,
+            "output": output,
+            "errors": errors,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    } else {
+        println!("Role: {role_name}");
+        println!("  input:  {input}");
+        println!("  output: {output}");
+        for e in errors {
+            println!("  ERROR: {e}");
+        }
+        if valid {
+            println!("check passed");
+        } else {
+            println!("check failed: {} error(s)", errors.len());
+        }
+    }
+    if valid {
+        0
+    } else {
+        CHECK_EXIT_INVALID
+    }
+}
+
+fn render_pipeline_report(
+    entry: &str,
+    ports: &[StagePort],
+    boundaries: &[BoundaryReport],
+    errors: &[String],
+    non_sequential: bool,
+    json: bool,
+) -> i32 {
+    let failed_boundaries: Vec<&BoundaryReport> = boundaries
+        .iter()
+        .filter(|b| b.skipped.is_none() && b.containment.verdict == ContainmentVerdict::Fail)
+        .collect();
+    let valid = errors.is_empty() && failed_boundaries.is_empty();
+
+    if json {
+        let stages_json: Vec<serde_json::Value> = ports
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "position": p.position,
+                    "role": p.role,
+                    "input": p.input,
+                    "output": p.output,
+                })
+            })
+            .collect();
+        let boundaries_json: Vec<serde_json::Value> = boundaries
+            .iter()
+            .map(|b| {
+                let status = if let Some(reason) = &b.skipped {
+                    serde_json::json!({
+                        "from": b.from_role,
+                        "to": b.to_role,
+                        "status": "skipped",
+                        "reason": reason,
+                    })
+                } else {
+                    serde_json::json!({
+                        "from": b.from_role,
+                        "to": b.to_role,
+                        "status": verdict_str(b.containment.verdict),
+                        "missing": b.containment.missing,
+                        "extra": b.containment.extra,
+                        "forbidden": b.containment.forbidden,
+                        "type_mismatches": b.containment.type_mismatches
+                            .iter()
+                            .map(|(f, p, c)| serde_json::json!({"field": f, "producer": p, "consumer": c}))
+                            .collect::<Vec<_>>(),
+                        "notes": b.containment.notes,
+                    })
+                };
+                status
+            })
+            .collect();
+        let payload = serde_json::json!({
+            "valid": valid,
+            "target": entry,
+            "kind": "pipeline",
+            "stages": stages_json,
+            "boundaries": boundaries_json,
+            "non_sequential": non_sequential,
+            "errors": errors,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+        return if valid { 0 } else { CHECK_EXIT_INVALID };
+    }
+
+    // Human-readable.
+    println!("Pipeline: {entry} ({} stage{})", ports.len(), plural(ports.len()));
+    for p in ports {
+        println!(
+            "  {}. {:<24} in: {:<22} out: {}",
+            p.position, p.role, p.input, p.output
+        );
+    }
+
+    if !errors.is_empty() {
+        println!();
+        for e in errors {
+            println!("ERROR: {e}");
+        }
+        println!("\ncheck failed: {} error(s)", errors.len());
+        return CHECK_EXIT_INVALID;
+    }
+
+    if non_sequential {
+        println!(
+            "\nnote: pipeline is non-sequential (parallel/switch); cross-stage \
+             schema containment not checked"
+        );
+    }
+
+    let mut warn_count = 0usize;
+    let mut skip_count = 0usize;
+    for b in boundaries {
+        match &b.skipped {
+            Some(reason) => {
+                skip_count += 1;
+                println!(
+                    "\nSKIP: stage {} ({}) → stage {} ({})\n  {}",
+                    b.from_pos, b.from_role, b.to_pos, b.to_role, reason
+                );
+            }
+            None => match b.containment.verdict {
+                ContainmentVerdict::Fail => {
+                    println!(
+                        "\nFAIL: stage {} ({}) → stage {} ({})",
+                        b.from_pos, b.from_role, b.to_pos, b.to_role
+                    );
+                    if !b.containment.missing.is_empty() {
+                        println!("  Missing: {}", b.containment.missing.join(", "));
+                    }
+                    for (field, prod, cons) in &b.containment.type_mismatches {
+                        println!(
+                            "  Type mismatch on '{field}': upstream {prod} vs downstream {cons}"
+                        );
+                    }
+                    if !b.containment.forbidden.is_empty() {
+                        println!(
+                            "  Forbidden (downstream additionalProperties: false): {}",
+                            b.containment.forbidden.join(", ")
+                        );
+                    }
+                    if !b.containment.extra.is_empty() {
+                        println!("  Extra:   {}", b.containment.extra.join(", "));
+                    }
+                    println!(
+                        "  Suggestion: add a transform stage, or align the schemas so the \
+                         upstream output satisfies the downstream input."
+                    );
+                }
+                ContainmentVerdict::Warn => {
+                    warn_count += 1;
+                    println!(
+                        "\nWARN: stage {} ({}) → stage {} ({})",
+                        b.from_pos, b.from_role, b.to_pos, b.to_role
+                    );
+                    for n in &b.containment.notes {
+                        println!("  {n}");
+                    }
+                }
+                ContainmentVerdict::Unknown => {
+                    for n in &b.containment.notes {
+                        println!(
+                            "\nnote: stage {} ({}) → stage {} ({}): {}",
+                            b.from_pos, b.from_role, b.to_pos, b.to_role, n
+                        );
+                    }
+                }
+                ContainmentVerdict::Ok => {}
+            },
+        }
+    }
+
+    let checked = boundaries.len() - skip_count;
+    if valid {
+        println!(
+            "\nOK: {checked} boundar{} checked{}",
+            if checked == 1 { "y" } else { "ies" },
+            if warn_count > 0 {
+                format!(", {warn_count} warning(s)")
+            } else {
+                String::new()
+            }
+        );
+        println!("check passed");
+        0
+    } else {
+        let n = failed_boundaries.len();
+        println!(
+            "\ncheck failed: {n} incompatible boundar{}",
+            if n == 1 { "y" } else { "ies" }
+        );
+        CHECK_EXIT_INVALID
+    }
+}
+
+fn verdict_str(v: ContainmentVerdict) -> &'static str {
+    match v {
+        ContainmentVerdict::Ok => "ok",
+        ContainmentVerdict::Fail => "fail",
+        ContainmentVerdict::Warn => "warn",
+        ContainmentVerdict::Unknown => "unknown",
+    }
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 /// Phase 17B: aggregated result of invoking a role end-to-end. Returned by

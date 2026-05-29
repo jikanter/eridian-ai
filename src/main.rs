@@ -126,6 +126,14 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
         return mcp_client::run_mcp_client_command(&cli, server_cmd).await;
     }
 
+    // Phase 15C: `--check` validates a role/pipeline definition without
+    // executing it. Like the other read-only short-circuits it owns its own
+    // exit code (0 valid, 3 invalid, 2 usage) and prints its own report.
+    if cli.check {
+        let code = pipe::run_check(&config, &cli).await?;
+        process::exit(code);
+    }
+
     // Phase 19B: unified `-r` resolution. If the name given to `-r` resolves
     // to an agent or macro instead of a role (or carries an `agent:` /
     // `macro:` prefix), reroute to the matching dispatch slot. `-a` and

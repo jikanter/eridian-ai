@@ -184,6 +184,15 @@ pub struct Cli {
     /// `-o json` for machine-readable output.
     #[clap(long = "validate-mcp-config", value_name = "PATH")]
     pub validate_mcp_config: Option<Option<String>>,
+    /// Phase 15C: validate a role or pipeline definition without executing it.
+    /// Checks stage existence, model/tool capability, DAG structure, cycles,
+    /// and (for sequential pipelines) cross-stage JSON Schema containment
+    /// (output of stage N must satisfy input of stage N+1). Deterministic and
+    /// zero-token. Combine with `-r <role>`, `--pipe --stage ...`, or
+    /// `--pipe --pipe-def <file>`. Exits 0 when valid, 3 when not. Add
+    /// `-o json` for machine-readable output.
+    #[clap(long)]
+    pub check: bool,
     /// Run a multi-stage pipeline
     #[clap(long)]
     pub pipe: bool,

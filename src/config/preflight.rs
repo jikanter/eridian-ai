@@ -122,6 +122,358 @@ pub fn validate_pipeline_stages(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Phase 15B: cross-stage JSON Schema containment.
+//
+// Pipeline stage N validates its output against `output_schema`; stage N+1
+// validates its input against `input_schema`. The boundary is *compatible*
+// when every document valid under N's `output_schema` is also valid under
+// N+1's `input_schema` — i.e. the output schema is a SUBSET of (is contained
+// by) the input schema. This is deterministic and zero-token: we never call a
+// model, we reason about the declared schemas directly.
+//
+// The check is intentionally conservative. JSON Schema is expressive enough
+// (anyOf/oneOf/allOf/$ref/not) that exact containment is undecidable in the
+// general case; rather than risk false failures we analyze the common,
+// decidable shapes (objects with `properties`/`required`, scalar `type`s,
+// arrays) and return `Unknown` for anything we cannot prove either way. Only
+// a PROVABLE violation produces `Fail`.
+// ---------------------------------------------------------------------------
+
+/// Outcome of a single output→input boundary containment check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainmentVerdict {
+    /// Provably (or confidently) compatible.
+    Ok,
+    /// Provable containment violation — the downstream stage will reject some
+    /// outputs the upstream stage is allowed to produce.
+    Fail,
+    /// A likely problem that is not a provable failure (e.g. a free-text
+    /// upstream feeding a structured downstream). Surfaced but does not by
+    /// itself fail a `--check`.
+    Warn,
+    /// Schema shape too complex to analyze statically.
+    Unknown,
+}
+
+/// Structured result of [`schema_containment`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Containment {
+    pub verdict: ContainmentVerdict,
+    /// Fields the consumer requires that the producer does not guarantee.
+    pub missing: Vec<String>,
+    /// Fields the producer can emit that the consumer does not declare
+    /// (informational unless the consumer forbids additional properties).
+    pub extra: Vec<String>,
+    /// Subset of `extra` that the consumer actively forbids
+    /// (`additionalProperties: false`). These are hard failures.
+    pub forbidden: Vec<String>,
+    /// `(field, producer_type, consumer_type)` where declared types conflict.
+    /// The field name `(root)` denotes a top-level type mismatch.
+    pub type_mismatches: Vec<(String, String, String)>,
+    /// Human-readable explanations (free-text upstream, unknown shapes, …).
+    pub notes: Vec<String>,
+}
+
+impl Containment {
+    fn empty(verdict: ContainmentVerdict) -> Self {
+        Containment {
+            verdict,
+            missing: Vec::new(),
+            extra: Vec::new(),
+            forbidden: Vec::new(),
+            type_mismatches: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+}
+
+/// Phase 15B: does a document conforming to `producer` always conform to
+/// `consumer`? `None` means "no schema declared" — an absent consumer accepts
+/// anything; an absent producer emits free text.
+pub fn schema_containment(
+    producer: Option<&serde_json::Value>,
+    consumer: Option<&serde_json::Value>,
+) -> Containment {
+    use serde_json::Value;
+
+    // An absent consumer input_schema accepts any input — always compatible.
+    let consumer = match consumer {
+        None => return Containment::empty(ContainmentVerdict::Ok),
+        Some(s) => s,
+    };
+    // An absent producer output_schema means the stage emits free text. The
+    // text might happen to be JSON conforming to the consumer, but nothing
+    // guarantees it — warn rather than fail.
+    let producer = match producer {
+        None => {
+            let mut c = Containment::empty(ContainmentVerdict::Warn);
+            c.notes.push(
+                "upstream stage emits free text (no output_schema); downstream \
+                 input_schema may reject non-JSON output"
+                    .to_string(),
+            );
+            return c;
+        }
+        Some(s) => s,
+    };
+
+    // Combinators make exact containment undecidable for our purposes; don't
+    // guess — report Unknown so callers fall back to runtime validation.
+    if has_complex_combinators(producer) || has_complex_combinators(consumer) {
+        let mut c = Containment::empty(ContainmentVerdict::Unknown);
+        c.notes.push(
+            "schema uses anyOf/oneOf/allOf/$ref/not; static containment not attempted"
+                .to_string(),
+        );
+        return c;
+    }
+
+    let mut c = Containment::empty(ContainmentVerdict::Ok);
+
+    // Top-level type compatibility. Only checkable when both declare a `type`.
+    let producer_types = schema_type_set(producer);
+    let consumer_types = schema_type_set(consumer);
+    if let (Some(pt), Some(ct)) = (&producer_types, &consumer_types) {
+        if !types_compatible(pt, ct) {
+            c.type_mismatches
+                .push(("(root)".to_string(), pt.join("|"), ct.join("|")));
+            c.verdict = ContainmentVerdict::Fail;
+            return c;
+        }
+    }
+
+    // Field-level analysis applies only when the consumer expects an object.
+    let consumer_is_object = consumer_types
+        .as_ref()
+        .map(|t| t.iter().any(|x| x == "object"))
+        .unwrap_or_else(|| consumer.get("properties").is_some());
+
+    if consumer_is_object {
+        let cons_props = consumer.get("properties").and_then(Value::as_object);
+        // Ordered list so report output is deterministic (matches the schema's
+        // declared `required` order); HashSet for producer membership tests.
+        let cons_required = required_list(consumer);
+        let prod_props = producer.get("properties").and_then(Value::as_object);
+        let prod_required = required_set(producer);
+        let consumer_forbids_additional =
+            consumer.get("additionalProperties").and_then(Value::as_bool) == Some(false);
+
+        // Missing: a consumer-required field the producer does not guarantee.
+        // The producer guarantees a field only if it is in the producer's own
+        // `required` list — an optional field may be omitted by a conforming
+        // document, breaking containment.
+        for field in &cons_required {
+            if !prod_required.contains(field) {
+                c.missing.push(field.clone());
+            }
+        }
+
+        // Type mismatches on fields declared by both sides.
+        if let (Some(pp), Some(cp)) = (prod_props, cons_props) {
+            for (name, cons_field) in cp {
+                if let Some(prod_field) = pp.get(name) {
+                    if let (Some(pt), Some(ct)) =
+                        (schema_type_set(prod_field), schema_type_set(cons_field))
+                    {
+                        if !types_compatible(&pt, &ct) {
+                            c.type_mismatches
+                                .push((name.clone(), pt.join("|"), ct.join("|")));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Extras: fields the producer can emit that the consumer does not
+        // declare. Informational unless the consumer forbids additional
+        // properties, in which case they are hard failures.
+        if let Some(pp) = prod_props {
+            for name in pp.keys() {
+                let declared_by_consumer =
+                    cons_props.map(|cp| cp.contains_key(name)).unwrap_or(false);
+                if !declared_by_consumer {
+                    c.extra.push(name.clone());
+                    if consumer_forbids_additional {
+                        c.forbidden.push(name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    if !c.missing.is_empty() || !c.type_mismatches.is_empty() || !c.forbidden.is_empty() {
+        c.verdict = ContainmentVerdict::Fail;
+    }
+    c
+}
+
+/// Top-level combinator keys we decline to reason about statically.
+fn has_complex_combinators(schema: &serde_json::Value) -> bool {
+    match schema.as_object() {
+        Some(obj) => ["anyOf", "oneOf", "allOf", "$ref", "not"]
+            .iter()
+            .any(|k| obj.contains_key(*k)),
+        None => false,
+    }
+}
+
+/// Normalize a schema's `type` keyword into a set of type names. Returns
+/// `None` when no `type` is declared (an open shape we cannot constrain).
+fn schema_type_set(schema: &serde_json::Value) -> Option<Vec<String>> {
+    match schema.get("type") {
+        Some(serde_json::Value::String(s)) => Some(vec![s.clone()]),
+        Some(serde_json::Value::Array(arr)) => {
+            let v: Vec<String> = arr
+                .iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect();
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn required_set(schema: &serde_json::Value) -> std::collections::HashSet<String> {
+    required_list(schema).into_iter().collect()
+}
+
+/// The `required` array as an ordered list (preserves declared order for
+/// deterministic reporting).
+fn required_list(schema: &serde_json::Value) -> Vec<String> {
+    schema
+        .get("required")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A producer value of type `prod` is accepted where `cons` is expected when
+/// `prod == cons`, or `prod` is an `integer` and `cons` is a `number`
+/// (every integer is a number).
+fn type_allows(cons: &str, prod: &str) -> bool {
+    cons == prod || (cons == "number" && prod == "integer")
+}
+
+/// Producer types are compatible with consumer types when every type the
+/// producer may emit is accepted by some consumer type.
+fn types_compatible(producer: &[String], consumer: &[String]) -> bool {
+    producer
+        .iter()
+        .all(|p| consumer.iter().any(|c| type_allows(c, p)))
+}
+
+/// Phase 15B/15C: containment outcome for one stage→stage boundary, carrying
+/// enough context for `--check` to render the design's report format.
+#[derive(Debug, Clone)]
+pub struct BoundaryReport {
+    /// 1-based position of the upstream stage in the sequential stage list.
+    pub from_pos: usize,
+    pub from_role: String,
+    /// 1-based position of the downstream stage.
+    pub to_pos: usize,
+    pub to_role: String,
+    /// `Some(reason)` when the boundary could not be analyzed statically — an
+    /// agent/remote/macro stage, or a role that failed to load. Containment is
+    /// then meaningless and `--check` does not fail on it.
+    pub skipped: Option<String>,
+    /// Containment result; meaningful only when `skipped` is `None`.
+    pub containment: Containment,
+}
+
+/// One side of a boundary: either a resolved role's schema (input or output),
+/// or a reason the stage can't be analyzed.
+enum StageSchema {
+    Schema(Option<serde_json::Value>),
+    Skip(String),
+}
+
+fn stage_schema(config: &Config, name: &str, want_output: bool) -> StageSchema {
+    let entity = match config.classify_entity(name) {
+        Ok(e) => e,
+        Err(_) => return StageSchema::Skip(format!("stage '{name}' is unresolved")),
+    };
+    let role_name = match entity {
+        EntityRef::Role(n) => n,
+        EntityRef::Agent(_) => {
+            return StageSchema::Skip(format!(
+                "stage '{name}' is an agent (no static schema introspection)"
+            ))
+        }
+        EntityRef::Remote { .. } => {
+            return StageSchema::Skip(format!(
+                "stage '{name}' is remote (schema lives on the remote)"
+            ))
+        }
+        EntityRef::Macro(_) => {
+            return StageSchema::Skip(format!("stage '{name}' is a macro"))
+        }
+    };
+    match config.retrieve_role(&role_name) {
+        Ok(role) => {
+            let schema = if want_output {
+                role.output_schema().cloned()
+            } else {
+                role.input_schema().cloned()
+            };
+            StageSchema::Schema(schema)
+        }
+        Err(e) => StageSchema::Skip(format!("role '{role_name}' failed to load: {e}")),
+    }
+}
+
+/// Phase 15B/15C: walk a purely sequential stage list and run a containment
+/// check at every adjacent boundary (output of stage N vs input of stage N+1).
+/// Returns one [`BoundaryReport`] per boundary. Does not bail — the caller
+/// (`--check`) decides how to surface failures. Stages that aren't roles
+/// (agents/remotes/macros) produce a `skipped` boundary.
+pub fn validate_pipeline_schema_containment(
+    config: &Config,
+    stages: &[(String, Option<String>)],
+) -> Vec<BoundaryReport> {
+    let mut reports = Vec::with_capacity(stages.len().saturating_sub(1));
+    for (i, window) in stages.windows(2).enumerate() {
+        let from = &window[0].0;
+        let to = &window[1].0;
+        let from_pos = i + 1;
+        let to_pos = i + 2;
+
+        let producer = stage_schema(config, from, true);
+        let consumer = stage_schema(config, to, false);
+        match (producer, consumer) {
+            (StageSchema::Schema(out), StageSchema::Schema(inp)) => {
+                reports.push(BoundaryReport {
+                    from_pos,
+                    from_role: from.clone(),
+                    to_pos,
+                    to_role: to.clone(),
+                    skipped: None,
+                    containment: schema_containment(out.as_ref(), inp.as_ref()),
+                });
+            }
+            (StageSchema::Skip(reason), _) | (_, StageSchema::Skip(reason)) => {
+                reports.push(BoundaryReport {
+                    from_pos,
+                    from_role: from.clone(),
+                    to_pos,
+                    to_role: to.clone(),
+                    skipped: Some(reason),
+                    containment: Containment::empty(ContainmentVerdict::Unknown),
+                });
+            }
+        }
+    }
+    reports
+}
+
 /// Phase 21D: detect cycles in the pipeline-role reference graph.
 /// A pipeline role A whose stages reference another pipeline role B
 /// (which itself references A, directly or transitively) would loop
@@ -343,6 +695,183 @@ switch:
 "#,
         );
         assert!(validate_pipeline_dag_structure(&[n]).is_ok());
+    }
+
+    // ----- Phase 15B: cross-stage schema containment -----
+
+    fn schema(json: &str) -> serde_json::Value {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn containment_absent_consumer_accepts_anything() {
+        let producer = schema(r#"{"type":"object","properties":{"x":{"type":"string"}}}"#);
+        let c = schema_containment(Some(&producer), None);
+        assert_eq!(c.verdict, ContainmentVerdict::Ok);
+    }
+
+    #[test]
+    fn containment_both_absent_is_ok() {
+        let c = schema_containment(None, None);
+        assert_eq!(c.verdict, ContainmentVerdict::Ok);
+    }
+
+    #[test]
+    fn containment_free_text_into_structured_warns() {
+        // Producer has no output_schema → emits free text. Consumer expects an
+        // object. Not a provable failure (the text might be JSON), but worth a
+        // warning.
+        let consumer = schema(r#"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}"#);
+        let c = schema_containment(None, Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Warn);
+        assert!(c.notes.iter().any(|n| n.contains("free text")));
+    }
+
+    #[test]
+    fn containment_compatible_objects_ok() {
+        let producer = schema(
+            r#"{"type":"object","properties":{"issues":{"type":"array"},"severity":{"type":"string"}},"required":["issues","severity"]}"#,
+        );
+        let consumer = schema(
+            r#"{"type":"object","properties":{"issues":{"type":"array"}},"required":["issues"]}"#,
+        );
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Ok, "got {c:?}");
+    }
+
+    #[test]
+    fn containment_missing_required_field_fails() {
+        // The design example: producer {text, metadata}; consumer requires
+        // {content, language}.
+        let producer = schema(
+            r#"{"type":"object","properties":{"text":{"type":"string"},"metadata":{"type":"object"}},"required":["text","metadata"]}"#,
+        );
+        let consumer = schema(
+            r#"{"type":"object","properties":{"content":{"type":"string"},"language":{"type":"string"}},"required":["content","language"]}"#,
+        );
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Fail);
+        assert!(c.missing.contains(&"content".to_string()));
+        assert!(c.missing.contains(&"language".to_string()));
+        assert!(c.extra.contains(&"text".to_string()));
+        assert!(c.extra.contains(&"metadata".to_string()));
+    }
+
+    #[test]
+    fn containment_required_but_optional_upstream_fails() {
+        // Consumer requires `id`; producer declares `id` but does not require
+        // it, so a producer-valid document may omit `id`. Strict containment
+        // violation.
+        let producer = schema(r#"{"type":"object","properties":{"id":{"type":"string"}}}"#);
+        let consumer = schema(
+            r#"{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}"#,
+        );
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Fail);
+        assert!(c.missing.contains(&"id".to_string()));
+    }
+
+    #[test]
+    fn containment_type_mismatch_on_shared_field_fails() {
+        let producer = schema(
+            r#"{"type":"object","properties":{"count":{"type":"string"}},"required":["count"]}"#,
+        );
+        let consumer = schema(
+            r#"{"type":"object","properties":{"count":{"type":"integer"}},"required":["count"]}"#,
+        );
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Fail);
+        assert!(c
+            .type_mismatches
+            .iter()
+            .any(|(f, _, _)| f == "count"));
+    }
+
+    #[test]
+    fn containment_top_level_type_mismatch_fails() {
+        let producer = schema(r#"{"type":"object","properties":{}}"#);
+        let consumer = schema(r#"{"type":"string"}"#);
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Fail);
+        assert!(c
+            .type_mismatches
+            .iter()
+            .any(|(f, _, _)| f == "(root)"));
+    }
+
+    #[test]
+    fn containment_extra_field_ok_when_additional_allowed() {
+        // Producer emits an extra field; consumer is open (additionalProperties
+        // not false) → still compatible, extra is informational only.
+        let producer = schema(
+            r#"{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"]}"#,
+        );
+        let consumer = schema(
+            r#"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}"#,
+        );
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Ok, "got {c:?}");
+        assert!(c.extra.contains(&"b".to_string()));
+        assert!(c.forbidden.is_empty());
+    }
+
+    #[test]
+    fn containment_forbidden_extra_fails_when_additional_false() {
+        let producer = schema(
+            r#"{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}},"required":["a"]}"#,
+        );
+        let consumer = schema(
+            r#"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"],"additionalProperties":false}"#,
+        );
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Fail);
+        assert!(c.forbidden.contains(&"b".to_string()));
+    }
+
+    #[test]
+    fn containment_integer_is_a_number() {
+        // Producer emits integers; consumer accepts numbers → compatible.
+        let producer = schema(
+            r#"{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}"#,
+        );
+        let consumer = schema(
+            r#"{"type":"object","properties":{"n":{"type":"number"}},"required":["n"]}"#,
+        );
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Ok, "got {c:?}");
+    }
+
+    #[test]
+    fn containment_number_into_integer_fails() {
+        // Reverse: producer emits arbitrary numbers, consumer wants integers.
+        let producer = schema(
+            r#"{"type":"object","properties":{"n":{"type":"number"}},"required":["n"]}"#,
+        );
+        let consumer = schema(
+            r#"{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}"#,
+        );
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Fail);
+    }
+
+    #[test]
+    fn containment_complex_combinator_is_unknown() {
+        let producer = schema(r#"{"type":"object","properties":{"a":{"type":"string"}}}"#);
+        let consumer = schema(r#"{"anyOf":[{"type":"object"},{"type":"string"}]}"#);
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Unknown);
+    }
+
+    #[test]
+    fn containment_open_object_consumer_accepts_any_object() {
+        // Consumer is just `{type: object}` — accepts any object regardless of
+        // shape. A producer object is fine; its fields are listed as extras.
+        let producer = schema(
+            r#"{"type":"object","properties":{"a":{"type":"string"}},"required":["a"]}"#,
+        );
+        let consumer = schema(r#"{"type":"object"}"#);
+        let c = schema_containment(Some(&producer), Some(&consumer));
+        assert_eq!(c.verdict, ContainmentVerdict::Ok, "got {c:?}");
     }
 
     #[test]

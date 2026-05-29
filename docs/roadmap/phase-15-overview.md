@@ -1,35 +1,37 @@
 # Phase 15: Contract Testing : Overview - Epic 4
 
-**Status (2026-05-11):** **Partially scaffolded.** Basic preflight stage validation (existence + capability compatibility) ships in `src/config/preflight.rs::validate_pipeline_stages()` and runs implicitly before pipeline execution. The full contract-testing surface — JSON Schema containment between adjacent stages and a standalone `--check` flag — is **not implemented**.
-
-> **Note for the next agent picking this up:** 15A's *validation logic* already exists in [`src/config/preflight.rs`](../../src/config/preflight.rs) and runs as part of pipeline execution; what's missing is a *user-invokable surface*. Shipping 15C (`--check`) is therefore mostly **"expose `validate_pipeline_stages()` to the CLI without executing the pipeline"**, not a from-scratch build. 15B (cross-stage schema containment) is the only item that needs net-new logic.
+**Status (2026-05-29):** **Done.** Stage existence + capability checks (15A) run implicitly before every pipeline and are now also exposed standalone; cross-stage JSON Schema containment (15B) is implemented in `src/config/preflight.rs::schema_containment()`; and the `--check` flag (15C) validates a role or pipeline definition without executing it. User docs: [`docs/features/contract-testing.md`](../features/contract-testing.md). Demo: [`docs/demos/phase-15-contract-testing.md`](../demos/phase-15-contract-testing.md).
 
 | Item | Description | Status |
 |---|---|---|
-| 15A | Pipeline schema compatibility check at authoring time (`showboat validate-pipeline`) | **Partial** — stage existence + capability checks live in `src/config/preflight.rs`; runs implicitly at execution time, not standalone |
-| 15B | Cross-stage schema containment validation (output N satisfies input N+1) | Planned — no JSON Schema subset checking exists yet |
-| 15C | `--check` flag for validating role/pipeline definitions without execution | Planned — no standalone validation flag exists |
+| 15A | Pipeline stage existence + model/tool capability checks at authoring time | **Done** — `validate_pipeline_stages()` runs implicitly before execution and standalone via `--check` |
+| 15B | Cross-stage schema containment validation (output N satisfies input N+1) | **Done** — `schema_containment()` + `validate_pipeline_schema_containment()` in `src/config/preflight.rs` |
+| 15C | `--check` flag for validating role/pipeline definitions without execution | **Done** — `src/pipe.rs::run_check`; exits 0 valid / 3 invalid / 2 usage, `-o json` supported |
 
-**15A Design — Authoring-Time Validation:**
+> **What shipped vs. the original design.** The 15A design sketched a `showboat validate-pipeline` subcommand; this was unified into the single `--check` flag (one tool per job — `--check` covers roles, ad-hoc `--pipe` chains, and pipeline-def files). Containment is checked on **sequential** pipelines; `parallel:`/`switch:` DAGs get structure + existence checks plus a `non-sequential` note. Extending containment across DAG branches is [Phase 33D](phase-33-overview.md). The check is deliberately conservative: it returns `Unknown` (no failure) for `anyOf`/`oneOf`/`allOf`/`$ref`/`not` rather than risk a false positive.
+
+**Shipped surface — `--check`:**
 
 ```bash
-$ showboat validate-pipeline extract-review-format
+$ aichat --check -r extract-review-format
 
 Pipeline: extract-review-format (3 stages)
-  Stage 1: extract
-    output_schema: { text: string, metadata: object }
-  Stage 2: review
-    input_schema:  { content: string, language: string }     # MISMATCH
-    output_schema: { issues: array, severity: string }
-  Stage 3: format
-    input_schema:  { issues: array }                         # OK (subset)
+  1. extract                  in: any                    out: json{text, metadata}
+  2. review                   in: json{content, language} out: text
+  3. format                   in: json{issues}           out: text
 
-FAIL: Stage 1 output -> Stage 2 input
+FAIL: stage 1 (extract) → stage 2 (review)
   Missing: content, language
-  Extra: text, metadata
-  Suggestion: Add a transform role or update schemas for compatibility.
+  Extra:   text, metadata
+  Suggestion: add a transform stage, or align the schemas so the
+              upstream output satisfies the downstream input.
+
+check failed: 1 incompatible boundary      # exit 3
 ```
 
-JSON Schema containment check: verify that a document conforming to output_schema would pass input_schema validation. This is deterministic — no LLM needed. Zero runtime cost, prevents an entire class of pipeline failures.
+JSON Schema containment check: a document conforming to stage N's `output_schema` must also pass stage N+1's `input_schema` validation (output schema ⊆ input schema). Deterministic — no LLM needed, zero runtime cost — and prevents an entire class of pipeline failures before any token is spent. See [`docs/features/contract-testing.md`](../features/contract-testing.md) for the full report semantics (Missing / Type mismatch / Forbidden / Extra, and the WARN / Unknown / SKIP non-failure verdicts).
 
-**Files:** `src/config/preflight.rs` (new: pipeline schema validation), integration with `showboat` command.
+**Files:**
+- `src/config/preflight.rs` — `schema_containment()` (pure containment core, unit-tested) + `validate_pipeline_schema_containment()` (resolves adjacent stage roles).
+- `src/pipe.rs` — `run_check()` and the human/JSON report rendering; `--check` flag in `src/cli.rs`, dispatch in `src/main.rs`.
+- Tests: `src/config/preflight.rs` (14 containment unit tests); `tests/integration/check.sh` (11 cases).

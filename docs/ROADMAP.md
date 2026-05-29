@@ -1,6 +1,6 @@
 # Eridian Roadmap
 
-**Last updated:** 2026-05-26
+**Last updated:** 2026-05-29
 
 ## Vision
 
@@ -34,7 +34,7 @@ One row per phase. "Sub-phases" lists the granular state; "Last update" is the m
 | 3 Composition UX | 12 | Discoverability | 12A–D **Done** | 2026-05-04 | [phase-12-overview.md](roadmap/phase-12-overview.md) |
 | 3 Composition UX | 13 | Authoring & teaching | 13A–D **Done** | 2026-05-29 | [phase-13-overview.md](roadmap/phase-13-overview.md) |
 | 4 Typed Ports | 14 | Capability manifests | 14A–D **Done** | 2026-05-04 | [phase-14-overview.md](roadmap/phase-14-overview.md) |
-| 4 Typed Ports | 15 | Contract testing | 15A **Partial**, 15B/C **Planned** | 2026-05-11 | [phase-15-overview.md](roadmap/phase-15-overview.md) |
+| 4 Typed Ports | 15 | Contract testing | 15A–C **Done** | 2026-05-29 | [phase-15-overview.md](roadmap/phase-15-overview.md) |
 | 4 Typed Ports | 33 | Typed input surface | 33A–E **Planned** | 2026-05-23 | [phase-33-overview.md](roadmap/phase-33-overview.md) |
 | 5 Server Engine | 16 | Server hardening | 16F/G/H **Done**; 16A–E **Deferred** | 2026-05-11 | [phase-16-overview.md](roadmap/phase-16-overview.md) |
 | 5 Server Engine | 17 | Role & pipeline execution | 17A–E **Done** (un-deferred) | 2026-05-11 | [phase-17-overview.md](roadmap/phase-17-overview.md) |
@@ -61,7 +61,7 @@ One row per phase. "Sub-phases" lists the granular state; "Last update" is the m
 
 ## Active Track
 
-Sequential critical path: **Phase 15B/C → Phase 33 → Phase 22** (Phase 13 **Done** 2026-05-29). Phase 33 (typed input surface) slots after 15B/C because 33D extends the same containment-check logic into adjacent-stage shape validation. (Phase 11D shipped 2026-05-28; pipeline budget propagation now ships with the `pipeline_budget_usd:` / `budget_weight:` surface and tail-truncation in `run_stage_inner`.)
+Sequential critical path: **Phase 33 → Phase 22** (Phase 13 **Done** 2026-05-29; Phase 15B/C **Done** 2026-05-29 — cross-stage containment + `--check`). Phase 33 (typed input surface) slots here because 33D extends the same `schema_containment` logic into adjacent-stage shape validation. (Phase 11D shipped 2026-05-28; pipeline budget propagation now ships with the `pipeline_budget_usd:` / `budget_weight:` surface and tail-truncation in `run_stage_inner`.)
 Parallel independent tracks: **Epic 8** (Phases 23–24, role evaluation), **Epic 10** (Phases 28–29, agent evolution), **Epic 14 Memory Surface** (Phase 34 → Phase 35, Posture-C dual-store wiring from the 2026-05-24 divergence playbook), and the **Caching sub-track** (Epic 2, Phases **37 → 38 → 39 → 40 → 41**). The sub-track ports [LiteLLM's caching subsystem](https://github.com/BerriAI/litellm/tree/main/litellm/caching) feature-for-feature per [`EVAL-0004`](analysis/open-harness/EVAL-0004-litellm-cache-parity.md): **37** ships the L1/L2/L3 layers + accounting + trace + pi integration (sequenced 37A → 37B → 37C → 37D → 37E, 37F deferred; 37D turns `serve.rs` into the L1-at-gateway every pi turn flows through); **38** lands the `CacheBackend` trait + cache-control protocol that everything below plugs into; **39** adds cargo-gated Redis/S3/GCS/Azure backends (zero new default deps); **40** caches RAG embeddings/rerank; **41** completes the admin/observability surface. Strict ordering: 38 is blocked by 37A/37E; 39/40/41 are each blocked by 38A. **Pipeline isolation** (Phase 36) slots after Phase 22 inside Epic 7 and extends the existing model-restore pattern in `run_stage`.
 Deferred: **Phase 18** (server discovery/estimation), **Phase 16A–E** (server hardening beyond what Phase 20 federation required).
 
