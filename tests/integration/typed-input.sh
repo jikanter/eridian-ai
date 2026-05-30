@@ -14,6 +14,21 @@ setup() {
 
 teardown() {
   rm -f "$ROLES_DIR/p33-typed.md" "$ROLES_DIR/p33-stdin.md" "$ROLES_DIR/p33-strict.md"
+  rm -f "$ROLES_DIR/p33-producer.md" "$ROLES_DIR/p33-consumer.md" "$ROLES_DIR/p33-freetext.md"
+}
+
+# Phase 33D: adjacent-stage shape check at execution preflight.
+make_producer() {
+  cat > "$ROLES_DIR/p33-producer.md" <<EOF
+---
+output_schema:
+  type: object
+  properties:
+    summary: { type: string }
+  required: [summary]
+---
+Summarize.
+EOF
 }
 
 @test "typed-input: schema defaults fill slots and arrays render compact (33A/33B)" {
@@ -96,4 +111,63 @@ EOF
   run bash -c "printf 'not json' | '$AICHAT_BIN' -r p33-strict --dry-run"
   [ "$status" -ne 0 ]
   [[ "$output" == *"validation failed"* ]]
+}
+
+@test "typed-input: 33D shape check fails an incompatible sequential pipeline" {
+  make_producer
+  cat > "$ROLES_DIR/p33-consumer.md" <<EOF
+---
+input_schema:
+  type: object
+  properties:
+    content: { type: string }
+  required: [content]
+---
+Use {{content}}.
+EOF
+  run "$AICHAT_BIN" --pipe --stage p33-producer --stage p33-consumer --dry-run "x"
+  [ "$status" -ne 0 ]
+  # The 33D preflight bail (distinct from the Phase 13B runtime hint) fires
+  # before any stage runs.
+  [[ "$output" == *"nowhere to land"* ]]
+  [[ "$output" == *"content"* ]]
+}
+
+@test "typed-input: 33D shape check passes a compatible sequential pipeline" {
+  make_producer
+  cat > "$ROLES_DIR/p33-consumer.md" <<EOF
+---
+input_schema:
+  type: object
+  properties:
+    summary: { type: string }
+  required: [summary]
+---
+Use {{summary}}.
+EOF
+  run "$AICHAT_BIN" --pipe --stage p33-producer --stage p33-consumer --dry-run "x"
+  # The shape check must NOT fire (downstream may still fail at runtime on the
+  # dry-run echo, but never with the 33D preflight bail).
+  [[ "$output" != *"nowhere to land"* ]]
+}
+
+@test "typed-input: 33D is soft when the upstream declares no output_schema" {
+  cat > "$ROLES_DIR/p33-freetext.md" <<EOF
+---
+---
+Just prose.
+EOF
+  cat > "$ROLES_DIR/p33-consumer.md" <<EOF
+---
+input_schema:
+  type: object
+  properties:
+    content: { type: string }
+  required: [content]
+---
+Use {{content}}.
+EOF
+  run "$AICHAT_BIN" --pipe --stage p33-freetext --stage p33-consumer --dry-run "x"
+  # Free-text upstream → soft warn, never the 33D hard preflight bail.
+  [[ "$output" != *"nowhere to land"* ]]
 }

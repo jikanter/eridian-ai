@@ -474,6 +474,93 @@ pub fn validate_pipeline_schema_containment(
     reports
 }
 
+/// Phase 33D: render one failed boundary for the preflight bail message,
+/// mirroring the `--check` FAIL layout (missing / type-mismatch / forbidden).
+fn format_boundary_failure(b: &BoundaryReport) -> String {
+    let c = &b.containment;
+    let mut s = format!(
+        "  stage {} ({}) → stage {} ({})",
+        b.from_pos, b.from_role, b.to_pos, b.to_role
+    );
+    if !c.missing.is_empty() {
+        s.push_str(&format!(
+            "\n    Missing (downstream requires, upstream does not provide): {}",
+            c.missing.join(", ")
+        ));
+    }
+    for (field, prod, cons) in &c.type_mismatches {
+        s.push_str(&format!(
+            "\n    Type mismatch on '{field}': upstream {prod} vs downstream {cons}"
+        ));
+    }
+    if !c.forbidden.is_empty() {
+        s.push_str(&format!(
+            "\n    Forbidden (downstream additionalProperties: false): {}",
+            c.forbidden.join(", ")
+        ));
+    }
+    s.push_str(
+        "\n    Fix: add a transform stage, or align the schemas so the upstream \
+         output satisfies the downstream input.",
+    );
+    s
+}
+
+/// Phase 33D: turn the Phase 15B containment reports into an execution-time
+/// policy. `Fail` boundaries (both stages declare schemas and the downstream
+/// would provably reject some upstream output) bail preflight with a teaching
+/// diff. `Warn` boundaries (e.g. a free-text upstream feeding a structured
+/// downstream — one side undeclared) are surfaced as warnings but do not block.
+/// `Ok` / `Unknown` / statically-unanalyzable (`skipped`) boundaries pass.
+pub fn enforce_pipeline_shape(reports: &[BoundaryReport]) -> Result<()> {
+    let mut failures: Vec<String> = Vec::new();
+    for b in reports {
+        if b.skipped.is_some() {
+            continue;
+        }
+        match b.containment.verdict {
+            ContainmentVerdict::Fail => failures.push(format_boundary_failure(b)),
+            ContainmentVerdict::Warn => {
+                if b.containment.notes.is_empty() {
+                    warn!(
+                        "Pipeline shape: stage {} ({}) → stage {} ({}): possible mismatch",
+                        b.from_pos, b.from_role, b.to_pos, b.to_role
+                    );
+                } else {
+                    for n in &b.containment.notes {
+                        warn!(
+                            "Pipeline shape: stage {} ({}) → stage {} ({}): {}",
+                            b.from_pos, b.from_role, b.to_pos, b.to_role, n
+                        );
+                    }
+                }
+            }
+            ContainmentVerdict::Ok | ContainmentVerdict::Unknown => {}
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!(
+            "Preflight: pipeline shape mismatch — the value flow has nowhere to land:\n{}",
+            failures.join("\n")
+        );
+    }
+}
+
+/// Phase 33D: execution-time adjacent-stage shape check for a purely sequential
+/// pipeline. Computes the Phase 15B containment at each boundary, then applies
+/// the [`enforce_pipeline_shape`] policy (strict fail / soft warn). Non-sequential
+/// DAGs are checked structurally elsewhere; cross-branch shape checking is out of
+/// scope, so callers pass only the sequential leaf list (or skip).
+pub fn validate_pipeline_shape(
+    config: &Config,
+    stages: &[(String, Option<String>)],
+) -> Result<()> {
+    let reports = validate_pipeline_schema_containment(config, stages);
+    enforce_pipeline_shape(&reports)
+}
+
 /// Phase 21D: detect cycles in the pipeline-role reference graph.
 /// A pipeline role A whose stages reference another pipeline role B
 /// (which itself references A, directly or transitively) would loop
@@ -606,6 +693,67 @@ fn check_switch_branch_order(n: &PipelineNode) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Phase 33D: enforce_pipeline_shape policy ----
+
+    fn boundary(
+        verdict: ContainmentVerdict,
+        missing: &[&str],
+        skipped: Option<&str>,
+    ) -> BoundaryReport {
+        BoundaryReport {
+            from_pos: 1,
+            from_role: "extract".into(),
+            to_pos: 2,
+            to_role: "review".into(),
+            skipped: skipped.map(str::to_string),
+            containment: Containment {
+                verdict,
+                missing: missing.iter().map(|s| s.to_string()).collect(),
+                extra: vec![],
+                forbidden: vec![],
+                type_mismatches: vec![],
+                notes: vec![],
+            },
+        }
+    }
+
+    #[test]
+    fn enforce_shape_fails_on_provable_mismatch() {
+        let reports = [boundary(ContainmentVerdict::Fail, &["summary"], None)];
+        let err = enforce_pipeline_shape(&reports).unwrap_err().to_string();
+        assert!(err.contains("shape mismatch"), "{err}");
+        assert!(err.contains("summary"), "names the missing field: {err}");
+        assert!(err.contains("extract") && err.contains("review"), "names the boundary: {err}");
+    }
+
+    #[test]
+    fn enforce_shape_warns_but_passes_on_soft_mismatch() {
+        let reports = [boundary(ContainmentVerdict::Warn, &[], None)];
+        assert!(enforce_pipeline_shape(&reports).is_ok(), "Warn is soft, must not fail");
+    }
+
+    #[test]
+    fn enforce_shape_passes_ok_and_unknown() {
+        let reports = [
+            boundary(ContainmentVerdict::Ok, &[], None),
+            boundary(ContainmentVerdict::Unknown, &[], None),
+        ];
+        assert!(enforce_pipeline_shape(&reports).is_ok());
+    }
+
+    #[test]
+    fn enforce_shape_ignores_skipped_even_if_fail() {
+        // A boundary that couldn't be analyzed statically (agent/remote) is
+        // marked skipped; it must never block, regardless of verdict.
+        let reports = [boundary(ContainmentVerdict::Fail, &["x"], Some("stage is an agent"))];
+        assert!(enforce_pipeline_shape(&reports).is_ok());
+    }
+
+    #[test]
+    fn enforce_shape_empty_passes() {
+        assert!(enforce_pipeline_shape(&[]).is_ok());
+    }
 
     fn model_with(tools: bool, vision: bool) -> Model {
         let mut m = Model::new("test", "m");

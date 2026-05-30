@@ -148,6 +148,8 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
         crate::config::preflight::validate_pipeline_dag_structure(&nodes)
             .context("Pipeline DAG validation failed")?;
     }
+    // Phase 33D: adjacent-stage shape check (sequential pipelines only).
+    preflight_shape(&config, &nodes)?;
 
     let mut input_text = match text {
         Some(t) => t,
@@ -256,6 +258,17 @@ fn collect_preflight_stages(nodes: &[PipelineNode]) -> Vec<(String, Option<Strin
         }
     }
     out
+}
+
+/// Phase 33D: run the adjacent-stage shape check before executing a pipeline.
+/// Only purely-sequential pipelines have well-defined output→input boundaries,
+/// so a DAG with fan-out/switch is skipped here (its structure is validated
+/// separately; cross-branch shape checking is out of scope).
+fn preflight_shape(config: &GlobalConfig, nodes: &[PipelineNode]) -> Result<()> {
+    if let Some(seq) = sequential_stage_tuples(nodes) {
+        crate::config::preflight::validate_pipeline_shape(&config.read(), &seq)?;
+    }
+    Ok(())
 }
 
 async fn run_stage(
@@ -1394,6 +1407,8 @@ pub async fn invoke_role(
             .map(|s| (s.role_name.clone(), s.model_id.clone()))
             .collect();
         crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
+        // Phase 33D: adjacent-stage shape check for the sequential pipeline.
+        crate::config::preflight::validate_pipeline_shape(&config.read(), &stage_tuples)?;
     }
 
     let stage_count = pipeline_stages.len();
@@ -1589,6 +1604,8 @@ pub async fn invoke_role_streaming(
             .map(|s| (s.role_name.clone(), s.model_id.clone()))
             .collect();
         crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
+        // Phase 33D: adjacent-stage shape check for the sequential pipeline.
+        crate::config::preflight::validate_pipeline_shape(&config.read(), &stage_tuples)?;
     }
 
     let stage_count = pipeline_stages.len();
@@ -1680,6 +1697,8 @@ pub async fn run_inline_pipeline(
             .map(|s| (s.role_name.clone(), s.model_id.clone()))
             .collect();
         crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
+        // Phase 33D: adjacent-stage shape check for the sequential pipeline.
+        crate::config::preflight::validate_pipeline_shape(&config.read(), &stage_tuples)?;
     }
     let stage_count = pipeline_stages.len();
     let mut current = input_text.to_string();
@@ -1756,6 +1775,8 @@ pub async fn run_pipeline_role(
     // Phase 21D: structural + reachability checks before any LLM call.
     crate::config::preflight::validate_pipeline_dag_structure(nodes)
         .context("Pipeline DAG validation failed")?;
+    // Phase 33D: adjacent-stage shape check (sequential pipelines only).
+    preflight_shape(config, nodes)?;
 
     let abort_signal = create_abort_signal();
     let node_count = nodes.len();

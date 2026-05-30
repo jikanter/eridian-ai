@@ -1,4 +1,4 @@
-# Phase 33: Typed Input — Unification Core (33A/33B/33E)
+# Phase 33: Typed Input (33A–E)
 
 *2026-05-30T01:35:30Z by Showboat 0.6.1*
 <!-- showboat-id: 3320b554-8ed8-4e9b-86d5-a3c14c90b24b -->
@@ -9,7 +9,7 @@ Phase 33 makes `input_schema:` the single source of truth for a role's parameter
 - **33B** — type-aware `{{slot}}` rendering: scalars bare, arrays/objects as compact JSON (pretty opt-in via `x-aichat: { render: pretty }`); strings unchanged.
 - **33E** — the legacy `variables:` block folds into the same slot space; declaring both emits one warning and the schema wins on a name collision.
 
-Still upcoming (next commits): **33C** (`-v` type coercion + stdin routing) and **33D** (strict adjacent-stage pipeline shape-check).
+Phase 33 is now complete: **33C** (`-v` type coercion + `@file` + stdin routing) and **33D** (strict adjacent-stage pipeline shape-check) landed in follow-on commits, shown below.
 
 ## New surface (src/config/role.rs)
 
@@ -120,7 +120,7 @@ test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; fini
 
 ## 33C — CLI coercion + stdin routing
 
-`-v key=value` is now coerced against the declared property type (with `@file.json` to load a value from disk); a bad value errors with the property and expected type named. A property annotated `x-aichat: { source: stdin }` receives the message as free text — routed into its `{{slot}}` via the existing embedded-input machinery — so its raw message is not validated against the object schema. (33D — strict adjacent-stage pipeline shape-checking — is still pending.)
+`-v key=value` is now coerced against the declared property type (with `@file.json` to load a value from disk); a bad value errors with the property and expected type named. A property annotated `x-aichat: { source: stdin }` receives the message as free text — routed into its `{{slot}}` via the existing embedded-input machinery — so its raw message is not validated against the object schema.
 
 ```bash
 set -e
@@ -152,9 +152,47 @@ the diff
 Error: -v depth=deep: value is not a valid integer
 ```
 
+## 33D — adjacent-stage shape check (completes Phase 33)
+
+When two adjacent pipeline stages both declare schemas, preflight verifies the upstream `output_schema` satisfies the downstream `input_schema` — *before* any model call. A provable mismatch fails fast with a teaching diff; a free-text upstream (no `output_schema`) is a soft warning, not a failure.
+
+```bash
+set -e
+ROLES_DIR="$HOME/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/p33-producer.md" <<EOF
+---
+output_schema:
+  type: object
+  properties: { summary: { type: string } }
+  required: [summary]
+---
+Summarize.
+EOF
+cat > "$ROLES_DIR/p33-consumer.md" <<EOF
+---
+input_schema:
+  type: object
+  properties: { content: { type: string } }
+  required: [content]
+---
+Use {{content}}.
+EOF
+echo "# producer emits {summary}; consumer requires {content} -> preflight fails:"
+./target/debug/aichat --pipe --stage p33-producer --stage p33-consumer --dry-run "x" </dev/null 2>&1 | head -5
+rm -f "$ROLES_DIR/p33-producer.md" "$ROLES_DIR/p33-consumer.md"
+```
+
+```output
+# producer emits {summary}; consumer requires {content} -> preflight fails:
+Error: Preflight: pipeline shape mismatch — the value flow has nowhere to land:
+  stage 1 (p33-producer) → stage 2 (p33-consumer)
+    Missing (downstream requires, upstream does not provide): content
+    Fix: add a transform stage, or align the schemas so the upstream output satisfies the downstream input.
+```
+
 ## End-to-end (offline)
 
-The integration suite drives the real binary over typed roles under `--dry-run` — defaults, `-v` override, coercion error, stdin routing, and the control that a plain `input_schema` role still validates its message.
+The integration suite drives the real binary over typed roles under `--dry-run` — schema defaults, `-v` override, coercion error, stdin routing, the control that a plain `input_schema` role still validates its message, and the 33D shape check (fail / pass / soft).
 
 ```bash
 AICHAT_BIN=./target/debug/aichat bats tests/integration/typed-input.sh 2>&1 | grep -E "^(ok|not ok)"
@@ -166,4 +204,7 @@ ok 2 typed-input: -v overrides a schema default (33A)
 ok 3 typed-input: bad -v for an integer slot errors (33C coercion)
 ok 4 typed-input: stdin routes into a source:stdin slot, no message validation (33C)
 ok 5 typed-input: a plain input_schema role still validates the message
+ok 6 typed-input: 33D shape check fails an incompatible sequential pipeline
+ok 7 typed-input: 33D shape check passes a compatible sequential pipeline
+ok 8 typed-input: 33D is soft when the upstream declares no output_schema
 ```

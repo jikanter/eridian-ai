@@ -1,13 +1,13 @@
 # Phase 33: Typed Input Surface : Overview - Epic 4
 
-**Status (2026-05-30):** **33A/33B/33C/33E Done**; **33D Planned.** This phase unifies the fragmented input data space (`variables:`, `input_schema:`, `__INPUT__`, `-v`, stdin) into a single typed contract. Extends [Phase 14](phase-14-overview.md) (capability manifests) and [Phase 15](phase-15-overview.md) (contract testing); none of those phases need to land first, but 15B's cross-stage containment check becomes substantially more useful once 33B/33D ship.
+**Status (2026-05-30):** **Done — 33A–E all shipped.** This phase unifies the fragmented input data space (`variables:`, `input_schema:`, `__INPUT__`, `-v`, stdin) into a single typed contract. Extends [Phase 14](phase-14-overview.md) (capability manifests) and [Phase 15](phase-15-overview.md) (contract testing); none of those phases need to land first, but 15B's cross-stage containment check becomes substantially more useful once 33B/33D ship.
 
 | Item | Description | Status |
 |---|---|---|
 | 33A | `default:` (and `default: { shell: ... }`) per property inside `input_schema:` — schema becomes the source of truth for parameter declarations | **Done** |
 | 33B | Type-aware `{{name}}` rendering — list/object/scalar substitution uses the declared schema shape instead of stringly-only `replace()` | **Done** |
 | 33C | CLI / stdin coercion against the schema — `-v key=value` parses to the declared type; one schema property (default `body`) routes from stdin via `x-aichat.source` | **Done** |
-| 33D | Preflight shape check between adjacent pipeline stages (extends Phase 15B containment) — strict when both stages declare schemas, soft-warn otherwise | Planned |
+| 33D | Preflight shape check between adjacent pipeline stages (extends Phase 15B containment) — strict when both stages declare schemas, soft-warn otherwise | **Done** |
 | 33E | Deprecation handling for the `variables:` block — preserved as sugar with a single warning if mixed with `input_schema:` in the same role; no removal date | **Done** |
 
 ## Background
@@ -222,15 +222,30 @@ gates the raw-message schema validation off (in both `main.rs` and `pipe.rs`) fo
 those roles — a per-role opt-in, so plain `input_schema` roles still validate
 their message exactly as before.
 
-**Tests:** 28 unit tests in `src/config/role.rs` (`render_slot` ×6,
-`schema_slots` ×4, `resolve_slots` ×8, `coerce_cli_value` ×7, `stdin_slot` ×3)
-plus 5 bats in `tests/integration/typed-input.sh`. Full suite green
-(612 unit / 197 compat); role/authoring bats unchanged.
+**33D — pipeline shape-check (2026-05-30, follow-on commit).** `enforce_pipeline_shape`
+turns the Phase 15B containment reports into an execution-time policy:
+`Fail` boundaries (both stages declare schemas and the downstream would provably
+reject some upstream output) bail preflight with a teaching diff
+("the value flow has nowhere to land"); `Warn` boundaries (a free-text upstream
+feeding a structured downstream — one side undeclared) are surfaced as warnings
+but do not block; `Ok`/`Unknown`/statically-unanalyzable (`skipped`) pass.
+`validate_pipeline_shape` runs it over the sequential leaf list; the pipe.rs
+`preflight_shape` helper gates it to purely-sequential pipelines (fan-out/switch
+DAGs skip — cross-branch shape checking is out of scope). Wired into every
+execution preflight: `run` (CLI `--pipe`), `run_pipeline_role` (tool dispatch),
+`invoke_role` / `invoke_role_streaming` (server), and `run_inline_pipeline`.
 
-**Deliberately deferred to 33D:** pipeline adjacent-stage shape-checking stays
-soft (Phase 15B) until 33D. A `required:` slot supplied via `-v`/default is not
-yet hard-enforced at resolve time (the schema's message validation still covers
-the non-stdin case).
+**Tests:** 33 unit tests in `src/config/role.rs` + `src/config/preflight.rs`
+(`render_slot` ×6, `schema_slots` ×4, `resolve_slots` ×8, `coerce_cli_value` ×7,
+`stdin_slot` ×3, `enforce_pipeline_shape` ×5) plus 8 bats in
+`tests/integration/typed-input.sh`. Full suite green (617 unit / 197 compat);
+existing pipeline/role/authoring bats unchanged (no pre-existing pipeline trips
+the new hard failure).
+
+**Remaining nuance (not a sub-phase):** a `required:` slot supplied via
+`-v`/default is not yet hard-enforced at resolve time — the schema's message
+validation still covers the non-stdin case. Explicit cross-stage field mappings
+and a `pipeline_strict:` opt-in remain future work (see Open questions #4).
 
 ## Open questions
 
