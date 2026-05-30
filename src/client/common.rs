@@ -344,6 +344,10 @@ pub struct CallMetrics {
     pub latency_ms: u64,
     pub model_id: String,
     pub turns: u32,
+    /// Phase 22D: true when this call's output was served from the pipeline
+    /// stage cache (no LLM round-trip). Per-stage only — meaningless once
+    /// merged across stages, so `merge` deliberately leaves it untouched.
+    pub cached: bool,
 }
 
 impl CallMetrics {
@@ -640,6 +644,7 @@ pub async fn call_chat_completions(
                 latency_ms: start.elapsed().as_millis() as u64,
                 model_id: client.model().id(),
                 turns: 1,
+                cached: false,
             };
             if !text.is_empty() {
                 if extract_code {
@@ -687,6 +692,7 @@ pub async fn call_chat_completions_streaming(
         latency_ms: start.elapsed().as_millis() as u64,
         model_id: client.model().id(),
         turns: 1,
+        cached: false,
     };
     match send_ret {
         Ok(_) => {
@@ -918,6 +924,7 @@ mod tests {
             latency_ms: 500,
             model_id: "model-a".into(),
             turns: 1,
+            cached: false,
         };
         let b = CallMetrics {
             input_tokens: 200,
@@ -926,6 +933,7 @@ mod tests {
             latency_ms: 300,
             model_id: "model-b".into(),
             turns: 1,
+            cached: false,
         };
         a.merge(&b);
         assert_eq!(a.input_tokens, 300);

@@ -117,6 +117,46 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Apply CLI/env runtime flags onto the shared config. Must run before any
+/// execution short-circuit (notably `--pipe`) so every path observes
+/// `--dry-run`, `--trace`, `--cost`, `--no-cache`, and `--knowledge`.
+fn apply_runtime_flags(config: &GlobalConfig, cli: &Cli) {
+    if cli.no_cache {
+        config.write().no_cache = true;
+    }
+    // Phase 26D: CLI `--knowledge` bindings merge with role-declared ones at
+    // retrieval time. Captured here so pipeline stages see them too.
+    if !cli.knowledge.is_empty() {
+        config.write().cli_knowledge_bindings = cli.knowledge.clone();
+    }
+    if cli.dry_run {
+        config.write().dry_run = true;
+    }
+    if cli.cost {
+        config.write().show_cost = true;
+    }
+    // Run log from env var AICHAT_RUN_LOG
+    if let Ok(log_path) = std::env::var(get_env_name("run_log")) {
+        config.write().run_log = Some(log_path);
+    }
+    // Trace config from --trace flag or AICHAT_TRACE env var
+    let env_trace = std::env::var(get_env_name("trace"))
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    if cli.trace || env_trace {
+        let trace_file = std::env::var(get_env_name("trace_file"))
+            .ok()
+            .map(std::path::PathBuf::from);
+        let jsonl_trace = env_trace || trace_file.is_some();
+        config.write().trace_config = Some(crate::utils::trace::TraceConfig {
+            human_trace: cli.trace,
+            jsonl_trace,
+            jsonl_file: trace_file,
+            truncate_at: 500,
+        });
+    }
+}
+
 async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result<()> {
     if cli.mcp {
         return mcp::run(config).await;
@@ -192,6 +232,12 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
             }
         }
     }
+
+    // Apply global runtime flags (dry-run, trace, cost, no-cache, knowledge)
+    // up front so every execution path — including the `--pipe` short-circuit
+    // below — observes them. They previously lived after this return, so
+    // `--pipe --dry-run` and `--pipe --trace` were silently dropped.
+    apply_runtime_flags(&config, &cli);
 
     if cli.pipe {
         return pipe::run(config, cli, text).await;
@@ -360,41 +406,6 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
             }
         }
         return Ok(());
-    }
-
-    if cli.no_cache {
-        config.write().no_cache = true;
-    }
-    // Phase 26D: CLI `--knowledge` bindings merge with role-declared ones at
-    // retrieval time. Captured here so pipeline stages see them too.
-    if !cli.knowledge.is_empty() {
-        config.write().cli_knowledge_bindings = cli.knowledge.clone();
-    }
-    if cli.dry_run {
-        config.write().dry_run = true;
-    }
-    if cli.cost {
-        config.write().show_cost = true;
-    }
-    // Run log from env var AICHAT_RUN_LOG
-    if let Ok(log_path) = std::env::var(get_env_name("run_log")) {
-        config.write().run_log = Some(log_path);
-    }
-    // Trace config from --trace flag or AICHAT_TRACE env var
-    {
-        let env_trace = std::env::var(get_env_name("trace"))
-            .map(|v| v == "1" || v == "true")
-            .unwrap_or(false);
-        if cli.trace || env_trace {
-            let trace_file = std::env::var(get_env_name("trace_file")).ok().map(std::path::PathBuf::from);
-            let jsonl_trace = env_trace || trace_file.is_some();
-            config.write().trace_config = Some(crate::utils::trace::TraceConfig {
-                human_trace: cli.trace,
-                jsonl_trace,
-                jsonl_file: trace_file,
-                truncate_at: 500,
-            });
-        }
     }
 
     if let Some(agent) = &cli.agent {

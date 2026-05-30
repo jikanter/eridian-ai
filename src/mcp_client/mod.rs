@@ -1186,9 +1186,17 @@ mod tests {
     // ---- Phase 31C: portable mcp.json loader ----
 
     fn write_tmp_json(content: &str) -> PathBuf {
+        // Phase 22E: key the temp dir on (pid, monotonic counter), not the
+        // wall clock. A timestamp collides when two parallel test threads run
+        // in the same clock tick; an atomic counter is unique by construction,
+        // so no two calls — in any thread of this process — ever share a dir.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
-            "aichat-mcp-test-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            "aichat-mcp-test-{}-{}",
+            std::process::id(),
+            n
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("mcp.json");
@@ -1277,6 +1285,39 @@ mod tests {
     fn test_load_mcp_servers_file_invalid_json() {
         let path = write_tmp_json("{ not json");
         assert!(load_mcp_servers_file(&path).is_err());
+    }
+
+    // Phase 22E: `write_tmp_json` must hand back a unique path on every call,
+    // even under heavy parallel contention. The original timestamp-keyed dir
+    // name collided when two test threads landed in the same clock tick — one
+    // clobbered the other's `mcp.json`, so a test that wrote `{}` could read a
+    // sibling's `{ "command": .. , "url": .. }` and assert against the wrong
+    // error string. That is the root cause of the historically flaky
+    // `test_load_mcp_servers_file_rejects_neither_command_nor_url`.
+    #[test]
+    fn write_tmp_json_is_collision_free_across_threads() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(HashSet::new()));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let seen = Arc::clone(&seen);
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        let p = write_tmp_json("{}");
+                        let mut s = seen.lock().unwrap();
+                        assert!(
+                            s.insert(p.clone()),
+                            "duplicate tmp path handed out: {}",
+                            p.display()
+                        );
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 
     #[test]

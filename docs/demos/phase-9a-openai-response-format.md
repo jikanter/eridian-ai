@@ -82,7 +82,7 @@ src/client/vertexai.rs
 ## Full test suite
 
 ```bash
-cargo test --bin aichat -- --skip test_load_mcp_servers_file_rejects_neither_command_nor_url 2>&1 | grep -c "^test result: FAILED" | xargs -I {} echo "FAILED test results: {}"
+cargo test --bin aichat 2>&1 | grep -c "^test result: FAILED" | xargs -I {} echo "FAILED test results: {}"
 ```
 
 ```output

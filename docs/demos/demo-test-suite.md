@@ -8,7 +8,7 @@ This document verifies the full test suite passes — both unit tests and compat
 ## Unit Tests
 
 ```bash
-cargo test --bin aichat -- --skip test_load_mcp_servers_file_rejects_neither_command_nor_url 2>&1 | grep -E "(running|test result)" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/; s/^running [0-9]+ tests$/running N tests/"
+cargo test --bin aichat 2>&1 | grep -E "(running|test result)" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/; s/[0-9]+ passed/N passed/; s/^running [0-9]+ tests$/running N tests/"
 ```
 
 ```output
@@ -32,7 +32,7 @@ test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; fini
 Unit test modules:
 
 ```bash
-cargo test --bin aichat -- --skip test_load_mcp_servers_file_rejects_neither_command_nor_url 2>&1 | grep "^test " | grep " \.\.\. " | sed "s/::tests::.*//" | sed "s/::test_.*//" | sort -u | wc -l | tr -d ' ' | xargs -I {} echo "unit-test modules: {}" | sed -E "s/: [0-9]+/: N/"
+cargo test --bin aichat 2>&1 | grep "^test " | grep " \.\.\. " | sed "s/::tests::.*//" | sed "s/::test_.*//" | sort -u | wc -l | tr -d ' ' | xargs -I {} echo "unit-test modules: {}" | sed -E "s/: [0-9]+/: N/"
 ```
 
 ```output

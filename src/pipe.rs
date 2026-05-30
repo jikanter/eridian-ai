@@ -31,7 +31,13 @@ struct PipelineStage {
 ///
 /// Phase 21: `branch` is set when this stage ran inside a fan-out — its
 /// value is the 1-based branch number within the parent `parallel:` node.
-#[derive(Serialize, Clone, Debug)]
+///
+/// Phase 22A/22D: `node_index` is the 0-based position of the *top-level*
+/// pipeline node this stage belongs to — fan-out branches and switch arms
+/// inherit their enclosing node's index, so consumers can group a flat trace
+/// list back into the DAG. `cached` is true when the stage's output was
+/// replayed from the content-addressable stage cache instead of an LLM call.
+#[derive(Serialize, Clone, Debug, Default)]
 pub struct StageTrace {
     pub role: String,
     pub model: String,
@@ -41,6 +47,16 @@ pub struct StageTrace {
     pub latency_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<usize>,
+    #[serde(default)]
+    pub node_index: usize,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cached: bool,
+}
+
+/// serde `skip_serializing_if` predicate for booleans — keeps `cached: false`
+/// out of the JSON envelope so the trace stays terse for the common case.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Deserialize)]
@@ -107,9 +123,10 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
     let (nodes, pipeline_budget_usd) = build_pipeline_nodes(&cli)?;
 
     // Phase 11D: allocate per-top-level-node dollar budgets. Only leaf Stage
-    // nodes carry a `budget_weight`; nested DAG nodes (parallel/switch) get
-    // `None` here and consume their parent's full budget — DAG-aware
-    // sub-allocation is a follow-up.
+    // nodes carry a `budget_weight`; parallel/switch nodes weight as 1.0 and
+    // receive a node-level share. Phase 22C then sub-allocates that share —
+    // `run_parallel` splits it across branches, `run_switch` hands it to the
+    // chosen arm.
     let per_node_budgets: Option<Vec<f64>> = pipeline_budget_usd
         .filter(|b| *b > 0.0)
         .map(|total| {
@@ -152,6 +169,11 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
     let abort_signal = create_abort_signal();
     let output_format = cli.output_format;
 
+    // Phase 22A: when we'll emit a JSON trace envelope below, tell the stages to
+    // stay silent so stdout is exactly the envelope (one valid JSON document).
+    let emits_envelope = matches!(output_format, Some(crate::cli::OutputFormat::Json));
+    config.write().pipeline_emits_envelope = emits_envelope;
+
     let node_count = nodes.len();
     let mut stage_traces: Vec<StageTrace> = Vec::new();
     for (i, node) in nodes.iter().enumerate() {
@@ -173,16 +195,43 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
         input_text = output;
     }
 
+    // Phase 22A: render the DAG execution as a tree on stderr when `--trace`
+    // (human trace) is active. The label is the pipeline-def name when one was
+    // given, otherwise the generic "pipeline".
+    let human_trace = config
+        .read()
+        .trace_config
+        .as_ref()
+        .map(|t| t.human_trace)
+        .unwrap_or(false);
+    if human_trace {
+        let label = cli
+            .pipe_def
+            .as_deref()
+            .map(|p| {
+                Path::new(p)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(p)
+                    .to_string()
+            })
+            .unwrap_or_else(|| "pipeline".to_string());
+        eprint!("{}", render_trace_tree(&label, &nodes, &stage_traces));
+    }
+
     // JSON envelope with trace metadata when output format is JSON
     if matches!(output_format, Some(crate::cli::OutputFormat::Json)) {
         let total_cost: f64 = stage_traces.iter().map(|s| s.cost_usd).sum();
-        let total_latency: u64 = stage_traces.iter().map(|s| s.latency_ms).sum();
+        // Phase 22A: `total_latency_ms` is the sequential sum (preserved for
+        // back-compat); `wall_latency_ms` accounts for fan-out concurrency.
+        let (wall_latency, total_latency) = pipeline_timing(&stage_traces);
         let envelope = serde_json::json!({
             "output": serde_json::from_str::<serde_json::Value>(&input_text).unwrap_or(serde_json::Value::String(input_text)),
             "trace": {
                 "stages": stage_traces,
                 "total_cost_usd": total_cost,
                 "total_latency_ms": total_latency,
+                "wall_latency_ms": wall_latency,
             }
         });
         println!("{}", serde_json::to_string_pretty(&envelope)?);
@@ -415,7 +464,7 @@ async fn run_stage_inner(
             } else {
                 strip_think_tag(&result.output).to_string()
             };
-            if is_last && !output.is_empty() {
+            if is_last && !output.is_empty() && !json_envelope_mode(config) {
                 print!("{output}");
                 std::io::Write::flush(&mut std::io::stdout())?;
                 if !output.ends_with('\n') {
@@ -522,12 +571,15 @@ async fn run_stage_inner(
         if let Some(cached) = cache.get(key) {
             debug!("Stage cache hit for role '{}'", stage.role_name);
             let model_id = client.model().id();
+            // Phase 22D: flag the replay so the DAG trace can mark this stage
+            // `(cached)` and attribute $0 / 0ms to it.
             let metrics = CallMetrics {
                 model_id,
                 turns: 1,
+                cached: true,
                 ..Default::default()
             };
-            if is_last && !input.stream() {
+            if is_last && !input.stream() && !json_envelope_mode(config) {
                 let final_output = if let Some(fmt) = config.read().output_format {
                     if fmt.is_structured() {
                         fmt.clean_output(&cached)?
@@ -565,10 +617,16 @@ async fn run_stage_inner(
     };
     let original_input = input.clone();
 
-    // Phase 0B: Use call_react when the stage role has tools
+    // Phase 0B: Use call_react when the stage role has tools.
+    // Phase 22A: when the run will emit a JSON envelope, the last stage must
+    // compute silently — streaming would print tokens straight to stdout ahead
+    // of the envelope. (In the `--pipe` path `output_format` is None, so
+    // `input.stream()` isn't already disabled the way it is for a structured
+    // single-shot call.)
+    let stream_last = input.stream() && is_last && !json_envelope_mode(config);
     let (mut output, mut tool_results, mut metrics) = if has_tools {
         call_react(&mut input, client.as_ref(), abort_signal.clone()).await?
-    } else if input.stream() && is_last {
+    } else if stream_last {
         call_chat_completions_streaming(&input, client.as_ref(), abort_signal.clone()).await?
     } else {
         call_chat_completions(&input, false, false, client.as_ref(), abort_signal.clone()).await?
@@ -643,7 +701,7 @@ async fn run_stage_inner(
             .after_chat_completion(&input, &output, &tool_results)?;
     }
 
-    if is_last && !input.stream() {
+    if is_last && !input.stream() && !json_envelope_mode(config) {
         let final_output = if let Some(fmt) = config.read().output_format {
             if fmt.is_structured() {
                 fmt.clean_output(&output)?
@@ -1361,6 +1419,8 @@ pub async fn invoke_role(
             cost_usd: m.cost_usd,
             latency_ms: m.latency_ms,
             branch: None,
+            node_index: i,
+            cached: m.cached,
         });
         total.merge(&m);
         current = out;
@@ -1466,6 +1526,8 @@ pub async fn invoke_role_streaming(
                 cost_usd: 0.0,
                 latency_ms: 0,
                 branch: None,
+                node_index: i,
+                cached: false,
             });
             let _ = tx.send(StageEvent::End {
                 index: i,
@@ -1557,6 +1619,8 @@ pub async fn invoke_role_streaming(
             cost_usd: m.cost_usd,
             latency_ms: m.latency_ms,
             branch: None,
+            node_index: i,
+            cached: m.cached,
         };
         let _ = tx.send(StageEvent::End {
             index: i,
@@ -1638,6 +1702,8 @@ pub async fn run_inline_pipeline(
             cost_usd: m.cost_usd,
             latency_ms: m.latency_ms,
             branch: None,
+            node_index: i,
+            cached: m.cached,
         });
         total.merge(&m);
         current = out;
@@ -1758,6 +1824,8 @@ fn run_node<'a>(
                     cost_usd: metrics.cost_usd,
                     latency_ms: metrics.latency_ms,
                     branch: branch_label,
+                    node_index,
+                    cached: metrics.cached,
                 };
                 Ok((output, vec![trace]))
             }
@@ -1770,6 +1838,7 @@ fn run_node<'a>(
                     input_text,
                     is_last,
                     branch_label,
+                    stage_budget_usd,
                     abort_signal,
                 )
                 .await
@@ -1783,6 +1852,7 @@ fn run_node<'a>(
                     input_text,
                     is_last,
                     branch_label,
+                    stage_budget_usd,
                     abort_signal,
                 )
                 .await
@@ -1801,12 +1871,17 @@ async fn run_parallel(
     input_text: &str,
     is_last: bool,
     branch_label: Option<usize>,
+    node_budget_usd: Option<f64>,
     abort_signal: AbortSignal,
 ) -> Result<(String, Vec<StageTrace>)> {
     // Each branch sees the same input. We don't propagate `is_last=true`
     // into branches: a branch's output is consumed by the merge, never
     // printed directly. The merged output is what propagates downstream.
     let branch_count = p.branches.len();
+    // Phase 22C: split the node's pre-allocated dollar budget evenly across
+    // branches. `None` (no enforcement) propagates as `None`. The merge stage
+    // runs unbudgeted — the budget is spent on the fan-out itself.
+    let branch_budget = split_branch_budget(node_budget_usd, branch_count);
     let futs = p.branches.iter().enumerate().map(|(bi, branch)| {
         let stamp = match branch_label {
             // Preserve the outermost branch label for nested fans.
@@ -1821,9 +1896,7 @@ async fn run_parallel(
             input_text,
             false,
             stamp,
-            // Phase 11D: nested DAG budget propagation deferred; branches
-            // consume their model's native context window for now.
-            None,
+            branch_budget,
             abort_signal.clone(),
         )
     });
@@ -1877,6 +1950,8 @@ async fn run_parallel(
                 cost_usd: metrics.cost_usd,
                 latency_ms: metrics.latency_ms,
                 branch: branch_label,
+                node_index,
+                cached: metrics.cached,
             });
             return Ok((out, traces));
         }
@@ -1885,7 +1960,8 @@ async fn run_parallel(
     // For built-in merges (concatenate / json_array), the parallel node
     // itself doesn't run an extra stage. If this node is the last in the
     // top-level pipeline and we're printing, emit the merged output here.
-    if is_last {
+    // Suppressed under `-o json`, where `run` emits the trace envelope instead.
+    if is_last && !json_envelope_mode(config) {
         print_final_output(config, &merged)?;
     }
 
@@ -1902,6 +1978,7 @@ async fn run_switch(
     input_text: &str,
     is_last: bool,
     branch_label: Option<usize>,
+    node_budget_usd: Option<f64>,
     abort_signal: AbortSignal,
 ) -> Result<(String, Vec<StageTrace>)> {
     let mut chosen: Option<&PipelineNode> = None;
@@ -1944,10 +2021,9 @@ async fn run_switch(
         input_text,
         is_last,
         branch_label,
-        // Phase 11D: switch arm inherits no per-stage budget — the routing
-        // decision happens after the prior stage's spend; arm-level budgets
-        // would need a separate config surface.
-        None,
+        // Phase 22C: only one switch arm runs, so it inherits the node's full
+        // pre-allocated budget rather than a split share.
+        node_budget_usd,
         abort_signal,
     )
     .await
@@ -1972,4 +2048,366 @@ fn print_final_output(config: &GlobalConfig, output: &str) -> Result<()> {
         println!();
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Phase 22: DAG observability & budget
+// ---------------------------------------------------------------------------
+
+/// True when the CLI `--pipe` run will wrap its result in a JSON trace envelope
+/// (`-o json`, emitted by [`run`]). In that mode individual stages must stay
+/// silent — otherwise the last stage prints its own output ahead of the
+/// envelope and stdout is no longer a single valid JSON document. Reads the
+/// dedicated `pipeline_emits_envelope` flag (set by [`run`]) rather than
+/// `output_format`, which is intentionally `None` for stages so the JSON
+/// system-prompt suffix never leaks into their prompts.
+fn json_envelope_mode(config: &GlobalConfig) -> bool {
+    config.read().pipeline_emits_envelope
+}
+
+/// Phase 22C: split a parallel node's pre-allocated dollar budget equally
+/// across its branches. `None` (no enforcement) passes straight through, as
+/// does a zero branch count — there is nothing to divide a budget over.
+fn split_branch_budget(node_budget_usd: Option<f64>, branch_count: usize) -> Option<f64> {
+    match (node_budget_usd, branch_count) {
+        (Some(b), n) if n > 0 => Some(b / n as f64),
+        _ => None,
+    }
+}
+
+/// Phase 22A: derive `(wall_ms, sequential_ms)` from a flat trace list.
+///
+/// `sequential_ms` is just the sum of every stage's latency — what the run
+/// would have cost end-to-end with no concurrency. `wall_ms` models the DAG:
+/// top-level nodes run in series, so it sums each node's wall time, and a
+/// node's wall time is the slowest branch (fan-out runs concurrently) plus
+/// any non-branch latency in that node (a sequential stage, a switch arm, or
+/// a custom-merge stage that runs after the branches join).
+fn pipeline_timing(traces: &[StageTrace]) -> (u64, u64) {
+    use std::collections::BTreeMap;
+    let sequential_ms: u64 = traces.iter().map(|t| t.latency_ms).sum();
+
+    // node_index -> (branch -> summed latency, non-branch summed latency)
+    let mut nodes: BTreeMap<usize, (BTreeMap<usize, u64>, u64)> = BTreeMap::new();
+    for tr in traces {
+        let entry = nodes.entry(tr.node_index).or_default();
+        match tr.branch {
+            Some(b) => *entry.0.entry(b).or_default() += tr.latency_ms,
+            None => entry.1 += tr.latency_ms,
+        }
+    }
+
+    let wall_ms = nodes
+        .values()
+        .map(|(branches, non_branch)| {
+            let slowest_branch = branches.values().copied().max().unwrap_or(0);
+            slowest_branch + non_branch
+        })
+        .sum();
+
+    (wall_ms, sequential_ms)
+}
+
+/// Format a latency for the trace tree: sub-second as `Nms`, else `N.Ns`.
+fn fmt_latency(ms: u64) -> String {
+    if ms >= 1000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
+/// Format a duration as fractional seconds (used for the wall/sequential total).
+fn fmt_seconds(ms: u64) -> String {
+    format!("{:.1}s", ms as f64 / 1000.0)
+}
+
+/// One stage's line in the trace tree: `role  model  in→out tok  $cost  lat`.
+/// A cache hit (Phase 22D) appends `(cached)`.
+fn stage_line(t: &StageTrace) -> String {
+    let mut s = format!(
+        "{}  {}  {}→{}tok  ${:.4}  {}",
+        t.role,
+        t.model,
+        t.input_tokens,
+        t.output_tokens,
+        t.cost_usd,
+        fmt_latency(t.latency_ms),
+    );
+    if t.cached {
+        s.push_str("  (cached)");
+    }
+    s
+}
+
+/// Phase 22A/22B: render a pipeline DAG's execution trace as an indented tree.
+/// Walks `nodes` for structure (branch labels, merge strategy, switch arms)
+/// and indexes `traces` by `(node_index, branch)` for the per-stage metrics.
+/// Per-branch cost (22B) shows on each branch line, with a subtotal when a
+/// branch ran more than one stage; the footer reports total cost plus
+/// wall-clock vs sequential time.
+fn render_trace_tree(label: &str, nodes: &[PipelineNode], traces: &[StageTrace]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+
+    let stage_count: usize = nodes
+        .iter()
+        .map(|n| n.all_stages().len() + n.merge_role_names().len())
+        .sum();
+    let parallel_count = nodes
+        .iter()
+        .filter(|n| matches!(n, PipelineNode::Parallel(_)))
+        .count();
+
+    let _ = write!(out, "[pipeline] {label} ({stage_count} stage{}", plural(stage_count));
+    if parallel_count > 0 {
+        let _ = write!(out, ", {parallel_count} parallel");
+    }
+    out.push_str(")\n");
+
+    let node_traces = |ni: usize| -> Vec<&StageTrace> {
+        traces.iter().filter(|t| t.node_index == ni).collect()
+    };
+
+    for (i, node) in nodes.iter().enumerate() {
+        let n1 = i + 1;
+        match node {
+            PipelineNode::Stage(_) => {
+                if let Some(t) = node_traces(i).into_iter().find(|t| t.branch.is_none()) {
+                    let _ = writeln!(out, "  [{n1}] {}", stage_line(t));
+                }
+            }
+            PipelineNode::Parallel(p) => {
+                let bcount = p.branches.len();
+                let _ = writeln!(
+                    out,
+                    "  [{n1}] parallel ({bcount} branch{})",
+                    if bcount == 1 { "" } else { "es" }
+                );
+                let group = node_traces(i);
+                for bi in 0..bcount {
+                    let bno = bi + 1;
+                    let letter = (b'a' + bi as u8) as char;
+                    let branch_traces: Vec<&StageTrace> =
+                        group.iter().copied().filter(|t| t.branch == Some(bno)).collect();
+                    for t in &branch_traces {
+                        let _ = writeln!(out, "    [{n1}{letter}] {}", stage_line(t));
+                    }
+                    // Phase 22B: branch subtotal when a branch ran >1 stage.
+                    if branch_traces.len() > 1 {
+                        let cost: f64 = branch_traces.iter().map(|t| t.cost_usd).sum();
+                        let lat: u64 = branch_traces.iter().map(|t| t.latency_ms).sum();
+                        let _ = writeln!(
+                            out,
+                            "      branch {letter}: ${cost:.4}  {}",
+                            fmt_latency(lat)
+                        );
+                    }
+                }
+                match &p.merge {
+                    MergeStrategy::Concatenate => {
+                        let _ = writeln!(out, "    merge: concatenate");
+                    }
+                    MergeStrategy::JsonArray => {
+                        let _ = writeln!(out, "    merge: json_array");
+                    }
+                    MergeStrategy::CustomRole(r) => {
+                        match group.iter().copied().find(|t| t.branch.is_none()) {
+                            Some(t) => {
+                                let _ = writeln!(out, "    merge: custom_role: {r}  {}", stage_line(t));
+                            }
+                            None => {
+                                let _ = writeln!(out, "    merge: custom_role: {r}");
+                            }
+                        }
+                    }
+                }
+            }
+            PipelineNode::Switch(_) => {
+                let group = node_traces(i);
+                let executed: Vec<&StageTrace> =
+                    group.iter().copied().filter(|t| t.branch.is_none()).collect();
+                match executed.first() {
+                    Some(first) => {
+                        let _ = writeln!(out, "  [{n1}] switch → {}", first.role);
+                        for t in &executed {
+                            let _ = writeln!(out, "    [{n1}] {}", stage_line(t));
+                        }
+                    }
+                    None => {
+                        let _ = writeln!(out, "  [{n1}] switch (no branch taken)");
+                    }
+                }
+            }
+        }
+    }
+
+    let (wall, seq) = pipeline_timing(traces);
+    let total_cost: f64 = traces.iter().map(|t| t.cost_usd).sum();
+    let _ = writeln!(
+        out,
+        "  total: ${total_cost:.4}  {} (wall) vs {} (sequential)",
+        fmt_seconds(wall),
+        fmt_seconds(seq)
+    );
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{MergeStrategy, ParallelNode, PipelineNode, RolePipelineStage};
+
+    fn stage(role: &str, model: Option<&str>) -> PipelineNode {
+        PipelineNode::Stage(RolePipelineStage {
+            role: role.to_string(),
+            model: model.map(|m| m.to_string()),
+            budget_weight: None,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tr(
+        role: &str,
+        model: &str,
+        input: u64,
+        output: u64,
+        cost: f64,
+        lat: u64,
+        node_index: usize,
+        branch: Option<usize>,
+    ) -> StageTrace {
+        StageTrace {
+            role: role.to_string(),
+            model: model.to_string(),
+            input_tokens: input,
+            output_tokens: output,
+            cost_usd: cost,
+            latency_ms: lat,
+            branch,
+            node_index,
+            cached: false,
+        }
+    }
+
+    // ---- Phase 22C: split_branch_budget ----
+
+    #[test]
+    fn split_branch_budget_none_passes_through() {
+        assert_eq!(split_branch_budget(None, 3), None);
+    }
+
+    #[test]
+    fn split_branch_budget_divides_equally() {
+        let share = split_branch_budget(Some(0.30), 3).expect("some");
+        assert!((share - 0.10).abs() < 1e-9, "got {share}");
+    }
+
+    #[test]
+    fn split_branch_budget_zero_branches_is_none() {
+        // Never divide by zero — a parallel node with no branches is degenerate
+        // but must not panic.
+        assert_eq!(split_branch_budget(Some(0.30), 0), None);
+    }
+
+    // ---- Phase 22A: pipeline_timing ----
+
+    #[test]
+    fn pipeline_timing_sequential_sums_all_latency() {
+        let traces = vec![
+            tr("a", "m", 1, 1, 0.0, 800, 0, None),
+            tr("b", "m", 1, 1, 0.0, 1500, 1, None),
+        ];
+        let (wall, seq) = pipeline_timing(&traces);
+        assert_eq!(seq, 2300);
+        assert_eq!(wall, 2300, "two sequential stages: wall == sequential");
+    }
+
+    #[test]
+    fn pipeline_timing_parallel_wall_is_slowest_branch() {
+        // extract (800) -> parallel{1200, 600, 700} -> synthesize (1500)
+        let traces = vec![
+            tr("extract", "deepseek", 500, 200, 0.0001, 800, 0, None),
+            tr("security-review", "claude", 200, 300, 0.004, 1200, 1, Some(1)),
+            tr("style-review", "deepseek", 200, 150, 0.0001, 600, 1, Some(2)),
+            tr("perf-review", "deepseek", 200, 180, 0.0001, 700, 1, Some(3)),
+            tr("synthesize", "claude", 630, 200, 0.006, 1500, 2, None),
+        ];
+        let (wall, seq) = pipeline_timing(&traces);
+        assert_eq!(seq, 4800, "800+1200+600+700+1500");
+        assert_eq!(wall, 3500, "800 + max(1200,600,700) + 1500");
+    }
+
+    #[test]
+    fn pipeline_timing_custom_merge_runs_after_branches() {
+        let traces = vec![
+            tr("a", "m", 10, 10, 0.001, 100, 0, Some(1)),
+            tr("b", "m", 10, 10, 0.001, 100, 0, Some(2)),
+            tr("merger", "m", 20, 5, 0.002, 300, 0, None),
+        ];
+        let (wall, seq) = pipeline_timing(&traces);
+        assert_eq!(seq, 500);
+        assert_eq!(wall, 400, "max(100,100) branches + 300 merge");
+    }
+
+    // ---- Phase 22A/22B: render_trace_tree ----
+
+    #[test]
+    fn render_trace_tree_shows_nodes_branches_merge_and_totals() {
+        let nodes = vec![
+            stage("extract", Some("deepseek")),
+            PipelineNode::Parallel(ParallelNode {
+                branches: vec![stage("security-review", None), stage("style-review", None)],
+                merge: MergeStrategy::Concatenate,
+            }),
+            stage("synthesize", None),
+        ];
+        let traces = vec![
+            tr("extract", "deepseek", 500, 200, 0.0001, 800, 0, None),
+            tr("security-review", "claude", 200, 300, 0.004, 1200, 1, Some(1)),
+            tr("style-review", "deepseek", 200, 150, 0.0001, 600, 1, Some(2)),
+            tr("synthesize", "claude", 630, 200, 0.006, 1500, 2, None),
+        ];
+        let tree = render_trace_tree("secure-review", &nodes, &traces);
+
+        assert!(tree.contains("[pipeline] secure-review"), "{tree}");
+        assert!(tree.contains("[1] extract"), "{tree}");
+        assert!(tree.contains("[2] parallel (2 branches)"), "{tree}");
+        assert!(tree.contains("[2a] security-review"), "{tree}");
+        assert!(tree.contains("[2b] style-review"), "{tree}");
+        assert!(tree.contains("merge: concatenate"), "{tree}");
+        assert!(tree.contains("[3] synthesize"), "{tree}");
+        assert!(tree.contains("500→200tok"), "{tree}");
+        assert!(tree.contains("$0.0040"), "{tree}");
+        // total cost 0.0102; wall 800+1200+1500=3500; seq 800+1200+600+1500=4100
+        assert!(tree.contains("total: $0.0102"), "{tree}");
+        assert!(tree.contains("3.5s (wall)"), "{tree}");
+        assert!(tree.contains("4.1s (sequential)"), "{tree}");
+    }
+
+    #[test]
+    fn render_trace_tree_marks_cached_stage() {
+        let nodes = vec![stage("extract", None)];
+        let mut t = tr("extract", "deepseek", 500, 0, 0.0, 0, 0, None);
+        t.cached = true;
+        let tree = render_trace_tree("p", &nodes, &[t]);
+        assert!(tree.contains("(cached)"), "{tree}");
+    }
+
+    #[test]
+    fn render_trace_tree_custom_merge_shows_merge_role() {
+        let nodes = vec![PipelineNode::Parallel(ParallelNode {
+            branches: vec![stage("a", None), stage("b", None)],
+            merge: MergeStrategy::CustomRole("merger".to_string()),
+        })];
+        let traces = vec![
+            tr("a", "m", 10, 10, 0.001, 100, 0, Some(1)),
+            tr("b", "m", 10, 10, 0.001, 100, 0, Some(2)),
+            tr("merger", "m", 20, 5, 0.002, 300, 0, None),
+        ];
+        let tree = render_trace_tree("p", &nodes, &traces);
+        assert!(tree.contains("merge: custom_role: merger"), "{tree}");
+        assert!(tree.contains("[1a] a"), "{tree}");
+        assert!(tree.contains("[1b] b"), "{tree}");
+    }
 }

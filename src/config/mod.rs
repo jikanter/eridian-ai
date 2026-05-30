@@ -307,6 +307,14 @@ pub struct Config {
 
     #[serde(skip)]
     pub output_format: Option<crate::cli::OutputFormat>,
+    /// Phase 22A: set by the `--pipe` runner when it will wrap the result in a
+    /// JSON trace envelope (`-o json`). While true, pipeline stages must not
+    /// print their own final output to stdout — otherwise the last stage's text
+    /// precedes the envelope and stdout is no longer one valid JSON document.
+    /// Distinct from `output_format` so it never leaks the JSON system-prompt
+    /// suffix into individual stage prompts.
+    #[serde(skip)]
+    pub pipeline_emits_envelope: bool,
     #[serde(skip)]
     pub macro_flag: bool,
     #[serde(skip)]
@@ -457,6 +465,7 @@ impl Default for Config {
             trace_config: None,
 
             output_format: None,
+            pipeline_emits_envelope: false,
             macro_flag: false,
             info_flag: false,
             agent_variables: None,

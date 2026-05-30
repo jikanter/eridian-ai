@@ -181,6 +181,7 @@ pub async fn invoke(
             .unwrap_or(total_latency),
         model_id: model_label.clone(),
         turns: 1,
+        cached: false,
     };
 
     // Preserve the remote's stage trace verbatim if present; otherwise
@@ -189,7 +190,8 @@ pub async fn invoke(
     let stages: Vec<StageTrace> = if let Some(trace_obj) = envelope.get("trace") {
         if let Some(arr) = trace_obj.get("stages").and_then(Value::as_array) {
             arr.iter()
-                .filter_map(|v| {
+                .enumerate()
+                .filter_map(|(i, v)| {
                     Some(StageTrace {
                         role: v.get("role")?.as_str()?.to_string(),
                         model: v
@@ -205,6 +207,14 @@ pub async fn invoke(
                             .get("branch")
                             .and_then(Value::as_u64)
                             .map(|n| n as usize),
+                        // Phase 22A/22D: preserve the remote's grouping/cache
+                        // flags when present; default to flat/uncached.
+                        node_index: v
+                            .get("node_index")
+                            .and_then(Value::as_u64)
+                            .map(|n| n as usize)
+                            .unwrap_or(i),
+                        cached: v.get("cached").and_then(Value::as_bool).unwrap_or(false),
                     })
                 })
                 .collect()
@@ -237,6 +247,8 @@ fn single_trace(role: &str, m: &CallMetrics) -> StageTrace {
         cost_usd: m.cost_usd,
         latency_ms: m.latency_ms,
         branch: None,
+        node_index: 0,
+        cached: m.cached,
     }
 }
 
