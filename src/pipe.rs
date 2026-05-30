@@ -485,7 +485,9 @@ async fn run_stage_inner(
         .clone()
         .map(crate::utils::trace::TraceEmitter::new);
 
-    if let Some(schema) = role.input_schema() {
+    // Phase 33C: skip raw-message validation for a stdin-routed role (its schema
+    // describes slots, and the message is the free-text body slot).
+    if let Some(schema) = role.input_schema().filter(|_| !role.has_stdin_slot()) {
         if let Err(e) =
             validate_schema_traced("input", schema, input_text, trace_emitter.as_ref())
         {

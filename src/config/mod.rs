@@ -1367,6 +1367,9 @@ impl Config {
         if !role.variables().is_empty() || role.input_schema().is_some() {
             let resolved = self.resolve_role_variables(&role)?;
             role.apply_variables(&resolved);
+            // Phase 33C: a `source: stdin` slot becomes the embedded-input
+            // placeholder, so the message text splices into `{{body}}`.
+            role.route_stdin_slot();
         }
 
         // Phase 6C: Auto-bind MCP server tools to the role's use_tools.

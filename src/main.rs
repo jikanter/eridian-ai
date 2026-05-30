@@ -720,8 +720,13 @@ async fn start_directive(
         .clone()
         .map(crate::utils::trace::TraceEmitter::new);
 
+    // Phase 33C: a role with a `source: stdin` slot takes free-text input routed
+    // into that slot, so the raw message is not validated against the object
+    // schema (which describes the slots, not the message).
     if let Some(schema) = input.role().input_schema() {
-        validate_schema_traced("input", schema, &input.text(), trace_emitter.as_ref())?;
+        if !input.role().has_stdin_slot() {
+            validate_schema_traced("input", schema, &input.text(), trace_emitter.as_ref())?;
+        }
     }
 
     let has_output_schema = input.role().output_schema().cloned();

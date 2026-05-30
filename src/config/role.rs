@@ -887,6 +887,10 @@ pub(crate) struct SchemaSlot {
     pub default: Option<SlotDefault>,
     pub required: bool,
     pub pretty: bool,
+    /// Phase 33C: the property's declared JSON Schema `type` (`"string"`,
+    /// `"integer"`, `"array"`, …), used to coerce a CLI `-v` string into the
+    /// right JSON type. `None` when the property declares no `type`.
+    pub slot_type: Option<String>,
 }
 
 impl SlotDefault {
@@ -947,18 +951,19 @@ pub(crate) fn resolve_slots(
 
     if let Some(schema) = input_schema {
         for slot in schema_slots(schema) {
-            let value: Option<Value> = cli
-                .and_then(|m| m.get(&slot.name))
-                .map(|s| Value::String(s.clone()))
-                .or_else(|| {
-                    slot.default.as_ref().and_then(|d| match d.resolve() {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            warn!("Shell default for '{}' failed: {e}", slot.name);
-                            None
-                        }
-                    })
-                });
+            // Phase 33C: a CLI `-v` value is coerced against the property's
+            // declared type (and propagates the error if it doesn't fit);
+            // otherwise fall back to the declared default.
+            let value: Option<Value> = match cli.and_then(|m| m.get(&slot.name)) {
+                Some(raw) => Some(coerce_cli_value(&slot.name, raw, slot.slot_type.as_deref())?),
+                None => slot.default.as_ref().and_then(|d| match d.resolve() {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        warn!("Shell default for '{}' failed: {e}", slot.name);
+                        None
+                    }
+                }),
+            };
             if let Some(v) = value {
                 typed.insert(slot.name.clone(), (v, slot.pretty));
             }
@@ -1003,14 +1008,101 @@ pub(crate) fn schema_slots(schema: &Value) -> Vec<SchemaSlot> {
                 .and_then(|x| x.get("render"))
                 .and_then(Value::as_str)
                 == Some("pretty");
+            let slot_type = prop
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             SchemaSlot {
                 name: name.clone(),
                 default,
                 required: required.contains(name.as_str()),
                 pretty,
+                slot_type,
             }
         })
         .collect()
+}
+
+/// Phase 33C: coerce a CLI `-v name=value` string into the JSON type declared
+/// by the matching schema property.
+///
+/// - `@path` reads the file: parsed as JSON for non-string slots, used verbatim
+///   for a `string` slot (so a text file can populate a string slot).
+/// - `string` (or an undeclared type) keeps the raw value.
+/// - `integer` / `number` / `boolean` parse to the scalar, erroring with a
+///   message that names the property, the value, and the expected type.
+/// - `array` / `object` parse as JSON and must produce the matching container.
+pub(crate) fn coerce_cli_value(
+    name: &str,
+    raw: &str,
+    slot_type: Option<&str>,
+) -> anyhow::Result<Value> {
+    // `@path` pulls the value from a file. For a string slot the file content is
+    // the value verbatim; otherwise the content is parsed as JSON.
+    let (text, from_file) = match raw.strip_prefix('@') {
+        Some(path) => {
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("-v {name}=@{path}: failed to read file"))?;
+            (content, true)
+        }
+        None => (raw.to_string(), false),
+    };
+    let body = if from_file { text.trim() } else { text.as_str() };
+
+    let coerce_err = |expected: &str| {
+        anyhow::anyhow!("-v {name}={body}: value is not a valid {expected}")
+    };
+
+    match slot_type {
+        None | Some("string") => Ok(Value::String(if from_file {
+            text.clone()
+        } else {
+            raw.to_string()
+        })),
+        Some("integer") => body
+            .parse::<i64>()
+            .map(|n| Value::Number(n.into()))
+            .map_err(|_| coerce_err("integer")),
+        Some("number") => body
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .ok_or_else(|| coerce_err("number")),
+        Some("boolean") => body
+            .parse::<bool>()
+            .map(Value::Bool)
+            .map_err(|_| coerce_err("boolean")),
+        Some(t @ ("array" | "object")) => {
+            let v: Value = serde_json::from_str(body).map_err(|_| coerce_err(t))?;
+            let ok = (t == "array" && v.is_array()) || (t == "object" && v.is_object());
+            if ok {
+                Ok(v)
+            } else {
+                Err(coerce_err(t))
+            }
+        }
+        // Unknown / unsupported type annotation: leave it a string.
+        Some(_) => Ok(Value::String(raw.to_string())),
+    }
+}
+
+/// Phase 33C: the name of the schema property annotated
+/// `x-aichat: { source: stdin }`, if any. That slot receives the stdin/message
+/// content (the conventional name is `body`). Returns the first such property;
+/// `None` when no property opts in (the common case — existing roles).
+pub(crate) fn stdin_slot(schema: &Value) -> Option<String> {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)?
+        .iter()
+        .find(|(_, prop)| {
+            prop.get("x-aichat")
+                .and_then(|x| x.get("source"))
+                .and_then(Value::as_str)
+                == Some("stdin")
+        })
+        .map(|(name, _)| name.clone())
 }
 
 #[derive(Debug)]
@@ -1898,6 +1990,31 @@ impl Role {
     pub fn apply_variables(&mut self, vars: &IndexMap<String, String>) {
         for (k, v) in vars {
             self.prompt = self.prompt.replace(&format!("{{{{{k}}}}}"), v);
+        }
+    }
+
+    /// Phase 33C: true when this role's `input_schema` declares a property with
+    /// `x-aichat: { source: stdin }`. Such roles take their message as free text
+    /// (routed into that slot), so the raw message is not validated against the
+    /// object schema.
+    pub fn has_stdin_slot(&self) -> bool {
+        self.input_schema
+            .as_ref()
+            .map(|s| stdin_slot(s).is_some())
+            .unwrap_or(false)
+    }
+
+    /// Phase 33C: route the `x-aichat: { source: stdin }` slot to the input by
+    /// rewriting its `{{name}}` token to the `INPUT_PLACEHOLDER` sentinel, so the
+    /// existing embedded-prompt machinery splices the message there at build
+    /// time. No-op when no slot opts into stdin.
+    pub fn route_stdin_slot(&mut self) {
+        if let Some(schema) = &self.input_schema {
+            if let Some(name) = stdin_slot(schema) {
+                self.prompt = self
+                    .prompt
+                    .replace(&format!("{{{{{name}}}}}"), INPUT_PLACEHOLDER);
+            }
         }
     }
 
@@ -2962,6 +3079,110 @@ mod tests {
         });
         let out = resolve_slots(&[], Some(&schema), None).unwrap();
         assert_eq!(out.get("greeting").map(String::as_str), Some("hi"));
+    }
+
+    // ---- Phase 33C: CLI value coercion ----
+
+    #[test]
+    fn coerce_string_and_undeclared_keep_raw() {
+        assert_eq!(coerce_cli_value("a", "hello", Some("string")).unwrap(), json!("hello"));
+        assert_eq!(coerce_cli_value("a", "hello", None).unwrap(), json!("hello"));
+    }
+
+    #[test]
+    fn coerce_integer_parses_or_errors() {
+        assert_eq!(coerce_cli_value("depth", "5", Some("integer")).unwrap(), json!(5));
+        let err = coerce_cli_value("depth", "abc", Some("integer")).unwrap_err().to_string();
+        assert!(err.contains("depth") && err.contains("integer"), "{err}");
+    }
+
+    #[test]
+    fn coerce_number_and_boolean() {
+        assert_eq!(coerce_cli_value("x", "1.5", Some("number")).unwrap(), json!(1.5));
+        assert_eq!(coerce_cli_value("ok", "true", Some("boolean")).unwrap(), json!(true));
+        assert!(coerce_cli_value("ok", "yes", Some("boolean")).is_err());
+    }
+
+    #[test]
+    fn coerce_array_and_object_parse_json() {
+        assert_eq!(
+            coerce_cli_value("files", r#"["a","b"]"#, Some("array")).unwrap(),
+            json!(["a", "b"])
+        );
+        assert_eq!(
+            coerce_cli_value("cfg", r#"{"k":1}"#, Some("object")).unwrap(),
+            json!({"k": 1})
+        );
+    }
+
+    #[test]
+    fn coerce_array_rejects_non_array_json() {
+        // Valid JSON, but a scalar where an array was declared.
+        let err = coerce_cli_value("files", "42", Some("array")).unwrap_err().to_string();
+        assert!(err.contains("files") && err.contains("array"), "{err}");
+    }
+
+    #[test]
+    fn coerce_at_file_reads_json_for_container_and_text_for_string() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("cfg.json");
+        std::fs::File::create(&json_path).unwrap().write_all(br#"{"k":1}"#).unwrap();
+        let arg = format!("@{}", json_path.display());
+        assert_eq!(coerce_cli_value("cfg", &arg, Some("object")).unwrap(), json!({"k": 1}));
+
+        let txt_path = dir.path().join("note.txt");
+        std::fs::File::create(&txt_path).unwrap().write_all(b"plain text").unwrap();
+        let targ = format!("@{}", txt_path.display());
+        assert_eq!(coerce_cli_value("body", &targ, Some("string")).unwrap(), json!("plain text"));
+    }
+
+    #[test]
+    fn stdin_slot_finds_annotated_property() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "target": { "type": "string" },
+                "body": { "type": "string", "x-aichat": { "source": "stdin" } }
+            }
+        });
+        assert_eq!(stdin_slot(&schema).as_deref(), Some("body"));
+    }
+
+    #[test]
+    fn stdin_slot_honors_custom_name() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "payload": { "type": "string", "x-aichat": { "source": "stdin" } } }
+        });
+        assert_eq!(stdin_slot(&schema).as_deref(), Some("payload"));
+    }
+
+    #[test]
+    fn stdin_slot_none_when_unannotated() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "target": { "type": "string", "default": "main" } }
+        });
+        assert_eq!(stdin_slot(&schema), None);
+    }
+
+    #[test]
+    fn coerce_cli_value_flows_through_resolve_slots() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "depth": { "type": "integer", "default": 1 } }
+        });
+        // A bad -v value for a typed slot fails resolution (coercion is wired in).
+        let bad = vars(&[("depth", "abc")]);
+        assert!(
+            resolve_slots(&[], Some(&schema), Some(&bad)).is_err(),
+            "non-integer -v for an integer slot must error through resolve_slots"
+        );
+        // A good value coerces and renders.
+        let good = vars(&[("depth", "5")]);
+        let out = resolve_slots(&[], Some(&schema), Some(&good)).unwrap();
+        assert_eq!(out.get("depth").map(String::as_str), Some("5"));
     }
 
     #[test]

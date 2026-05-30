@@ -117,3 +117,53 @@ cargo test --bin aichat config::role::tests 2>&1 | grep -E "^test result:" | sed
 ```output
 test result: ok. N passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 ```
+
+## 33C — CLI coercion + stdin routing
+
+`-v key=value` is now coerced against the declared property type (with `@file.json` to load a value from disk); a bad value errors with the property and expected type named. A property annotated `x-aichat: { source: stdin }` receives the message as free text — routed into its `{{slot}}` via the existing embedded-input machinery — so its raw message is not validated against the object schema. (33D — strict adjacent-stage pipeline shape-checking — is still pending.)
+
+```bash
+set -e
+ROLES_DIR="$HOME/Library/Application Support/aichat/roles"
+cat > "$ROLES_DIR/p33c.md" <<EOF
+---
+input_schema:
+  type: object
+  properties:
+    target: { type: string, default: "main" }
+    depth: { type: integer, default: 3 }
+    body: { type: string, x-aichat: { source: stdin } }
+---
+Review {{target}} at depth {{depth}}. Input:
+{{body}}
+EOF
+echo "# free-text stdin fills {{body}}; defaults fill the rest:"
+printf "the diff" | ./target/debug/aichat -r p33c --dry-run 2>/dev/null | grep -A1 "^Review"
+echo "# bad -v against an integer slot errors:"
+./target/debug/aichat -r p33c -v depth=deep --dry-run </dev/null 2>&1 | grep -i "depth"
+rm -f "$ROLES_DIR/p33c.md"
+```
+
+```output
+# free-text stdin fills {{body}}; defaults fill the rest:
+Review main at depth 3. Input:
+the diff
+# bad -v against an integer slot errors:
+Error: -v depth=deep: value is not a valid integer
+```
+
+## End-to-end (offline)
+
+The integration suite drives the real binary over typed roles under `--dry-run` — defaults, `-v` override, coercion error, stdin routing, and the control that a plain `input_schema` role still validates its message.
+
+```bash
+AICHAT_BIN=./target/debug/aichat bats tests/integration/typed-input.sh 2>&1 | grep -E "^(ok|not ok)"
+```
+
+```output
+ok 1 typed-input: schema defaults fill slots and arrays render compact (33A/33B)
+ok 2 typed-input: -v overrides a schema default (33A)
+ok 3 typed-input: bad -v for an integer slot errors (33C coercion)
+ok 4 typed-input: stdin routes into a source:stdin slot, no message validation (33C)
+ok 5 typed-input: a plain input_schema role still validates the message
+```

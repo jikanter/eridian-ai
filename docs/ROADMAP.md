@@ -35,7 +35,7 @@ One row per phase. "Sub-phases" lists the granular state; "Last update" is the m
 | 3 Composition UX | 13 | Authoring & teaching | 13A–D **Done** | 2026-05-29 | [phase-13-overview.md](roadmap/phase-13-overview.md) |
 | 4 Typed Ports | 14 | Capability manifests | 14A–D **Done** | 2026-05-04 | [phase-14-overview.md](roadmap/phase-14-overview.md) |
 | 4 Typed Ports | 15 | Contract testing | 15A–C **Done** | 2026-05-29 | [phase-15-overview.md](roadmap/phase-15-overview.md) |
-| 4 Typed Ports | 33 | Typed input surface | 33A/B/E **Done**, 33C/D **Planned** | 2026-05-30 | [phase-33-overview.md](roadmap/phase-33-overview.md) |
+| 4 Typed Ports | 33 | Typed input surface | 33A/B/C/E **Done**, 33D **Planned** | 2026-05-30 | [phase-33-overview.md](roadmap/phase-33-overview.md) |
 | 5 Server Engine | 16 | Server hardening | 16A–I **Done** | 2026-05-29 | [phase-16-overview.md](roadmap/phase-16-overview.md) |
 | 5 Server Engine | 17 | Role & pipeline execution | 17A–E **Done** (un-deferred) | 2026-05-11 | [phase-17-overview.md](roadmap/phase-17-overview.md) |
 | 5 Server Engine | 18 | Discovery & estimation | 18A–C **Deferred** | 2026-04-17 | [phase-18-overview.md](roadmap/phase-18-overview.md) |

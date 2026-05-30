@@ -1,12 +1,12 @@
 # Phase 33: Typed Input Surface : Overview - Epic 4
 
-**Status (2026-05-30):** **33A/33B/33E Done** (unification core); **33C/33D Planned.** This phase unifies the fragmented input data space (`variables:`, `input_schema:`, `__INPUT__`, `-v`, stdin) into a single typed contract. Extends [Phase 14](phase-14-overview.md) (capability manifests) and [Phase 15](phase-15-overview.md) (contract testing); none of those phases need to land first, but 15B's cross-stage containment check becomes substantially more useful once 33B/33D ship.
+**Status (2026-05-30):** **33A/33B/33C/33E Done**; **33D Planned.** This phase unifies the fragmented input data space (`variables:`, `input_schema:`, `__INPUT__`, `-v`, stdin) into a single typed contract. Extends [Phase 14](phase-14-overview.md) (capability manifests) and [Phase 15](phase-15-overview.md) (contract testing); none of those phases need to land first, but 15B's cross-stage containment check becomes substantially more useful once 33B/33D ship.
 
 | Item | Description | Status |
 |---|---|---|
 | 33A | `default:` (and `default: { shell: ... }`) per property inside `input_schema:` — schema becomes the source of truth for parameter declarations | **Done** |
 | 33B | Type-aware `{{name}}` rendering — list/object/scalar substitution uses the declared schema shape instead of stringly-only `replace()` | **Done** |
-| 33C | CLI / stdin coercion against the schema — `-v key=value` parses to the declared type; one schema property (default `body`) routes from stdin via `x-aichat.source` | Planned |
+| 33C | CLI / stdin coercion against the schema — `-v key=value` parses to the declared type; one schema property (default `body`) routes from stdin via `x-aichat.source` | **Done** |
 | 33D | Preflight shape check between adjacent pipeline stages (extends Phase 15B containment) — strict when both stages declare schemas, soft-warn otherwise | Planned |
 | 33E | Deprecation handling for the `variables:` block — preserved as sugar with a single warning if mixed with `input_schema:` in the same role; no removal date | **Done** |
 
@@ -209,13 +209,28 @@ collision (the schema is the source of truth). `Config::resolve_role_variables`
 delegates to it and emits one warning per load when a role declares both blocks.
 `retrieve_role` now resolves slots when **either** channel is present.
 
-**Tests:** 18 unit tests in `src/config/role.rs` (`render_slot` ×6,
-`schema_slots` ×4, `resolve_slots` ×8). Full suite green (602 unit / 197 compat);
-role/authoring bats unchanged.
+**33C — CLI/stdin (2026-05-30, follow-on commit).** `coerce_cli_value(name, raw,
+slot_type)` parses a `-v` value into the declared JSON type: `string` verbatim,
+`integer`/`number`/`boolean` via parse (error names the property + expected
+type), `array`/`object` via `serde_json` (must produce the matching container),
+and `@path` reads a file (JSON for containers, verbatim for a string slot).
+`resolve_slots` runs it for schema slots and propagates the error. `stdin_slot()`
+finds the property annotated `x-aichat: { source: stdin }`; `Role::route_stdin_slot`
+rewrites its `{{name}}` to the `INPUT_PLACEHOLDER` sentinel so the existing
+embedded-prompt machinery splices the message there, and `Role::has_stdin_slot`
+gates the raw-message schema validation off (in both `main.rs` and `pipe.rs`) for
+those roles — a per-role opt-in, so plain `input_schema` roles still validate
+their message exactly as before.
 
-**Deliberately deferred to 33C/33D:** `-v` values are still strings until 33C
-coerces them against the declared type; stdin still flows to the message (not a
-`body` slot) until 33C; pipeline shape-checking stays soft (Phase 15B) until 33D.
+**Tests:** 28 unit tests in `src/config/role.rs` (`render_slot` ×6,
+`schema_slots` ×4, `resolve_slots` ×8, `coerce_cli_value` ×7, `stdin_slot` ×3)
+plus 5 bats in `tests/integration/typed-input.sh`. Full suite green
+(612 unit / 197 compat); role/authoring bats unchanged.
+
+**Deliberately deferred to 33D:** pipeline adjacent-stage shape-checking stays
+soft (Phase 15B) until 33D. A `required:` slot supplied via `-v`/default is not
+yet hard-enforced at resolve time (the schema's message validation still covers
+the non-stdin case).
 
 ## Open questions
 
