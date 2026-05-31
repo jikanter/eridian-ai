@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 
 PROMPTS_DIR="${AICHAT_PROMPTS_DIR:-$HOME/Library/Application Support/aichat/prompts}"
+AICHAT_BIN="${AICHAT_BIN:-target/bin/aichat}"
 
 setup() {
   # Create temporary role files for schema validation tests
@@ -12,8 +13,8 @@ teardown() {
   rm -f "${PROMPTS_DIR}/test-prompt.md"
 }
 
-AICHAT=aichat
-#AICHAT=./target/debug/aichat
+AICHAT_BIN="${AICHAT_BIN:-./target/debug/aichat}"
+AICHAT="$AICHAT_BIN"
 
 @test "list roles returns some roles with json" {
   result=$(${AICHAT} --list-roles -o json)

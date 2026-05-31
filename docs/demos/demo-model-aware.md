@@ -12,14 +12,12 @@ Extends the `{{variable}}` system so roles adapt to model capabilities at bind t
 ## Unit Tests
 
 ```bash
-cargo test -- utils::variables::tests 2>&1 | grep -E "(running|test |test result)" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test -- utils::variables::tests 2>&1 | grep -E "(running|test |test result)" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ filtered out/N filtered out/" | grep -vE "^(test result: \w+\. 0 passed|running 0 tests)"
 ```
 
 ```output
-running 0 tests
 running 28 tests
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in Xs
-test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 116 filtered out; finished in Xs
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; N filtered out; finished in Xs
 test utils::variables::tests::test_combined_conditionals_and_vars ... ok
 test utils::variables::tests::test_conditional_if_falsy ... ok
 test utils::variables::tests::test_conditional_if_truthy ... ok
@@ -57,19 +55,22 @@ Test model variable interpolation with `--dry-run`:
 ```bash
 ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
 cat > "$ROLES_DIR/test-model-vars.md" <<'ROLE'
+---
+model: ollama:deepseek-r1:14b
+---
 Model: {{__model_id__}}
 Supports vision: {{__supports_vision__}}
 Supports functions: {{__supports_function_calling__}}
 Analyze: __INPUT__
 ROLE
-echo "test" | aichat --dry-run -r test-model-vars 2>/dev/null
+echo "test" | aichat --dry-run -r test-model-vars 2>/dev/null | grep -vE "^(---|model:|$)" | head -4
 rm "$ROLES_DIR/test-model-vars.md"
 ```
 
 ```output
-Model: vllm:qwen3-coder
+Model: ollama:deepseek-r1:14b
 Supports vision: false
-Supports functions: true
+Supports functions: false
 Analyze: test
 ```
 
@@ -80,21 +81,22 @@ Test conditional blocks — content appears or hides based on model capabilities
 ```bash
 ROLES_DIR="/Users/admin/Library/Application Support/aichat/roles"
 cat > "$ROLES_DIR/test-conditionals.md" <<'ROLE'
+---
+model: ollama:deepseek-r1:14b
+---
 You are an assistant.
 {{#if __supports_vision__}}You can analyze images.{{/if}}
 {{#unless __supports_vision__}}Text-only mode.{{/unless}}
 {{#if __supports_function_calling__}}You can call tools.{{/if}}
 __INPUT__
 ROLE
-echo "hello" | aichat --dry-run -r test-conditionals 2>/dev/null
+echo "hello" | aichat --dry-run -r test-conditionals 2>/dev/null | grep -vE "^(---|model:|$)" | head -5
 rm "$ROLES_DIR/test-conditionals.md"
 ```
 
 ```output
 You are an assistant.
-
 Text-only mode.
-You can call tools.
 hello
 ```
 

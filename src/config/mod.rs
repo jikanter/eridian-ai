@@ -1,19 +1,28 @@
 pub mod agent;
 pub mod input;
 pub mod preflight;
+pub mod remote;
+pub mod resolver;
 pub mod role;
 pub mod session;
 pub mod prompt;
 
 pub use self::agent::{complete_agent_variables, list_agents, Agent, AgentVariables};
+pub use self::resolver::{
+    classify_address, pipeline_stage_admissible, EntityRef, RoleAddress, RoleResolver,
+};
 pub use self::input::Input;
 pub use self::role::{
-    run_lifecycle_hooks, validate_schema, validate_schema_detailed, validate_schema_traced,
-    KnowledgeBinding, Role, RoleExample, RoleLike, RolePipelineStage, CODE_ROLE,
-    CREATE_TITLE_ROLE, EXPLAIN_SHELL_ROLE, SHELL_ROLE,
+    build_role_explanation, format_pipeline_input_schema_error, format_role_explanation,
+    read_role_raw_metadata, render_forked_role, run_lifecycle_hooks, validate_schema,
+    validate_schema_detailed, validate_schema_traced, KnowledgeBinding, MergeStrategy,
+    ParallelNode, PipelineNode, Predicate, Role, RoleExample, RoleExplanation, RoleLike,
+    evaluate_metrics, sanitize_role_name,
+    RolePipelineStage, RolePublicView, SwitchBranch, SwitchNode, CODE_ROLE, CREATE_TITLE_ROLE,
+    EXPLAIN_SHELL_ROLE, SHELL_ROLE,
 };
 pub use self::prompt::Prompt;
-use self::session::Session;
+pub use self::session::Session;
 use crate::client::retry::RetryConfig;
 use crate::client::{
     create_client_config, list_client_types, list_models, ClientConfig, MessageContentToolCalls,
@@ -122,6 +131,58 @@ pub struct McpServerConfig {
     pub headers: HashMap<String, String>,
 }
 
+/// Phase 20C: a named remote aichat instance, addressable in pipeline stages
+/// as `remote:<name>/<role>` and in `-r` as the same.
+///
+/// Example `config.yaml`:
+/// ```yaml
+/// remotes:
+///   staging:
+///     endpoint: http://staging.internal:8080
+///     api_key: ${STAGING_API_KEY}
+///   security:
+///     endpoint: http://security-scanner.internal:8080
+/// ```
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RemoteConfig {
+    /// Base URL of the remote aichat server, without a trailing slash.
+    /// Phase 20A/B route `GET /v1/roles/{name}` (discovery) and
+    /// `POST /v1/roles/{name}/invoke` (execution) under this endpoint.
+    pub endpoint: String,
+    /// Optional bearer token. Sent as `Authorization: Bearer <key>`.
+    /// `${VAR}` interpolation is resolved at request time so the secret
+    /// never lands on disk in this struct.
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+impl RemoteConfig {
+    /// Resolve `${VAR}` indirection on `api_key`. Returns `None` when no key
+    /// is configured, or when `${VAR}` is present but the variable is unset
+    /// (with a warning, mirroring `resolve_env_vars` in mcp_client).
+    pub fn resolved_api_key(&self) -> Option<String> {
+        let raw = self.api_key.as_deref()?;
+        if raw.starts_with("${") && raw.ends_with('}') {
+            let name = &raw[2..raw.len() - 1];
+            match std::env::var(name) {
+                Ok(v) if !v.is_empty() => Some(v),
+                _ => {
+                    warn!("Remote api_key references unset env var '{name}'");
+                    None
+                }
+            }
+        } else {
+            Some(raw.to_string())
+        }
+    }
+
+    /// Trim the trailing slash off `endpoint` so the `/v1/...` join is
+    /// uniform regardless of what the user put in `config.yaml`.
+    pub fn base_url(&self) -> &str {
+        self.endpoint.trim_end_matches('/')
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -183,6 +244,20 @@ pub struct Config {
     pub right_prompt: Option<String>,
 
     pub serve_addr: Option<String>,
+    /// Phase 16A: cross-origin policy for `--serve`. When set, these origins
+    /// are allowed in addition to localhost (which is always allowed for the
+    /// bundled playground/arena). `serve_cors_allow_all` overrides the list
+    /// and echoes any origin — only safe on trusted networks.
+    #[serde(default)]
+    pub serve_cors_origins: Option<Vec<String>>,
+    #[serde(default)]
+    pub serve_cors_allow_all: bool,
+    /// Phase 16B: optional bearer-token gate for `--serve`. When set, every
+    /// request except `OPTIONS` preflight and `GET /health` must carry
+    /// `Authorization: Bearer <serve_api_key>`. When unset, no auth (the
+    /// historical localhost-only behavior).
+    #[serde(default)]
+    pub serve_api_key: Option<String>,
     pub user_agent: Option<String>,
     pub save_shell_history: bool,
     pub sync_models_url: Option<String>,
@@ -191,6 +266,23 @@ pub struct Config {
 
     #[serde(default)]
     pub mcp_servers: IndexMap<String, McpServerConfig>,
+
+    /// Phase 20C: named remote aichat instances. Pipeline stages can refer
+    /// to them by `remote:<name>/<role>`; the `-r` flag accepts the same
+    /// syntax. Empty by default — no remotes are wired in.
+    #[serde(default)]
+    pub remotes: IndexMap<String, RemoteConfig>,
+
+    /// Phase 31C: optional path to a portable `mcp.json` declarations file.
+    /// When set, aichat loads `mcpServers` from this file and merges with
+    /// `mcp_servers:` above (inline entries win on key conflict). Search
+    /// order when this field is unset:
+    ///   1. `./mcp.json` in CWD
+    ///   2. `$XDG_CONFIG_HOME/mcp/mcp.json`
+    ///   3. `~/.config/mcp/mcp.json`
+    /// See `docs/architecture/integrated-architecture/SPEC-mcp-json-artifact.md`.
+    #[serde(default)]
+    pub mcp_servers_file: Option<String>,
 
     /// MCP schema cache TTL in seconds (default: 3600)
     #[serde(default = "default_mcp_cache_ttl")]
@@ -211,11 +303,24 @@ pub struct Config {
     pub strip_thinking: bool,
     #[serde(skip)]
     pub run_log: Option<String>,
+    /// Phase 23D: directory for per-role invocation-history ledgers. Set via the
+    /// `AICHAT_ROLE_LEDGER` env var. When present, each role invocation appends a
+    /// scored record to `<dir>/<role>.jsonl`.
+    #[serde(skip)]
+    pub role_ledger_dir: Option<String>,
     #[serde(skip)]
     pub trace_config: Option<trace::TraceConfig>,
 
     #[serde(skip)]
     pub output_format: Option<crate::cli::OutputFormat>,
+    /// Phase 22A: set by the `--pipe` runner when it will wrap the result in a
+    /// JSON trace envelope (`-o json`). While true, pipeline stages must not
+    /// print their own final output to stdout — otherwise the last stage's text
+    /// precedes the envelope and stdout is no longer one valid JSON document.
+    /// Distinct from `output_format` so it never leaks the JSON system-prompt
+    /// suffix into individual stage prompts.
+    #[serde(skip)]
+    pub pipeline_emits_envelope: bool,
     #[serde(skip)]
     pub macro_flag: bool,
     #[serde(skip)]
@@ -256,6 +361,19 @@ pub struct Config {
     /// injected.
     #[serde(skip)]
     pub last_knowledge_hits: Vec<crate::knowledge::query::FactHit>,
+
+    /// Phase 34A: cached `memory/MEMORY.md` system-prompt block, read once at
+    /// startup by `crate::memory::load_preamble` and injected into the system
+    /// message by `Input::build_messages`. `None` when no memory file is
+    /// discoverable. Read-only; the write loop (34C/34D) is deferred.
+    #[serde(skip)]
+    pub memory_preamble: Option<String>,
+    /// Phase 34C: when set (CLI `--memory-reflect-on-exit`), the legacy REPL
+    /// runs the memory Reflector + curator gate over the session transcript at
+    /// exit. Opt-in, never default — per open question 2, silent per-exit
+    /// token spend would violate cost-conscious-above-all.
+    #[serde(skip)]
+    pub memory_reflect_on_exit: bool,
 }
 
 /// State for deferred tool loading (Phase 1C).
@@ -344,12 +462,17 @@ impl Default for Config {
             right_prompt: None,
 
             serve_addr: None,
+            serve_cors_origins: None,
+            serve_cors_allow_all: false,
+            serve_api_key: None,
             user_agent: None,
             save_shell_history: true,
             sync_models_url: None,
 
             clients: vec![],
             mcp_servers: Default::default(),
+            remotes: Default::default(),
+            mcp_servers_file: None,
             mcp_cache_ttl: default_mcp_cache_ttl(),
             mcp_startup_timeout: default_mcp_startup_timeout(),
             mcp_call_timeout: default_mcp_call_timeout(),
@@ -358,9 +481,11 @@ impl Default for Config {
             show_cost: false,
             strip_thinking: false,
             run_log: None,
+            role_ledger_dir: None,
             trace_config: None,
 
             output_format: None,
+            pipeline_emits_envelope: false,
             macro_flag: false,
             info_flag: false,
             agent_variables: None,
@@ -379,11 +504,19 @@ impl Default for Config {
             deferred_tools: None,
             last_knowledge_events: Vec::new(),
             last_knowledge_hits: Vec::new(),
+            memory_preamble: None,
+            memory_reflect_on_exit: false,
         }
     }
 }
 
 pub type GlobalConfig = Arc<RwLock<Config>>;
+
+impl RoleResolver for Config {
+    fn resolve(&self, address: &str) -> Result<EntityRef> {
+        self.resolve_entity(address)
+    }
+}
 
 impl Config {
     pub async fn init(working_mode: WorkingMode, info_flag: bool) -> Result<Self> {
@@ -431,6 +564,31 @@ impl Config {
             ret?;
         }
 
+        // Phase 31C: load any portable `mcp.json` declarations and merge with
+        // the inline `mcp_servers:` block. Inline wins on key conflict.
+        if !info_flag {
+            match crate::mcp_client::resolve_mcp_servers_file(
+                config.mcp_servers_file.as_deref(),
+            ) {
+                Ok(Some(path)) => {
+                    match crate::mcp_client::load_mcp_servers_file(&path) {
+                        Ok(file_servers) => {
+                            crate::mcp_client::merge_mcp_servers(
+                                &mut config.mcp_servers,
+                                file_servers,
+                            );
+                        }
+                        Err(e) => warn!(
+                            "ignoring mcp servers file {}: {e}",
+                            path.display()
+                        ),
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => warn!("{e}"),
+            }
+        }
+
         // Initialize MCP connection pool and load tool declarations from configured servers
         if !config.mcp_servers.is_empty() && !info_flag {
             let pool = McpConnectionPool::new(
@@ -449,6 +607,23 @@ impl Config {
                 }
             }
             config.mcp_pool = Some(Arc::new(pool));
+        }
+
+        // Phase 34A: read `memory/MEMORY.md` once at startup and cache the
+        // capped system-prompt block. Read-only; injected per-turn by
+        // `Input::build_messages`. Loaded even under `--info` so the preamble
+        // surfaces in `--info -o json`.
+        if let Some(preamble) = crate::memory::load_preamble() {
+            if preamble.truncated {
+                eprintln!(
+                    "warning: {} exceeds the {}-line / {}-KiB memory preamble cap; \
+                     split it into topic files so context is not dropped",
+                    preamble.source.display(),
+                    crate::memory::MAX_PREAMBLE_LINES,
+                    crate::memory::MAX_PREAMBLE_BYTES / 1024,
+                );
+            }
+            config.memory_preamble = Some(preamble.as_system_block());
         }
 
         Ok(config)
@@ -781,6 +956,10 @@ impl Config {
         }
         if role.save_to().is_some() {
             items.push(("save_to", role.save_to().unwrap().to_string()));
+        }
+        // Phase 34A: show the auto-memory preamble size when one is loaded.
+        if let Some(mem) = self.memory_preamble.as_ref() {
+            items.push(("memory_preamble", format!("{} chars", mem.len())));
         }
         items.extend([
             ("compress_threshold", self.compress_threshold.to_string()),
@@ -1199,40 +1378,58 @@ impl Config {
         Ok(())
     }
 
+    /// Phase 19A/19B: classify an address into role / agent / macro without
+    /// loading the entity. Honors explicit `agent:` / `macro:` prefixes; bare
+    /// names try roles → agents → macros. `remote:` and `mcp:` parse but
+    /// resolution is deferred (Phase 20 / future epic).
+    pub fn classify_entity(&self, input: &str) -> Result<EntityRef> {
+        let address = RoleAddress::parse(input)?;
+        let role_names: HashSet<String> = Self::list_roles(true).into_iter().collect();
+        let agent_names: HashSet<String> = list_agents().into_iter().collect();
+        let macro_names: HashSet<String> = Self::list_macros().into_iter().collect();
+        classify_address(
+            &address,
+            |n| role_names.contains(n),
+            |n| agent_names.contains(n),
+            |n| macro_names.contains(n),
+        )
+    }
+
+    /// Phase 19A/19B: resolve an address. Currently identical to
+    /// `classify_entity`; Phase 20 will dispatch `remote:` addresses to a
+    /// `RemoteRoleResolver` here.
+    pub fn resolve_entity(&self, input: &str) -> Result<EntityRef> {
+        self.classify_entity(input)
+    }
+
     pub fn retrieve_role(&self, name: &str) -> Result<Role> {
         let mut role = Role::resolve(name)?;
-        // Apply role variables before model interpolation
-        if !role.variables().is_empty() {
+        // Apply role input slots before model interpolation. Phase 33 unified the
+        // legacy `variables:` block and `input_schema:` defaults into one slot
+        // map, so a role with either channel resolves here.
+        if !role.variables().is_empty() || role.input_schema().is_some() {
             let resolved = self.resolve_role_variables(&role)?;
             role.apply_variables(&resolved);
+            // Phase 33C: a `source: stdin` slot becomes the embedded-input
+            // placeholder, so the message text splices into `{{body}}`.
+            role.route_stdin_slot();
         }
 
-        // Phase 6C: Auto-bind MCP server tools to the role's use_tools
+        // Phase 6C: Auto-bind MCP server tools to the role's use_tools.
+        // Phase 19D extracted this into `resolver::expand_mcp_servers_into_use_tools`
+        // so agents can reuse the exact same expansion semantics.
         if !role.role_mcp_servers().is_empty() {
-            let mcp_prefixes: Vec<String> = role
-                .role_mcp_servers()
-                .iter()
-                .filter(|s| self.mcp_servers.contains_key(s.as_str()))
-                .map(|s| format!("{s}:*"))
-                .collect();
-            if !mcp_prefixes.is_empty() {
-                let existing = role.use_tools().unwrap_or_default().to_string();
-                let combined = if existing.is_empty() {
-                    mcp_prefixes.join(",")
-                } else {
-                    format!("{},{}", existing, mcp_prefixes.join(","))
-                };
-                role.set_use_tools(Some(combined));
-            }
-            // Warn about unknown MCP server names
-            for s in role.role_mcp_servers() {
-                if !self.mcp_servers.contains_key(s.as_str()) {
-                    warn!(
-                        "Role '{}' references unknown mcp_server '{}' — not in global config",
-                        name, s
-                    );
-                }
-            }
+            let available: HashSet<&str> = self.mcp_servers.keys().map(|s| s.as_str()).collect();
+            let mcp_servers = role.role_mcp_servers().to_vec();
+            let current = role.use_tools();
+            let new_use_tools = resolver::expand_mcp_servers_into_use_tools(
+                "Role",
+                name,
+                &mcp_servers,
+                current.as_deref(),
+                &available,
+            );
+            role.set_use_tools(new_use_tools);
         }
 
         let current_model = self.current_model().clone();
@@ -1258,35 +1455,24 @@ impl Config {
         Ok(role)
     }
 
+    /// Phase 33: resolve a role's input slots from both declared channels
+    /// (`variables:` + `input_schema:` defaults) into one rendered map. The
+    /// merge/precedence/rendering logic lives in [`role::resolve_slots`]; this
+    /// wrapper supplies the CLI `-v` overrides and emits the Phase 33E nudge
+    /// when a role declares both channels at once.
     fn resolve_role_variables(&self, role: &Role) -> Result<IndexMap<String, String>> {
-        let mut output = IndexMap::new();
-        for var in role.variables() {
-            // CLI -v flag takes precedence over defaults (including shell defaults)
-            let value = self
-                .role_variables
-                .as_ref()
-                .and_then(|vars| vars.get(&var.name))
-                .cloned()
-                .or_else(|| {
-                    // Phase 6A: Resolve default, which may be a shell command
-                    var.default.as_ref().and_then(|d| match d.resolve() {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            warn!("Shell variable '{}' failed: {e}", var.name);
-                            None
-                        }
-                    })
-                })
-                .ok_or_else(|| {
-                    anyhow!(
-                        "Role variable '{}' is required but not provided (use -v {}=VALUE)",
-                        var.name,
-                        var.name
-                    )
-                })?;
-            output.insert(var.name.clone(), value);
+        if role.input_schema().is_some() && !role.variables().is_empty() {
+            warn!(
+                "role declares both `variables:` and `input_schema:`. The `variables:` \
+                 block is preserved as sugar; declare new slots in `input_schema:` \
+                 directly. See docs/features/typed-input.md."
+            );
         }
-        Ok(output)
+        self::role::resolve_slots(
+            role.variables(),
+            role.input_schema(),
+            self.role_variables.as_ref(),
+        )
     }
 
     pub fn new_role(&mut self, name: &str) -> Result<()> {
@@ -1386,6 +1572,43 @@ impl Config {
         let mut roles: Vec<_> = roles.into_values().collect();
         roles.sort_unstable_by(|a, b| a.name().cmp(b.name()));
         roles
+    }
+
+    /// Phase 14C: discover roles whose `capabilities:` field contains a
+    /// substring match for the given query. Case-insensitive. Returns a
+    /// snapshot — caller owns the cloned roles.
+    pub fn find_roles_by_capability(capability: &str) -> Vec<Role> {
+        let needle = capability.to_lowercase();
+        let mut hits: Vec<Role> = Self::all_roles()
+            .into_iter()
+            .filter(|r| {
+                r.capabilities()
+                    .iter()
+                    .any(|c| c.to_lowercase().contains(&needle))
+            })
+            .collect();
+        hits.sort_unstable_by(|a, b| a.name().cmp(b.name()));
+        hits
+    }
+
+    /// Phase 14C: discover roles whose input/output port signatures match the
+    /// given type filters. `None` for either filter means "no constraint".
+    /// Both filters are AND'd. Match semantics follow `Role::port_accepts` /
+    /// `Role::port_produces` (see Phase 14B).
+    pub fn find_roles_by_port(
+        input_type: Option<&str>,
+        output_type: Option<&str>,
+    ) -> Vec<Role> {
+        let mut hits: Vec<Role> = Self::all_roles()
+            .into_iter()
+            .filter(|r| {
+                let input_ok = input_type.is_none_or(|t| r.port_accepts(t));
+                let output_ok = output_type.is_none_or(|t| r.port_produces(t));
+                input_ok && output_ok
+            })
+            .collect();
+        hits.sort_unstable_by(|a, b| a.name().cmp(b.name()));
+        hits
     }
 
     pub fn list_roles(with_builtin: bool) -> Vec<String> {
@@ -2991,6 +3214,25 @@ impl Config {
         if let Some(v) = read_env_value::<String>(&get_env_name("serve_addr")) {
             self.serve_addr = v;
         }
+        if let Some(v) = read_env_value::<String>(&get_env_name("serve_api_key")) {
+            self.serve_api_key = v;
+        }
+        if let Some(Some(v)) = read_env_bool(&get_env_name("serve_cors_allow_all")) {
+            self.serve_cors_allow_all = v;
+        }
+        if let Ok(raw) = env::var(get_env_name("serve_cors_origins")) {
+            // Comma-separated list, e.g. AICHAT_SERVE_CORS_ORIGINS="http://a,http://b".
+            let origins: Vec<String> = raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            self.serve_cors_origins = if origins.is_empty() {
+                None
+            } else {
+                Some(origins)
+            };
+        }
         if let Some(v) = read_env_value::<String>(&get_env_name("user_agent")) {
             self.user_agent = v;
         }
@@ -3112,10 +3354,22 @@ pub async fn macro_execute(
     config.discontinuous_last_message();
     let config = Arc::new(RwLock::new(config));
     config.write().macro_flag = true;
+    let mut prev_output = String::new();
     for step in &macro_value.steps {
-        let command = Macro::interpolate_command(step, &variables);
+        let mut command = Macro::interpolate_command(step, &variables);
+        // Phase 28C: substitute `%%` with the previous step's AI output for
+        // inline use in plain-text prompts. Skip dot commands so existing
+        // path-style usages like `.file %%` keep their REPL-level meaning.
+        if !prev_output.is_empty() && !command.trim_start().starts_with('.') {
+            command = command.replace("%%", &prev_output);
+        }
         println!(">> {}", multiline_text(&command));
         run_repl_command(&config, abort_signal.clone(), &command).await?;
+        if let Some(last_message) = config.read().last_message.as_ref() {
+            if !last_message.output.is_empty() {
+                prev_output = last_message.output.clone();
+            }
+        }
     }
     Ok(())
 }
@@ -3397,6 +3651,89 @@ fn validate_pipe_to_command(cmd: &str) -> Result<()> {
     which::which(binary)
         .map_err(|_| anyhow!("Command not found: '{binary}'"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- Phase 20C: RemoteConfig ----
+
+    #[test]
+    fn remote_config_parses_endpoint_and_api_key() {
+        let yaml = "endpoint: http://example.internal:8080\napi_key: secret\n";
+        let cfg: RemoteConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.endpoint, "http://example.internal:8080");
+        assert_eq!(cfg.api_key.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn remote_config_api_key_is_optional() {
+        let yaml = "endpoint: http://example.internal:8080\n";
+        let cfg: RemoteConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(cfg.api_key.is_none());
+        assert!(cfg.resolved_api_key().is_none());
+    }
+
+    #[test]
+    fn remote_config_resolves_env_var_in_api_key() {
+        // Use a fresh var name so we don't fight with other tests.
+        std::env::set_var("AICHAT_TEST_REMOTE_TOKEN_20C", "from-env-789");
+        let yaml = "endpoint: http://x\napi_key: ${AICHAT_TEST_REMOTE_TOKEN_20C}\n";
+        let cfg: RemoteConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.resolved_api_key().as_deref(), Some("from-env-789"));
+        std::env::remove_var("AICHAT_TEST_REMOTE_TOKEN_20C");
+    }
+
+    #[test]
+    fn remote_config_unset_env_var_resolves_to_none() {
+        // Variable deliberately not set.
+        std::env::remove_var("AICHAT_TEST_REMOTE_TOKEN_MISSING");
+        let cfg = RemoteConfig {
+            endpoint: "http://x".into(),
+            api_key: Some("${AICHAT_TEST_REMOTE_TOKEN_MISSING}".into()),
+        };
+        assert!(cfg.resolved_api_key().is_none());
+    }
+
+    #[test]
+    fn remote_config_base_url_strips_trailing_slash() {
+        let cfg = RemoteConfig {
+            endpoint: "http://example.com/".into(),
+            api_key: None,
+        };
+        assert_eq!(cfg.base_url(), "http://example.com");
+        let cfg2 = RemoteConfig {
+            endpoint: "http://example.com".into(),
+            api_key: None,
+        };
+        assert_eq!(cfg2.base_url(), "http://example.com");
+    }
+
+    #[test]
+    fn config_parses_remotes_section() {
+        let yaml = r#"
+remotes:
+  staging:
+    endpoint: http://staging.internal:8080
+    api_key: ${STAGING_KEY}
+  security:
+    endpoint: http://sec.internal:8080
+"#;
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.remotes.len(), 2);
+        let staging = cfg.remotes.get("staging").unwrap();
+        assert_eq!(staging.endpoint, "http://staging.internal:8080");
+        assert_eq!(staging.api_key.as_deref(), Some("${STAGING_KEY}"));
+        let security = cfg.remotes.get("security").unwrap();
+        assert!(security.api_key.is_none());
+    }
+
+    #[test]
+    fn config_remotes_default_empty() {
+        let cfg = Config::default();
+        assert!(cfg.remotes.is_empty());
+    }
 }
 
 

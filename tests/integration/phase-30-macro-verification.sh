@@ -3,6 +3,8 @@
 # Integration tests for Phase 30: Macro Compilation & Feedback Loop
 # Verifies that client registration and listing still work correctly after macro refactor.
 
+AICHAT_BIN="${AICHAT_BIN:-./target/debug/aichat}"
+
 setup() {
     export AICHAT_CONFIG_DIR=$(mktemp -d)
     # Create a dummy config
@@ -19,7 +21,7 @@ teardown() {
 }
 
 @test "phase-30: aichat --info lists config correctly" {
-    run ./target/debug/aichat --info
+    run "$AICHAT_BIN" --info
     [ "$status" -eq 0 ]
     [[ "$output" =~ "model" ]]
     [[ "$output" =~ "config_file" ]]
@@ -27,7 +29,7 @@ teardown() {
 
 @test "phase-30: aichat --list-models lists some models" {
     # Check if we can list models (verifies macro-generated list_models and registry)
-    run ./target/debug/aichat --list-models
+    run "$AICHAT_BIN" --list-models
     [ "$status" -eq 0 ]
     [ -n "$output" ]
 }

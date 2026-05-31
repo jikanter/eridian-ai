@@ -17,6 +17,22 @@ const PATH_SEP: &str = ";";
 #[cfg(not(windows))]
 const PATH_SEP: &str = ":";
 
+/// Returns true if `tool_name` resolves to an MCP-sourced tool with a live
+/// connection pool. Shared between `eval_tool_calls` (batch path) and
+/// `ToolCall::eval` (single-call path used by `aichat --mcp`).
+pub fn is_mcp_call(config: &GlobalConfig, tool_name: &str) -> bool {
+    if !tool_name.contains(':') {
+        return false;
+    }
+    let cfg = config.read();
+    cfg.mcp_pool.is_some()
+        && cfg
+            .functions
+            .find(tool_name)
+            .map(|d| matches!(d.source, ToolSource::Mcp { .. }))
+            .unwrap_or(false)
+}
+
 pub async fn eval_tool_calls(config: &GlobalConfig, mut calls: Vec<ToolCall>) -> Result<Vec<ToolResult>> {
     if calls.is_empty() {
         return Ok(vec![]);
@@ -26,19 +42,13 @@ pub async fn eval_tool_calls(config: &GlobalConfig, mut calls: Vec<ToolCall>) ->
         bail!("The request was aborted because an infinite loop of function calls was detected.")
     }
 
-    // Phase 8B: Determine MCP status for each call before concurrent execution
+    // Phase 8B: Determine MCP status for each call before concurrent execution.
+    // Phase 31A: routing predicate moved to `is_mcp_call` so the single-call
+    // path (`ToolCall::eval`) shares the same logic.
     let call_infos: Vec<(ToolCall, bool)> = calls
         .into_iter()
         .map(|call| {
-            let is_mcp = call.name.contains(':') && {
-                let cfg = config.read();
-                cfg.mcp_pool.is_some()
-                    && cfg
-                        .functions
-                        .find(&call.name)
-                        .map(|d| matches!(d.source, ToolSource::Mcp { .. }))
-                        .unwrap_or(false)
-            };
+            let is_mcp = is_mcp_call(config, &call.name);
             (call, is_mcp)
         })
         .collect();
@@ -345,6 +355,20 @@ impl ToolCall {
             return self.eval_search_knowledge(config);
         }
 
+        // Phase 31A: route MCP-sourced tools through the connection pool.
+        // Without this branch the `aichat --mcp` server (which dispatches via
+        // this single-call path) falls through to the llm-functions binary
+        // lookup and fails with "binary not found" for any namespaced call
+        // like `git:git_status`. Mirrors `eval_tool_calls`/`eval_single_tool`.
+        if is_mcp_call(config, &self.name) {
+            return crate::mcp_client::eval_mcp_tool(
+                config,
+                &self.name,
+                self.arguments.clone(),
+            )
+            .await;
+        }
+
         // Phase 2A: Handle pipeline-role tool calls
         if let Some(pipeline_stages) = self.check_pipeline_role(config) {
             return self.eval_pipeline_role(config, &pipeline_stages).await;
@@ -388,7 +412,7 @@ impl ToolCall {
     fn check_pipeline_role(
         &self,
         config: &GlobalConfig,
-    ) -> Option<Vec<crate::config::RolePipelineStage>> {
+    ) -> Option<Vec<crate::config::PipelineNode>> {
         // Don't check if it's already a known function
         if config.read().functions.contains(&self.name) {
             return None;
@@ -406,7 +430,7 @@ impl ToolCall {
     async fn eval_pipeline_role(
         &self,
         config: &GlobalConfig,
-        stages: &[crate::config::RolePipelineStage],
+        nodes: &[crate::config::PipelineNode],
     ) -> Result<Value> {
         let input_text = self
             .arguments
@@ -423,8 +447,16 @@ impl ToolCall {
             println!("{}", dimmed_text(&format!("Call pipeline {}", self.name)));
         }
 
+        // Phase 21D: detect self-references and transitive pipeline cycles
+        // before triggering the (potentially expensive) tool dispatch.
+        crate::config::preflight::validate_pipeline_dag_cycles(
+            &config.read(),
+            &self.name,
+            nodes,
+        )?;
+
         let result =
-            crate::pipe::run_pipeline_role(config, stages, &input_text).await?;
+            crate::pipe::run_pipeline_role(config, nodes, &input_text).await?;
 
         Ok(json!({"output": result}))
     }

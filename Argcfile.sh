@@ -68,6 +68,7 @@ test-clients() {
 
 # @cmd Test proxy server
 # @option -m --model[?`_choice_model`]
+# @option -a --api-base=http://localhost:8000/v1 <STRING>
 # @flag -S --no-stream
 # @arg text~
 test-server() {
@@ -76,7 +77,7 @@ test-server() {
         args+=("-S")
     fi
     argc chat-llm "${args[@]}" \
-    --api-base http://localhost:8000/v1 \
+    --api-base "${argc_api_base}" \
     --model "${argc_model:-default}" \
     "$@"
 }
@@ -325,6 +326,7 @@ _argc_before() {
         qianwen,qwen-turbo-latest,https://dashscope.aliyuncs.com/compatible-mode/v1 \
         xai,grok-beta,https://api.x.ai/v1 \
         zhipuai,glm-4-0520,https://open.bigmodel.cn/api/paas/v4 \
+        ollama,gemma4:e4b,https://localhost:8001/v1 \
     )
 
     stream="true"
@@ -372,7 +374,7 @@ _choice_provider() {
 }
 
 _choice_client() {
-    printf "%s\n" gemini claude cohere azure-openai vertexai bedrock
+    printf "%s\n" gemini claude cohere azure-openai vertexai bedrock ollama
 }
 
 _choice_openai_compatible_provider() {
@@ -459,6 +461,7 @@ _die() {
 # @arg files+
 brief-format() {
     local exit_code=0
+
     for file in "${argc_files[@]}"; do
         if [[ ! -f "$file" ]]; then
             echo "error: file not found: $file"
@@ -479,6 +482,35 @@ brief-format() {
     done
     return $exit_code
 }
+
+# @cmd install a development build with cargo
+dev-install() { 
+    cargo install --path=.
+}
+
+# @cmd chat the the pi harness is installed
+check-pi() { 
+    exit_code=0
+    pi=$(type -p pi)
+    if [[ -z "$pi" ]]; then 
+        printf "%s\n" "pi harness not installed"
+        exit_code=1
+    fi
+    return $exit_code
+}
+
+# @cmd check that brief tool is installed
+check-brief() { 
+    exit_code=0
+    brief=$(type -p brief)
+    if [[ -z "$brief" ]]; then 
+        printf "%s\n" "brief tool is not installed, get it from https://github.com/jikanter/brief"
+        exit_code=1
+    fi
+    return $exit_code
+}
+
+
 
 # See more details at https://github.com/sigoden/argc
 eval "$(argc --argc-eval "$0" "$@")"

@@ -1,11 +1,13 @@
 mod cache;
 mod cli;
 mod client;
+mod compare;
 mod config;
 mod context_budget;
 mod function;
 mod knowledge;
 mod mcp;
+mod memory;
 mod mcp_client;
 mod pipe;
 mod rag;
@@ -32,7 +34,7 @@ use crate::render::render_error;
 use crate::repl::Repl;
 use crate::utils::*;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use inquire::Text;
 use parking_lot::RwLock;
@@ -43,8 +45,37 @@ use std::{env, process, sync::Arc};
 async fn main() -> Result<()> {
     load_env_file()?;
     let cli = Cli::parse();
-    // MCP mode uses stdin as transport — don't consume it here
-    let text = if cli.mcp { None } else { cli.text()? };
+
+    // Phase 31E: validate a portable mcp.json declarations file. Runs before
+    // any aichat config load so a broken config.yaml doesn't mask validation
+    // results. Exits with the right code from inside the helper.
+    if let Some(ref path_arg) = cli.validate_mcp_config {
+        let exit = mcp_client::run_validate_mcp_config(
+            path_arg.as_deref(),
+            cli.output_format,
+        );
+        process::exit(exit);
+    }
+
+    // Phase 3: one-shot session conversion. Like --validate-mcp-config it
+    // short-circuits before the full config init so a broken config.yaml
+    // can't mask the conversion path. We load the session through a
+    // minimal Config (no models, no agents) since we only need the YAML
+    // schema to deserialize, not the runtime model.
+    if let Some(ref src) = cli.convert_session {
+        let exit = run_convert_session(
+            src,
+            &cli.convert_to,
+            cli.convert_out.as_deref(),
+        );
+        process::exit(exit);
+    }
+
+    // MCP mode uses stdin as transport — don't consume it here. The memory
+    // write/reflect subcommands (Phase 34C/D) likewise own stdin: the curator
+    // reads accept/skip decisions and the Reflector reads a transcript from it.
+    let owns_stdin = cli.mcp || cli.memory_reflect || cli.memory_curate;
+    let text = if owns_stdin { None } else { cli.text()? };
     let working_mode = if cli.mcp {
         WorkingMode::Mcp
     } else if cli.serve.is_some() {
@@ -60,12 +91,17 @@ async fn main() -> Result<()> {
         || cli.sync_models
         || cli.list_models
         || cli.list_roles
+        || cli.find_role
         || cli.list_prompts
         || cli.list_agents
         || cli.list_rags
         || cli.list_macros
         || cli.list_sessions
         || cli.list_tools
+        // Phase 13A/D: --fork-role writes a file and exits; --explain-role
+        // reads role frontmatter and exits. Neither needs an LLM client.
+        || !cli.fork_role.is_empty()
+        || cli.explain_role.is_some()
         // Phase 25E/26E: read-only knowledge ops don't need heavy config setup.
         || cli.knowledge_list
         || cli.knowledge_stat.is_some()
@@ -74,7 +110,12 @@ async fn main() -> Result<()> {
         // Phase 27B: reflect prints a candidate set and exits; curate mutates
         // a KB but still short-circuits the interactive path.
         || cli.knowledge_reflect.is_some()
-        || cli.knowledge_curate.is_some();
+        || cli.knowledge_curate.is_some()
+        // Phase 34B/C/D: memory load/reflect/curate short-circuit and exit;
+        // they need no heavy client setup (mirrors the knowledge ops above).
+        || cli.memory_load.is_some()
+        || cli.memory_reflect
+        || cli.memory_curate;
     setup_logger(working_mode.is_serve() || working_mode.is_mcp())?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
     let output_format = cli.output_format;
@@ -86,13 +127,145 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()> {
+/// Apply CLI/env runtime flags onto the shared config. Must run before any
+/// execution short-circuit (notably `--pipe`) so every path observes
+/// `--dry-run`, `--trace`, `--cost`, `--no-cache`, and `--knowledge`.
+fn apply_runtime_flags(config: &GlobalConfig, cli: &Cli) {
+    if cli.no_cache {
+        config.write().no_cache = true;
+    }
+    // Phase 26D: CLI `--knowledge` bindings merge with role-declared ones at
+    // retrieval time. Captured here so pipeline stages see them too.
+    if !cli.knowledge.is_empty() {
+        config.write().cli_knowledge_bindings = cli.knowledge.clone();
+    }
+    if cli.dry_run {
+        config.write().dry_run = true;
+    }
+    // Phase 34C: opt-in session-exit Reflector trigger. Also honour the env var
+    // AICHAT_MEMORY_REFLECT_ON_EXIT so it can be set without a CLI flag.
+    let env_reflect_on_exit = std::env::var(get_env_name("memory_reflect_on_exit"))
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    if cli.memory_reflect_on_exit || env_reflect_on_exit {
+        config.write().memory_reflect_on_exit = true;
+    }
+    if cli.cost {
+        config.write().show_cost = true;
+    }
+    // Run log from env var AICHAT_RUN_LOG
+    if let Ok(log_path) = std::env::var(get_env_name("run_log")) {
+        config.write().run_log = Some(log_path);
+    }
+    // Phase 23D: per-role invocation ledger directory from AICHAT_ROLE_LEDGER
+    if let Ok(dir) = std::env::var(get_env_name("role_ledger")) {
+        config.write().role_ledger_dir = Some(dir);
+    }
+    // Trace config from --trace flag or AICHAT_TRACE env var
+    let env_trace = std::env::var(get_env_name("trace"))
+        .map(|v| v == "1" || v == "true")
+        .unwrap_or(false);
+    if cli.trace || env_trace {
+        let trace_file = std::env::var(get_env_name("trace_file"))
+            .ok()
+            .map(std::path::PathBuf::from);
+        let jsonl_trace = env_trace || trace_file.is_some();
+        config.write().trace_config = Some(crate::utils::trace::TraceConfig {
+            human_trace: cli.trace,
+            jsonl_trace,
+            jsonl_file: trace_file,
+            truncate_at: 500,
+        });
+    }
+}
+
+async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result<()> {
     if cli.mcp {
         return mcp::run(config).await;
     }
 
     if let Some(ref server_cmd) = cli.mcp_server {
         return mcp_client::run_mcp_client_command(&cli, server_cmd).await;
+    }
+
+    // Phase 15C: `--check` validates a role/pipeline definition without
+    // executing it. Like the other read-only short-circuits it owns its own
+    // exit code (0 valid, 3 invalid, 2 usage) and prints its own report.
+    if cli.check {
+        let code = pipe::run_check(&config, &cli).await?;
+        process::exit(code);
+    }
+
+    // Phase 19B: unified `-r` resolution. If the name given to `-r` resolves
+    // to an agent or macro instead of a role (or carries an `agent:` /
+    // `macro:` prefix), reroute to the matching dispatch slot. `-a` and
+    // `--macro` remain authoritative — never override an explicitly-set slot.
+    if cli.role.is_some() && cli.agent.is_none() && cli.macro_name.is_none() {
+        let role_name = cli.role.clone().unwrap();
+        let has_prefix = role_name.starts_with("agent:")
+            || role_name.starts_with("macro:")
+            || role_name.starts_with("remote:")
+            || role_name.starts_with("mcp:");
+        match config.read().classify_entity(&role_name) {
+            Ok(config::EntityRef::Role(_)) => {}
+            Ok(config::EntityRef::Agent(name)) => {
+                cli.role = None;
+                cli.agent = Some(name);
+            }
+            Ok(config::EntityRef::Macro(name)) => {
+                cli.role = None;
+                cli.macro_name = Some(name);
+            }
+            Ok(config::EntityRef::Remote { target, role }) => {
+                // Phase 20A: `aichat -r remote:NAME/role "input"` — invoke a
+                // remote role directly from the CLI. We dispatch via the
+                // pipeline runner (single Remote stage) so token metrics
+                // and the X-AIChat-Cost wiring stay consistent with the
+                // pipeline path. Keep the rest of `cli` untouched so flags
+                // like `-o json` still apply on the way out.
+                let input_text = text.clone().unwrap_or_default();
+                let stages = vec![crate::pipe::InlineStage {
+                    role: format!("remote:{target}/{role}"),
+                    model: None,
+                }];
+                let result = crate::pipe::run_inline_pipeline(
+                    &config,
+                    &stages,
+                    &input_text,
+                    create_abort_signal(),
+                )
+                .await?;
+                print!("{}", result.output);
+                if !result.output.ends_with('\n') {
+                    println!();
+                }
+                return Ok(());
+            }
+            Err(e) if has_prefix => {
+                // The user's explicit prefix told us exactly what they meant;
+                // surface the precise classification error rather than letting
+                // `use_role` mask it with a generic "unknown role" message.
+                return Err(e);
+            }
+            Err(_) => {
+                // Bare name with no prefix: fall through to `use_role`, which
+                // will raise its own role-flavored error if the file isn't
+                // there. Preserves the legacy code path.
+            }
+        }
+    }
+
+    // Apply global runtime flags (dry-run, trace, cost, no-cache, knowledge)
+    // up front so every execution path — including the `--pipe` short-circuit
+    // below — observes them. They previously lived after this return, so
+    // `--pipe --dry-run` and `--pipe --trace` were silently dropped.
+    apply_runtime_flags(&config, &cli);
+
+    // Phase 23B: `--compare ROLE1 ROLE2` runs the same input through two roles
+    // and prints a side-by-side comparison (or a JSON object under `-o json`).
+    if cli.compare.len() == 2 {
+        let input_text = text.clone().unwrap_or_default();
+        return run_compare(&config, &cli.compare, &input_text, cli.output_format).await;
     }
 
     if cli.pipe {
@@ -121,30 +294,51 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         return Ok(());
     }
     if cli.list_roles {
-        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
-            let roles = Config::all_roles();
-            let json_roles: Vec<serde_json::Value> = roles
-                .iter()
-                .map(|r| {
-                    let tools_str = r.use_tools().unwrap_or_default();
-                    let tools: Vec<&str> = tools_str
-                        .split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    serde_json::json!({
-                        "name": r.name(),
-                        "description": r.description_or_derived(),
-                        "model": r.model_id().unwrap_or("default"),
-                        "tools": tools,
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string_pretty(&json_roles)?);
-        } else {
-            let roles = Config::list_roles(true).join("\n");
-            println!("{roles}");
+        // Phase 14D: an optional `--capability` filter narrows the list.
+        let roles = match cli.capability.as_deref() {
+            Some(cap) => Config::find_roles_by_capability(cap),
+            None => Config::all_roles(),
+        };
+        render_role_list(&roles, cli.verbose, cli.output_format)?;
+        return Ok(());
+    }
+    // Phase 13A: --fork-role <SOURCE> <NEW_NAME>. Creates a new role file in
+    // the user's roles directory pre-populated with `extends: <SOURCE>` and
+    // commented-out parent fields so the user can edit them in place.
+    if !cli.fork_role.is_empty() {
+        return run_fork_role(&cli.fork_role, cli.output_format);
+    }
+    // Phase 13D: --explain-role <NAME>. Prints a human-readable description
+    // of what the role does and how it composes. Pair with `-o json` for
+    // machine consumption.
+    if let Some(name) = &cli.explain_role {
+        return run_explain_role(name, cli.output_format);
+    }
+    if cli.find_role {
+        // At least one filter must be present, otherwise --find-role is just a
+        // less-friendly --list-roles.
+        if cli.capability.is_none() && cli.accepts.is_none() && cli.produces.is_none() {
+            bail!(
+                "--find-role requires at least one of --capability, --accepts, --produces"
+            );
         }
+        // Apply capability filter first (if any), then port filters on the
+        // remaining set. find_roles_by_port takes the universe via all_roles,
+        // so do capability narrowing first by filtering by name afterwards.
+        let mut roles = if let Some(cap) = cli.capability.as_deref() {
+            Config::find_roles_by_capability(cap)
+        } else {
+            Config::all_roles()
+        };
+        if cli.accepts.is_some() || cli.produces.is_some() {
+            let accepts = cli.accepts.as_deref();
+            let produces = cli.produces.as_deref();
+            roles.retain(|r| {
+                accepts.is_none_or(|t| r.port_accepts(t))
+                    && produces.is_none_or(|t| r.port_produces(t))
+            });
+        }
+        render_role_list(&roles, cli.verbose, cli.output_format)?;
         return Ok(());
     }
     if cli.list_prompts {
@@ -202,6 +396,29 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
         )
         .await;
     }
+    // Phase 34B/C/D: freeform memory write + lazy-load surface. Like the
+    // knowledge subcommands these short-circuit the interactive path.
+    if let Some(ref reference) = cli.memory_load {
+        match memory::load_topic(reference) {
+            Some((_, text)) => {
+                println!("{text}");
+                return Ok(());
+            }
+            None => bail!("memory: no topic resolves for reference '{reference}'"),
+        }
+    }
+    if cli.memory_reflect {
+        return memory::reflect::run_reflect_cli(&config, cli.memory_transcript.as_deref()).await;
+    }
+    if cli.memory_curate {
+        return memory::curate::run_curate_cli(
+            &config,
+            cli.memory_transcript.as_deref(),
+            cli.memory_candidates.as_deref(),
+            cli.memory_auto_curate,
+        )
+        .await;
+    }
 
     if cli.list_tools {
         // --list-tools without --mcp-server: list tools from config-based MCP servers
@@ -241,41 +458,6 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
             }
         }
         return Ok(());
-    }
-
-    if cli.no_cache {
-        config.write().no_cache = true;
-    }
-    // Phase 26D: CLI `--knowledge` bindings merge with role-declared ones at
-    // retrieval time. Captured here so pipeline stages see them too.
-    if !cli.knowledge.is_empty() {
-        config.write().cli_knowledge_bindings = cli.knowledge.clone();
-    }
-    if cli.dry_run {
-        config.write().dry_run = true;
-    }
-    if cli.cost {
-        config.write().show_cost = true;
-    }
-    // Run log from env var AICHAT_RUN_LOG
-    if let Ok(log_path) = std::env::var(get_env_name("run_log")) {
-        config.write().run_log = Some(log_path);
-    }
-    // Trace config from --trace flag or AICHAT_TRACE env var
-    {
-        let env_trace = std::env::var(get_env_name("trace"))
-            .map(|v| v == "1" || v == "true")
-            .unwrap_or(false);
-        if cli.trace || env_trace {
-            let trace_file = std::env::var(get_env_name("trace_file")).ok().map(std::path::PathBuf::from);
-            let jsonl_trace = env_trace || trace_file.is_some();
-            config.write().trace_config = Some(crate::utils::trace::TraceConfig {
-                human_trace: cli.trace,
-                jsonl_trace,
-                jsonl_file: trace_file,
-                truncate_at: 500,
-            });
-        }
     }
 
     if let Some(agent) = &cli.agent {
@@ -375,6 +557,11 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
                 info.insert("temperature".into(), serde_json::json!(temp));
             }
             info.insert("stream".into(), serde_json::json!(cfg.stream));
+            // Phase 34A: surface the cached memory/MEMORY.md preamble so the
+            // auto-memory read surface is observable without a model call.
+            if let Some(mem) = cfg.memory_preamble.as_ref() {
+                info.insert("memory_preamble".into(), serde_json::json!(mem));
+            }
             drop(cfg);
             println!(
                 "{}",
@@ -418,12 +605,161 @@ async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result<()>
             input.use_knowledge()?;
             start_directive(&config, input, cli.code, abort_signal).await
         }
-        true => {
+        true => launch_repl(&cli, &config).await,
+    }
+}
+
+/// Dispatch into the chosen REPL surface. The TTY check guards the
+/// built-in Reedline REPL only — pi manages its own terminal lifecycle
+/// and is happy to run with stdio piped (e.g. inside an integration test
+/// harness), so we let it through.
+async fn launch_repl(cli: &Cli, config: &GlobalConfig) -> Result<()> {
+    match choose_repl(cli) {
+        ReplChoice::Legacy => {
             if !*IS_STDOUT_TERMINAL {
                 bail!("No TTY for REPL")
             }
-            start_interactive(&config).await
+            start_interactive(config).await
         }
+        ReplChoice::Pi { strict: true } => crate::repl::pi::launch_pi(config).await,
+        ReplChoice::Pi { strict: false } => {
+            // Soft default: fall back to the legacy REPL when pi isn't
+            // installed, so the upgrade doesn't strand users without an
+            // interactive surface. Print a one-line note so the change is
+            // visible and discoverable.
+            if which::which("pi").is_err() {
+                eprintln!(
+                    "aichat: `pi` not on PATH; using the built-in REPL. Install pi at\n\
+                     https://pi.dev for the new REPL surface, or pass --legacy-repl to\n\
+                     silence this message. `--pi-repl` requires pi and will error if missing.",
+                );
+                if !*IS_STDOUT_TERMINAL {
+                    bail!("No TTY for REPL")
+                }
+                return start_interactive(config).await;
+            }
+            crate::repl::pi::launch_pi(config).await
+        }
+    }
+}
+
+/// True when the REPL invocation should hand off to the pi coding-agent
+/// harness. Driven by the `--pi-repl` flag or the `AICHAT_REPL=pi` env var;
+/// suppressed by `--legacy-repl` so users can opt back into the built-in
+/// REPL even with the env var set.
+/// Phase 3: one-shot session conversion entry point. Resolves `src` to a
+/// session file on disk, deserializes it, and writes the chosen output
+/// format to either `out_path` or stdout. Returns the process exit code.
+fn run_convert_session(src: &str, target: &str, out_path: Option<&str>) -> i32 {
+    if target != "pi" {
+        eprintln!(
+            "--convert-session: target '{target}' is not supported. Only 'pi' is recognised."
+        );
+        return 2;
+    }
+
+    // Resolve the source. A path with a separator or an existing file goes
+    // through unchanged; a bare name is looked up against the configured
+    // sessions directory (same lookup rule as Config::session_file).
+    let path = resolve_session_source(src);
+    let yaml = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to read session file '{}': {e}", path.display());
+            return 1;
+        }
+    };
+    let session: crate::config::Session = match serde_yaml::from_str(&yaml) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to parse session YAML '{}': {e}", path.display());
+            return 1;
+        }
+    };
+
+    // `cwd` recorded in the pi header. Pi uses this to group sessions by
+    // working directory; the user's current shell CWD is the right value
+    // — they ran the conversion from where they intend to resume.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    let write_result: Result<()> = match out_path {
+        Some(p) => {
+            // Buffered file writer. Pi's loader streams line-by-line so
+            // we don't need to commit atomically.
+            let f = match std::fs::File::create(p) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("Failed to create output file '{p}': {e}");
+                    return 1;
+                }
+            };
+            let mut buf = std::io::BufWriter::new(f);
+            session.export_to_pi_jsonl(&cwd, &mut buf)
+        }
+        None => {
+            let stdout = std::io::stdout();
+            let mut handle = stdout.lock();
+            session.export_to_pi_jsonl(&cwd, &mut handle)
+        }
+    };
+
+    if let Err(e) = write_result {
+        eprintln!("Conversion failed: {e}");
+        return 1;
+    }
+    0
+}
+
+/// Resolve a --convert-session argument to a real path. Mirrors the
+/// lookup rule in `Config::session_file`: an explicit path (anything with
+/// a separator, or an existing file) wins, otherwise we treat the input
+/// as a session name and join against `$AICHAT_SESSIONS_DIR` (or the
+/// platform default if unset).
+fn resolve_session_source(src: &str) -> std::path::PathBuf {
+    let as_path = std::path::PathBuf::from(src);
+    if src.contains(std::path::MAIN_SEPARATOR) || as_path.exists() {
+        return as_path;
+    }
+    if let Ok(dir) = std::env::var("AICHAT_SESSIONS_DIR") {
+        return std::path::PathBuf::from(dir).join(format!("{src}.yaml"));
+    }
+    // Fall back to the conventional location under the user's config dir.
+    // We don't try to be exhaustive here — anyone with a non-standard
+    // layout can pass the absolute path explicitly.
+    let cfg_dir = std::env::var_os("AICHAT_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::config_dir().map(|p| p.join("aichat")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    cfg_dir.join("sessions").join(format!("{src}.yaml"))
+}
+
+/// Decision for which REPL to spawn. Pi is the default after the Phase 4
+/// cutover; `--legacy-repl` and `AICHAT_REPL=legacy` keep the built-in
+/// Reedline REPL available indefinitely so the two surfaces can be tested
+/// side-by-side. `--pi-repl` / `AICHAT_REPL=pi` are still accepted but are
+/// redundant with the new default — they keep working so existing setups
+/// don't break.
+///
+/// "Strict pi" means: hard-error if pi isn't on PATH (user explicitly
+/// asked for pi). "Soft pi" means: warn and fall back to the legacy REPL
+/// if pi isn't on PATH (user just ran `aichat`).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ReplChoice {
+    Pi { strict: bool },
+    Legacy,
+}
+
+fn choose_repl(cli: &Cli) -> ReplChoice {
+    if cli.legacy_repl {
+        return ReplChoice::Legacy;
+    }
+    if cli.pi_repl {
+        return ReplChoice::Pi { strict: true };
+    }
+    match std::env::var("AICHAT_REPL").as_deref() {
+        Ok("legacy") => ReplChoice::Legacy,
+        Ok("pi") => ReplChoice::Pi { strict: true },
+        _ => ReplChoice::Pi { strict: false },
     }
 }
 
@@ -441,8 +777,13 @@ async fn start_directive(
         .clone()
         .map(crate::utils::trace::TraceEmitter::new);
 
+    // Phase 33C: a role with a `source: stdin` slot takes free-text input routed
+    // into that slot, so the raw message is not validated against the object
+    // schema (which describes the slots, not the message).
     if let Some(schema) = input.role().input_schema() {
-        validate_schema_traced("input", schema, &input.text(), trace_emitter.as_ref())?;
+        if !input.role().has_stdin_slot() {
+            validate_schema_traced("input", schema, &input.text(), trace_emitter.as_ref())?;
+        }
     }
 
     let has_output_schema = input.role().output_schema().cloned();
@@ -451,6 +792,14 @@ async fn start_directive(
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
+
+    // Phase 12A/B: emit a "terraform plan"-style preview to stderr before the
+    // assembled prompt hits stdout. Stderr keeps stdout pipeable; the preview
+    // shows extends/include, ports, capabilities, and pipeline stages so the
+    // caller sees what they're about to run with zero tokens spent.
+    if is_dry_run {
+        emit_dry_run_preview(input.role());
+    }
 
     // Phase 9C: Schema validation retry budget. Short-circuit to 0 when the
     // provider is enforcing the schema natively (Phase 9A/9B) — a retry in
@@ -525,12 +874,42 @@ async fn start_directive(
         );
     }
 
+    // Phase 23A: evaluate role output metrics. Each metric runs a shell command
+    // against the final, schema-validated output. Skipped in dry-run (no real
+    // output to score). Results flow into the trace, run log (23C), and per-role
+    // ledger (23D).
+    let metric_results = if !is_dry_run {
+        let metrics_defs = input.role().metrics();
+        if metrics_defs.is_empty() {
+            Vec::new()
+        } else {
+            let results = crate::config::evaluate_metrics(metrics_defs, &output);
+            if let Some(ref emitter) = trace_emitter {
+                emitter.emit_metrics(&results);
+            }
+            results
+        }
+    } else {
+        Vec::new()
+    };
+    let metric_records: Vec<crate::utils::ledger::MetricRecord> = metric_results
+        .iter()
+        .map(|m| crate::utils::ledger::MetricRecord {
+            name: m.name.clone(),
+            pass: m.pass,
+        })
+        .collect();
+
+    // One run_id shared by the run log and the per-role ledger for this call.
+    let run_id = uuid::Uuid::new_v4().to_string();
+
     // JSONL run log
     if let Some(ref log_path) = config.read().run_log {
         let log_path = std::path::PathBuf::from(log_path);
-        let record = serde_json::json!({
+        let mut record = serde_json::json!({
             "ts": crate::utils::now(),
-            "run_id": uuid::Uuid::new_v4().to_string(),
+            "run_id": run_id,
+            "role": input.role().name(),
             "model": metrics.model_id,
             "input_tokens": metrics.input_tokens,
             "output_tokens": metrics.output_tokens,
@@ -538,8 +917,36 @@ async fn start_directive(
             "latency_ms": metrics.latency_ms,
             "schema_retries": schema_retry_attempts,
         });
+        if !metric_results.is_empty() {
+            record["metrics"] = serde_json::json!(metric_results);
+        }
         if let Err(e) = crate::utils::ledger::append_run_log(&log_path, &record) {
             warn!("Failed to write run log: {e}");
+        }
+    }
+
+    // Phase 23D: per-role invocation-history ledger (opt-in via AICHAT_ROLE_LEDGER).
+    if let Some(ref dir) = config.read().role_ledger_dir {
+        if !is_dry_run {
+            let role_name = input.role().name().to_string();
+            let file = std::path::Path::new(dir)
+                .join(format!("{}.jsonl", crate::config::sanitize_role_name(&role_name)));
+            let record = crate::utils::ledger::role_ledger_record(
+                &run_id,
+                &role_name,
+                &metrics.model_id,
+                &input.text(),
+                &output,
+                metrics.input_tokens,
+                metrics.output_tokens,
+                metrics.cost_usd,
+                metrics.latency_ms,
+                schema_retry_attempts,
+                &metric_records,
+            );
+            if let Err(e) = crate::utils::ledger::append_run_log(&file, &record) {
+                warn!("Failed to write role ledger: {e}");
+            }
         }
     }
 
@@ -588,6 +995,75 @@ async fn start_directive(
         .after_chat_completion(&input, &output, &tool_results)?;
 
     config.write().exit_session()?;
+    Ok(())
+}
+
+/// Phase 23B: run `input_text` through both roles, score each role's metrics
+/// against its output, and render a side-by-side comparison. The rendering
+/// itself lives in `crate::compare::render_comparison` (pure + unit-tested);
+/// this driver does the two LLM invocations and metric evaluation.
+async fn run_compare(
+    config: &GlobalConfig,
+    roles: &[String],
+    input_text: &str,
+    output_format: Option<crate::cli::OutputFormat>,
+) -> Result<()> {
+    let abort_signal = create_abort_signal();
+    let mut sides: Vec<crate::compare::CompareResult> = Vec::with_capacity(2);
+    for role_name in roles.iter().take(2) {
+        let result =
+            crate::pipe::invoke_role(config, role_name, input_text, abort_signal.clone()).await?;
+        // Load the role to evaluate its declared metrics against the output.
+        let metrics = match config.read().retrieve_role(role_name) {
+            Ok(role) => crate::config::evaluate_metrics(role.metrics(), &result.output),
+            Err(_) => Vec::new(),
+        };
+        sides.push(crate::compare::CompareResult {
+            role: role_name.clone(),
+            model: result.metrics.model_id.clone(),
+            output: result.output,
+            input_tokens: result.metrics.input_tokens,
+            output_tokens: result.metrics.output_tokens,
+            cost_usd: result.metrics.cost_usd,
+            metrics,
+        });
+
+        // Phase 23D: record each compared role's invocation in the per-role ledger.
+        if let Some(ref dir) = config.read().role_ledger_dir {
+            let side = sides.last().unwrap();
+            let metric_records: Vec<crate::utils::ledger::MetricRecord> = side
+                .metrics
+                .iter()
+                .map(|m| crate::utils::ledger::MetricRecord {
+                    name: m.name.clone(),
+                    pass: m.pass,
+                })
+                .collect();
+            let file = std::path::Path::new(dir).join(format!(
+                "{}.jsonl",
+                crate::config::sanitize_role_name(role_name)
+            ));
+            let record = crate::utils::ledger::role_ledger_record(
+                &uuid::Uuid::new_v4().to_string(),
+                role_name,
+                &side.model,
+                input_text,
+                &side.output,
+                side.input_tokens,
+                side.output_tokens,
+                side.cost_usd,
+                result.metrics.latency_ms,
+                0,
+                &metric_records,
+            );
+            if let Err(e) = crate::utils::ledger::append_run_log(&file, &record) {
+                warn!("Failed to write role ledger: {e}");
+            }
+        }
+    }
+    let json = matches!(output_format, Some(crate::cli::OutputFormat::Json));
+    let rendered = crate::compare::render_comparison(&sides[0], &sides[1], json);
+    println!("{rendered}");
     Ok(())
 }
 
@@ -832,6 +1308,252 @@ async fn process_one_record(
     };
 
     Ok(output)
+}
+
+/// Phase 12A/B: emit a one-shot resolved-role preview to stderr. Skipped for
+/// the implicit `%%` temp role used by `--prompt`/raw input — there's nothing
+/// useful to preview when the user didn't pick a role. The preview is the
+/// "what will this run with?" answer at zero token cost.
+fn emit_dry_run_preview(role: &config::Role) {
+    // The temp role created by `--prompt` (or bare `aichat "text"`) is named
+    // `%%` and carries no metadata worth previewing — keep stderr clean.
+    if role.name() == "%%" || role.name().is_empty() {
+        return;
+    }
+
+    eprintln!("--- Resolved Role: {} ---", role.name());
+    if let Some(parent) = role.extends() {
+        eprintln!("  extends: {parent}");
+    }
+    if !role.include().is_empty() {
+        eprintln!("  includes: [{}]", role.include().join(", "));
+    }
+    if let Some(model) = role.model_id() {
+        eprintln!("  model: {model}");
+    }
+    let tools_str = role.use_tools().unwrap_or_default();
+    let tools: Vec<&str> = tools_str
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !tools.is_empty() {
+        eprintln!("  tools: {} ({})", tools.len(), tools.join(", "));
+    }
+    eprintln!("  in: {}  out: {}", role.port_input_summary(), role.port_output_summary());
+    if !role.capabilities().is_empty() {
+        eprintln!("  capabilities: [{}]", role.capabilities().join(", "));
+    }
+    if let Some(nodes) = role.pipeline() {
+        if !nodes.is_empty() {
+            eprintln!("--- Pipeline ---");
+            for (i, node) in nodes.iter().enumerate() {
+                render_pipeline_node(node, i + 1, 0);
+            }
+        }
+    }
+    eprintln!("--- Assembled Prompt ---");
+}
+
+/// Phase 21: render a pipeline node tree to stderr with indented children.
+fn render_pipeline_node(node: &config::PipelineNode, index: usize, depth: usize) {
+    let indent = "  ".repeat(depth + 1);
+    match node {
+        config::PipelineNode::Stage(s) => {
+            let model = s.model.as_deref().unwrap_or("(default model)");
+            eprintln!("{indent}{index}. {} ({model})", s.role);
+        }
+        config::PipelineNode::Parallel(p) => {
+            let merge = match &p.merge {
+                config::MergeStrategy::Concatenate => "concatenate".to_string(),
+                config::MergeStrategy::JsonArray => "json_array".to_string(),
+                config::MergeStrategy::CustomRole(r) => format!("custom_role: {r}"),
+            };
+            eprintln!(
+                "{indent}{index}. parallel ({} branches, merge: {merge})",
+                p.branches.len()
+            );
+            for (bi, b) in p.branches.iter().enumerate() {
+                render_pipeline_node(b, bi + 1, depth + 1);
+            }
+        }
+        config::PipelineNode::Switch(s) => {
+            eprintln!("{indent}{index}. switch ({} branches)", s.branches.len());
+            for (bi, b) in s.branches.iter().enumerate() {
+                let kind = match &b.predicate {
+                    Some(_) => "when",
+                    None => "otherwise",
+                };
+                eprintln!("{indent}  {}. ({kind})", bi + 1);
+                render_pipeline_node(&b.node, bi + 1, depth + 2);
+            }
+        }
+    }
+}
+
+/// Phase 12C / 14D: render a role list with optional verbose details
+/// (port signatures, capabilities, tools count, extends). Honors `-o json`
+/// for machine consumption. Always emits one role per line in text mode so
+/// it stays grep-friendly.
+fn render_role_list(
+    roles: &[config::Role],
+    verbose: bool,
+    output_format: Option<crate::cli::OutputFormat>,
+) -> Result<()> {
+    if matches!(output_format, Some(crate::cli::OutputFormat::Json)) {
+        let json: Vec<serde_json::Value> = roles
+            .iter()
+            .map(|r| {
+                let tools_str = r.use_tools().unwrap_or_default();
+                let tools: Vec<&str> = tools_str
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if verbose {
+                    serde_json::json!({
+                        "name": r.name(),
+                        "description": r.description_or_derived(),
+                        "model": r.model_id().unwrap_or("default"),
+                        "tools": tools,
+                        "capabilities": r.capabilities(),
+                        "input": r.port_input_summary(),
+                        "output": r.port_output_summary(),
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": r.name(),
+                        "description": r.description_or_derived(),
+                        "model": r.model_id().unwrap_or("default"),
+                        "tools": tools,
+                    })
+                }
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json)?);
+        return Ok(());
+    }
+
+    if !verbose {
+        for r in roles {
+            println!("{}", r.name());
+        }
+        return Ok(());
+    }
+
+    // Verbose text rendering: align name into a left column, then port
+    // signatures and capability tags. Width adapts to the longest name in the
+    // current set so a small `--find-role` result stays compact.
+    let name_width = roles.iter().map(|r| r.name().len()).max().unwrap_or(0).max(8);
+    for r in roles {
+        let tools_count = r
+            .use_tools()
+            .as_deref()
+            .map(|s| s.split(',').filter(|t| !t.trim().is_empty()).count())
+            .unwrap_or(0);
+        let mut parts = vec![format!(
+            "in: {}  out: {}",
+            r.port_input_summary(),
+            r.port_output_summary()
+        )];
+        if tools_count > 0 {
+            parts.push(format!("{} tool{}", tools_count, if tools_count == 1 { "" } else { "s" }));
+        }
+        if !r.capabilities().is_empty() {
+            parts.push(format!("capabilities: [{}]", r.capabilities().join(", ")));
+        }
+        if r.is_pipeline() {
+            let n = r.pipeline().map(|p| p.len()).unwrap_or(0);
+            let label = if r.pipeline_has_dag() { "node" } else { "stage" };
+            parts.push(format!("pipeline: {n} {label}{}", if n == 1 { "" } else { "s" }));
+        }
+        println!("  {:<width$}  {}", r.name(), parts.join("  "), width = name_width);
+    }
+    Ok(())
+}
+
+/// Phase 13A: create a new role file that inherits from `SOURCE`.
+///
+/// The new file ships with `extends: SOURCE` plus a hint comment per
+/// field the parent declares (model, temperature, top_p, use_tools,
+/// input_schema, output_schema). The user uncomments the line they want
+/// to override — a 5-minute editing task collapses to a 5-second command,
+/// and the user picks up that `extends:` exists on the way.
+fn run_fork_role(args: &[String], output_format: Option<crate::cli::OutputFormat>) -> Result<()> {
+    if args.len() != 2 {
+        bail!("--fork-role takes exactly two values: <SOURCE> <NEW_NAME>");
+    }
+    let source = &args[0];
+    let new_name = &args[1];
+
+    if new_name.trim().is_empty() {
+        bail!("--fork-role: new name must not be empty");
+    }
+    // Same constraints `Config::role_file` would otherwise paper over —
+    // refuse path traversal so the new file always lands in `roles_dir`.
+    if new_name.contains('/') || new_name.contains('\\') || new_name.starts_with('.') {
+        bail!(
+            "--fork-role: invalid new role name '{new_name}' — must be a bare role name with no path separators or leading dot"
+        );
+    }
+
+    // Resolve the source to validate it. If this fails the user gets a
+    // helpful "unknown role" error before any file is created.
+    let _resolved = config::Role::resolve(source)
+        .with_context(|| format!("--fork-role: source role '{source}' could not be resolved"))?;
+
+    let target_path = config::Config::role_file(new_name);
+    if target_path.exists() {
+        bail!(
+            "--fork-role: target file {} already exists — pick a different NEW_NAME or remove the existing file",
+            target_path.display()
+        );
+    }
+    if let Some(parent_dir) = target_path.parent() {
+        std::fs::create_dir_all(parent_dir).with_context(|| {
+            format!("--fork-role: failed to create roles directory {}", parent_dir.display())
+        })?;
+    }
+
+    let parent_metadata = config::read_role_raw_metadata(source)
+        .with_context(|| format!("--fork-role: failed to read parent metadata for '{source}'"))?;
+    let body = config::render_forked_role(source, &parent_metadata);
+    std::fs::write(&target_path, &body)
+        .with_context(|| format!("--fork-role: failed to write {}", target_path.display()))?;
+
+    match output_format {
+        Some(crate::cli::OutputFormat::Json) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "source": source,
+                    "new_name": new_name,
+                    "path": target_path.display().to_string(),
+                }))?
+            );
+        }
+        _ => {
+            println!("Created {}", target_path.display());
+            println!("  extends: {source}");
+            println!("  Uncomment the fields you want to override, then edit the prompt body.");
+        }
+    }
+    Ok(())
+}
+
+/// Phase 13D: print a human-readable explanation of a role's composition.
+fn run_explain_role(name: &str, output_format: Option<crate::cli::OutputFormat>) -> Result<()> {
+    let exp = config::build_role_explanation(name)
+        .with_context(|| format!("--explain-role: failed to resolve role '{name}'"))?;
+    match output_format {
+        Some(crate::cli::OutputFormat::Json) => {
+            println!("{}", serde_json::to_string_pretty(&exp)?);
+        }
+        _ => {
+            print!("{}", config::format_role_explanation(&exp));
+        }
+    }
+    Ok(())
 }
 
 fn setup_logger(is_serve: bool) -> Result<()> {

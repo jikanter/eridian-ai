@@ -17,11 +17,13 @@ cargo test -- config::role::tests::test_dehoist 2>&1 | grep -E "(running|test |t
 
 ```output
 running 0 tests
+running 0 tests
 running 2 tests
 test config::role::tests::test_dehoist_input_placeholder_auto_tail ... ok
 test config::role::tests::test_dehoist_input_placeholder_child_wins ... ok
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in 0.00s
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 142 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 197 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 405 filtered out; finished in 0.00s
 ```
 
 ```bash
@@ -34,7 +36,7 @@ test dehoist_input::test_dehoist_auto_tail ... ok
 test dehoist_input::test_dehoist_child_wins ... ok
 test dehoist_input::test_dehoist_neither_has_input ... ok
 test dehoist_input::test_dehoist_only_child_has_input ... ok
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 169 filtered out; finished in 0.00s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 193 filtered out; finished in 0.00s
 ```
 
 ## Integration Tests

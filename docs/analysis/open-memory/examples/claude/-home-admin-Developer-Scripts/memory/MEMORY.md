@@ -1,0 +1,1 @@
+- [Commit messages: no Claude co-author trailer](feedback_commit_no_coauthor.md) — never append `Co-Authored-By: Claude` to commits

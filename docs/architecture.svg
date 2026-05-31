@@ -1,0 +1,345 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1720 1300" font-family="-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#3c4043"/>
+    </marker>
+    <marker id="arrowR" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#ea4335"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1720" height="1300" fill="#fbfbfc"/>
+
+  <!-- ===== Title ===== -->
+  <text x="40" y="40" font-size="24" font-weight="700" fill="#202124">Eridian (aichat) — Future-State Architecture</text>
+  <text x="40" y="66" font-size="13.5" fill="#5f6368">Unix-native, cost-conscious multi-model CLI &#183; "make for AI workflows" &#183; caching sub-track (Phases 37&#8594;41) ports LiteLLM feature-for-feature</text>
+
+  <!-- ===== Surfaces band ===== -->
+  <text x="40" y="98" font-size="12" font-weight="700" fill="#1967d2" letter-spacing="0.5">CLIENT &amp; INTERACTION SURFACES</text>
+  <g fill="#e8f0fe" stroke="#4285f4" stroke-width="1.5">
+    <rect x="40"   y="106" width="250" height="78" rx="8"/>
+    <rect x="320"  y="106" width="250" height="78" rx="8"/>
+    <rect x="600"  y="106" width="250" height="78" rx="8"/>
+    <rect x="880"  y="106" width="250" height="78" rx="8"/>
+    <rect x="1160" y="106" width="250" height="78" rx="8"/>
+  </g>
+  <g text-anchor="middle" fill="#174ea6">
+    <text x="165"  y="138" font-size="13.5" font-weight="700">CLI</text>
+    <text x="165"  y="160" font-size="10.5" fill="#3c4043">aichat &#183; batch &#183; --each &#183; -r/-a/-o</text>
+    <text x="445"  y="138" font-size="13.5" font-weight="700">pi REPL (TUI)</text>
+    <text x="445"  y="160" font-size="10.5" fill="#3c4043">default harness &#183; bridge extension</text>
+    <text x="725"  y="138" font-size="13.5" font-weight="700">Legacy REPL</text>
+    <text x="725"  y="160" font-size="10.5" fill="#3c4043">Reedline &#183; fallback</text>
+    <text x="1005" y="138" font-size="13.5" font-weight="700">Downstream tools</text>
+    <text x="1005" y="160" font-size="10.5" fill="#3c4043">Claude Code &#183; Cursor &#183; scripts</text>
+    <text x="1285" y="138" font-size="13.5" font-weight="700">MCP clients</text>
+    <text x="1285" y="160" font-size="10.5" fill="#3c4043">consume aichat as MCP server</text>
+  </g>
+
+  <!-- ===== Gateway band ===== -->
+  <text x="40" y="208" font-size="12" font-weight="700" fill="#188038" letter-spacing="0.5">HTTP GATEWAY  (Phases 16&#8211;17, 37D, 41)</text>
+  <rect x="40" y="216" width="1370" height="96" rx="9" fill="#e6f4ea" stroke="#34a853" stroke-width="1.8"/>
+  <text x="60" y="244" font-size="14.5" font-weight="700" fill="#0d652d">aichat --serve &#8212; OpenAI-compatible gateway &#183; L1 cache at the gateway</text>
+  <g font-size="11" fill="#1e8e3e">
+    <text x="60" y="268">/v1/chat/completions</text>
+    <text x="300" y="268">/v1/embeddings &#183; /v1/rerank</text>
+    <text x="610" y="268">/v1/state/* (pi bridge, bearer-token)</text>
+    <text x="960" y="268">/v1/cache/* &#183; stats &#183; clear &#183; ping &#183; health &#183; delete</text>
+  </g>
+  <g font-size="11" fill="#3c4043">
+    <text x="60" y="292">playground &#183; arena UI</text>
+    <text x="300" y="292">replay-from-buffer streaming (37D)</text>
+    <text x="610" y="292">x-aichat-cache-key &#183; cache_hit (41B)</text>
+    <text x="960" y="292">Cache-Control: no-cache / no-store / s-maxage (38D)</text>
+  </g>
+
+  <!-- ===== Core band ===== -->
+  <text x="40" y="340" font-size="12" font-weight="700" fill="#b06000" letter-spacing="0.5">AICHAT CORE RUNTIME</text>
+  <rect x="40" y="348" width="1370" height="286" rx="10" fill="#fef7e0" stroke="#f9ab00" stroke-width="1.8"/>
+  <text x="60" y="374" font-size="14" font-weight="700" fill="#9a6700">Inference, composition, routing &amp; retrieval</text>
+  <g stroke="#f9ab00" stroke-width="1.3" fill="#fffdf5">
+    <rect x="60"   y="386" width="312" height="104" rx="7"/>
+    <rect x="402"  y="386" width="312" height="104" rx="7"/>
+    <rect x="744"  y="386" width="312" height="104" rx="7"/>
+    <rect x="1086" y="386" width="312" height="104" rx="7"/>
+    <rect x="60"   y="506" width="312" height="104" rx="7"/>
+    <rect x="402"  y="506" width="312" height="104" rx="7"/>
+    <rect x="744"  y="506" width="312" height="104" rx="7"/>
+    <rect x="1086" y="506" width="312" height="104" rx="7"/>
+  </g>
+  <g text-anchor="middle">
+    <text x="216"  y="414" font-size="12.5" font-weight="700" fill="#9a6700">Entity types</text>
+    <text x="216"  y="436" font-size="10.5" fill="#3c4043">Prompt &#183; Role &#183; Agent</text>
+    <text x="216"  y="453" font-size="10.5" fill="#3c4043">Macro (isolated clone)</text>
+    <text x="216"  y="475" font-size="9.5"  fill="#80868b">RoleLike &#183; extends / include</text>
+
+    <text x="558"  y="414" font-size="12.5" font-weight="700" fill="#9a6700">Config hierarchy</text>
+    <text x="558"  y="436" font-size="10.5" fill="#3c4043">Session &#9656; Agent &#9656;</text>
+    <text x="558"  y="453" font-size="10.5" fill="#3c4043">Role &#9656; Global</text>
+    <text x="558"  y="475" font-size="9.5"  fill="#80868b">stage config isolation (36)</text>
+
+    <text x="900"  y="414" font-size="12.5" font-weight="700" fill="#9a6700">RoleResolver</text>
+    <text x="900"  y="436" font-size="10.5" fill="#3c4043">universal addressing (19)</text>
+    <text x="900"  y="453" font-size="10.5" fill="#3c4043">remote / federated (20)</text>
+    <text x="900"  y="475" font-size="9.5"  fill="#80868b">capability manifests (14)</text>
+
+    <text x="1242" y="414" font-size="12.5" font-weight="700" fill="#9a6700">Schema &amp; budget</text>
+    <text x="1242" y="436" font-size="10.5" fill="#3c4043">input / output (jsonschema)</text>
+    <text x="1242" y="453" font-size="10.5" fill="#3c4043">context budget (11)</text>
+    <text x="1242" y="475" font-size="9.5"  fill="#80868b">typed input surface (33)</text>
+
+    <text x="216"  y="534" font-size="12.5" font-weight="700" fill="#9a6700">Inference loop</text>
+    <text x="216"  y="556" font-size="10.5" fill="#3c4043">call_chat_completions</text>
+    <text x="216"  y="573" font-size="10.5" fill="#3c4043">call_react (agent loop)</text>
+    <text x="216"  y="595" font-size="9.5"  fill="#80868b">retry / resilience (10)</text>
+
+    <text x="558"  y="534" font-size="12.5" font-weight="700" fill="#9a6700">Tool dispatch</text>
+    <text x="558"  y="556" font-size="10.5" fill="#3c4043">select_functions &#183; tool_search</text>
+    <text x="558"  y="573" font-size="10.5" fill="#3c4043">MCP tools &#183; pipeline-as-tool</text>
+    <text x="558"  y="595" font-size="9.5"  fill="#80868b">concurrent eval &#183; error recovery</text>
+
+    <text x="900"  y="534" font-size="12.5" font-weight="700" fill="#9a6700">Pipeline / DAG</text>
+    <text x="900"  y="556" font-size="10.5" fill="#3c4043">multi-model chaining (21)</text>
+    <text x="900"  y="573" font-size="10.5" fill="#3c4043">observability &amp; budget (22)</text>
+    <text x="900"  y="595" font-size="9.5"  fill="#80868b">per-branch cache (22D &#8594; 38)</text>
+
+    <text x="1242" y="534" font-size="12.5" font-weight="700" fill="#9a6700">RAG &amp; knowledge</text>
+    <text x="1242" y="556" font-size="10.5" fill="#3c4043">HNSW + BM25 &#183; RRF</text>
+    <text x="1242" y="573" font-size="10.5" fill="#3c4043">knowledge compile / query (25&#8211;27)</text>
+    <text x="1242" y="595" font-size="9.5"  fill="#80868b">auto-memory surface (34&#8211;35)</text>
+  </g>
+
+  <!-- ===== Caching subsystem (focus) ===== -->
+  <text x="40" y="660" font-size="12" font-weight="700" fill="#c5221f" letter-spacing="0.5">CACHING SUBSYSTEM &#8212; PHASES 37 &#8594; 41  (LiteLLM feature-for-feature parity, EVAL-0004)</text>
+  <rect x="40" y="668" width="1370" height="300" rx="10" fill="#fce8e6" stroke="#ea4335" stroke-width="3"/>
+
+  <!-- left column: front + control + layers -->
+  <rect x="60" y="684" width="356" height="64" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3"/>
+  <text x="238" y="710" text-anchor="middle" font-size="12.5" font-weight="700" fill="#a50e0e">ResponseCache front (38A)</text>
+  <text x="238" y="730" text-anchor="middle" font-size="10" fill="#3c4043">single seam &#183; never blocks the turn on backend failure</text>
+
+  <rect x="60" y="758" width="356" height="118" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3"/>
+  <text x="238" y="782" text-anchor="middle" font-size="12.5" font-weight="700" fill="#a50e0e">Cache-control protocol (38D)</text>
+  <text x="238" y="803" text-anchor="middle" font-size="10.5" fill="#3c4043">ttl &#183; namespace &#183; s-maxage</text>
+  <text x="238" y="821" text-anchor="middle" font-size="10.5" fill="#3c4043">no-cache &#183; no-store &#183; use-cache</text>
+  <text x="238" y="843" text-anchor="middle" font-size="10.5" fill="#3c4043">CacheMode: default-on / default-off</text>
+  <text x="238" y="863" text-anchor="middle" font-size="9.5"  fill="#80868b">surfaces: HTTP header &#183; CLI flag &#183; role frontmatter</text>
+
+  <rect x="60" y="886" width="356" height="66" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3"/>
+  <text x="238" y="910" text-anchor="middle" font-size="12.5" font-weight="700" fill="#a50e0e">Layered model</text>
+  <text x="238" y="931" text-anchor="middle" font-size="10.5" fill="#3c4043">L1 exact &#183; L2 semantic &#183; L3 provider</text>
+  <text x="238" y="948" text-anchor="middle" font-size="9.5"  fill="#80868b">L4 prefix-stability discipline</text>
+
+  <!-- trait bar -->
+  <rect x="440" y="684" width="950" height="42" rx="7" fill="#a50e0e"/>
+  <text x="915" y="710" text-anchor="middle" font-size="13" font-weight="700" fill="#ffffff">trait CacheBackend  (38A &#8212; ports LiteLLM BaseCache: get / put / delete / clear / ping / health / batch)</text>
+
+  <!-- backends row -->
+  <g font-size="10.5" text-anchor="middle">
+    <rect x="440"  y="742" width="146" height="86" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3"/>
+    <text x="513"  y="772" font-weight="700" fill="#a50e0e">InMemory</text>
+    <text x="513"  y="790" fill="#3c4043">LRU + TTL heap</text>
+    <text x="513"  y="807" fill="#80868b" font-size="9">max entries / size</text>
+    <text x="513"  y="822" fill="#1e8e3e" font-size="9">default dep-free</text>
+
+    <rect x="600"  y="742" width="146" height="86" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3"/>
+    <text x="673"  y="772" font-weight="700" fill="#a50e0e">Disk</text>
+    <text x="673"  y="790" fill="#3c4043">CAS + atomic write</text>
+    <text x="673"  y="807" fill="#80868b" font-size="9">mtime-LRU budget</text>
+    <text x="673"  y="822" fill="#1e8e3e" font-size="9">default dep-free</text>
+
+    <rect x="760"  y="742" width="146" height="86" rx="7" fill="#fde8e6" stroke="#ea4335" stroke-width="2"/>
+    <text x="833"  y="772" font-weight="700" fill="#a50e0e">Dual</text>
+    <text x="833"  y="790" fill="#3c4043">memory + disk</text>
+    <text x="833"  y="807" fill="#80868b" font-size="9">write/read-through</text>
+    <text x="833"  y="822" fill="#1967d2" font-size="9">DEFAULT (38C)</text>
+
+    <rect x="920"  y="742" width="146" height="86" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3" stroke-dasharray="5 3"/>
+    <text x="993"  y="772" font-weight="700" fill="#a50e0e">Redis *</text>
+    <text x="993"  y="790" fill="#3c4043">node / cluster</text>
+    <text x="993"  y="807" fill="#80868b" font-size="9">batch flush</text>
+    <text x="993"  y="822" fill="#c5221f" font-size="9">cache-redis</text>
+
+    <rect x="1080" y="742" width="146" height="86" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3" stroke-dasharray="5 3"/>
+    <text x="1153" y="772" font-weight="700" fill="#a50e0e">Object store *</text>
+    <text x="1153" y="790" fill="#3c4043">S3 &#183; GCS &#183; Azure</text>
+    <text x="1153" y="807" fill="#80868b" font-size="9">reqwest + SigV4</text>
+    <text x="1153" y="822" fill="#c5221f" font-size="9">cache-s3/gcs/azure</text>
+
+    <rect x="1240" y="742" width="150" height="86" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3" stroke-dasharray="5 3"/>
+    <text x="1315" y="772" font-weight="700" fill="#a50e0e">Qdrant *</text>
+    <text x="1315" y="790" fill="#3c4043">semantic vectors</text>
+    <text x="1315" y="807" fill="#80868b" font-size="9">L2 shared (37F)</text>
+    <text x="1315" y="822" fill="#c5221f" font-size="9">cache-qdrant</text>
+  </g>
+
+  <!-- bottom strip: accounting / trace / admin+aux -->
+  <g text-anchor="middle">
+    <rect x="440" y="844" width="303" height="108" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3"/>
+    <text x="591" y="870" font-size="12" font-weight="700" fill="#a50e0e">Accounting (37A)</text>
+    <text x="591" y="892" font-size="10.5" fill="#3c4043">cache_read / cache_write tokens</text>
+    <text x="591" y="910" font-size="10.5" fill="#3c4043">compute_cost multipliers</text>
+    <text x="591" y="932" font-size="10" fill="#80868b">honest cost ledger &#183; tokens_saved</text>
+
+    <rect x="763" y="844" width="303" height="108" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3"/>
+    <text x="914" y="870" font-size="12" font-weight="700" fill="#a50e0e">Trace event (37E)</text>
+    <text x="914" y="892" font-size="10.5" fill="#3c4043">cache.lookup {layer, outcome,</text>
+    <text x="914" y="910" font-size="10.5" fill="#3c4043">key_hash, tokens/cost_saved}</text>
+    <text x="914" y="932" font-size="10" fill="#80868b">cache_hit guards training data</text>
+
+    <rect x="1086" y="844" width="304" height="108" rx="7" fill="#fff5f4" stroke="#ea4335" stroke-width="1.3"/>
+    <text x="1238" y="870" font-size="12" font-weight="700" fill="#a50e0e">Admin &amp; aux (40&#8211;41)</text>
+    <text x="1238" y="892" font-size="10.5" fill="#3c4043">aichat cache CLI &#183; model-group</text>
+    <text x="1238" y="910" font-size="10.5" fill="#3c4043">embeddings / rerank cache (40)</text>
+    <text x="1238" y="932" font-size="10" fill="#80868b">ping &#183; health &#183; delete &#183; supported_calls</text>
+  </g>
+
+  <text x="1390" y="962" text-anchor="end" font-size="9.5" fill="#c5221f">* cargo-gated backend &#8212; 0 dependencies in the default build (Phase 39)</text>
+
+  <!-- ===== Provider adapters band ===== -->
+  <text x="40" y="994" font-size="12" font-weight="700" fill="#8430ce" letter-spacing="0.5">PROVIDER CLIENT ADAPTERS  (L3 provider prompt caching: 37B)</text>
+  <rect x="40" y="1002" width="1370" height="104" rx="10" fill="#f3e8fd" stroke="#a142f4" stroke-width="1.8"/>
+  <text x="1390" y="1024" text-anchor="end" font-size="10.5" fill="#6a1b9a">cache_control breakpoints &#183; embeddings &#183; rerank &#183; prefix-stable assembly</text>
+  <g text-anchor="middle">
+    <rect x="60"   y="1034" width="250" height="56" rx="7" fill="#faf3ff" stroke="#a142f4" stroke-width="1.3"/>
+    <text x="185"  y="1058" font-size="12.5" font-weight="700" fill="#6a1b9a">Claude</text>
+    <text x="185"  y="1078" font-size="9.5" fill="#80868b">cache_control &#183; 0.1&#215; read</text>
+    <rect x="330"  y="1034" width="250" height="56" rx="7" fill="#faf3ff" stroke="#a142f4" stroke-width="1.3"/>
+    <text x="455"  y="1058" font-size="12.5" font-weight="700" fill="#6a1b9a">OpenAI-compatible</text>
+    <text x="455"  y="1078" font-size="9.5" fill="#80868b">auto prefix cache</text>
+    <rect x="600"  y="1034" width="250" height="56" rx="7" fill="#faf3ff" stroke="#a142f4" stroke-width="1.3"/>
+    <text x="725"  y="1058" font-size="12.5" font-weight="700" fill="#6a1b9a">Gemini</text>
+    <text x="725"  y="1078" font-size="9.5" fill="#80868b">implicit + cachedContent</text>
+    <rect x="870"  y="1034" width="250" height="56" rx="7" fill="#faf3ff" stroke="#a142f4" stroke-width="1.3"/>
+    <text x="995"  y="1058" font-size="12.5" font-weight="700" fill="#6a1b9a">Bedrock</text>
+    <text x="995"  y="1078" font-size="9.5" fill="#80868b">SigV4 &#183; eventstream</text>
+    <rect x="1140" y="1034" width="250" height="56" rx="7" fill="#faf3ff" stroke="#a142f4" stroke-width="1.3"/>
+    <text x="1265" y="1058" font-size="12.5" font-weight="700" fill="#6a1b9a">Cohere</text>
+    <text x="1265" y="1078" font-size="9.5" fill="#80868b">embeddings &#183; rerank</text>
+  </g>
+
+  <!-- ===== External / integrations band ===== -->
+  <text x="40" y="1134" font-size="12" font-weight="700" fill="#5f6368" letter-spacing="0.5">EXTERNAL SYSTEMS &amp; INTEGRATIONS</text>
+  <g text-anchor="middle">
+    <rect x="40"   y="1142" width="320" height="84" rx="8" fill="#e8eaed" stroke="#5f6368" stroke-width="1.5"/>
+    <text x="200"  y="1170" font-size="12.5" font-weight="700" fill="#3c4043">llm-functions</text>
+    <text x="200"  y="1190" font-size="10" fill="#5f6368">tool &amp; agent declarations</text>
+    <text x="200"  y="1208" font-size="9.5" fill="#80868b">argc comment-schemas</text>
+
+    <rect x="390"  y="1142" width="320" height="84" rx="8" fill="#e8eaed" stroke="#5f6368" stroke-width="1.5"/>
+    <text x="550"  y="1170" font-size="12.5" font-weight="700" fill="#3c4043">MCP pool</text>
+    <text x="550"  y="1190" font-size="10" fill="#5f6368">stdio &#183; HTTP/SSE servers</text>
+    <text x="550"  y="1208" font-size="9.5" fill="#80868b">portable mcp.json (31)</text>
+
+    <rect x="740"  y="1142" width="320" height="84" rx="8" fill="#e8eaed" stroke="#5f6368" stroke-width="1.5"/>
+    <text x="900"  y="1170" font-size="12.5" font-weight="700" fill="#3c4043">Remote model providers</text>
+    <text x="900"  y="1190" font-size="10" fill="#5f6368">Anthropic &#183; OpenAI &#183; Google &#183; AWS</text>
+    <text x="900"  y="1208" font-size="9.5" fill="#80868b">billed inference APIs</text>
+
+    <rect x="1090" y="1142" width="320" height="84" rx="8" fill="#e8eaed" stroke="#5f6368" stroke-width="1.5" stroke-dasharray="6 3"/>
+    <text x="1250" y="1170" font-size="12.5" font-weight="700" fill="#3c4043">Shared cache back tier</text>
+    <text x="1250" y="1190" font-size="10" fill="#5f6368">Redis / S3 &#183; team-shared</text>
+    <text x="1250" y="1208" font-size="9.5" fill="#c5221f">opt-in, namespaced (39D)</text>
+  </g>
+
+  <!-- ===== Observability rail ===== -->
+  <rect x="1440" y="106" width="260" height="906" rx="10" fill="#e0f7fa" stroke="#00acc1" stroke-width="1.8"/>
+  <text x="1570" y="134" text-anchor="middle" font-size="13" font-weight="700" fill="#006064">Open-harness observability</text>
+  <g text-anchor="middle">
+    <rect x="1458" y="150" width="224" height="80" rx="7" fill="#f1fbfc" stroke="#00acc1" stroke-width="1.2"/>
+    <text x="1570" y="178" font-size="11.5" font-weight="700" fill="#00838f">Trace emission</text>
+    <text x="1570" y="198" font-size="10" fill="#3c4043">JSONL &#183; streaming-safe</text>
+    <text x="1570" y="215" font-size="9.5" fill="#80868b">async writer thread (ADR-0003)</text>
+
+    <rect x="1458" y="252" width="224" height="74" rx="7" fill="#f1fbfc" stroke="#00acc1" stroke-width="1.2"/>
+    <text x="1570" y="278" font-size="11.5" font-weight="700" fill="#00838f">Redaction layer</text>
+    <text x="1570" y="298" font-size="10" fill="#3c4043">default rules &#183; secrets masked</text>
+    <text x="1570" y="315" font-size="9.5" fill="#80868b">runs before disk</text>
+
+    <rect x="1458" y="348" width="224" height="74" rx="7" fill="#f1fbfc" stroke="#00acc1" stroke-width="1.2"/>
+    <text x="1570" y="374" font-size="11.5" font-weight="700" fill="#00838f">Blob store</text>
+    <text x="1570" y="394" font-size="10" fill="#3c4043">SHA-256 content-addressed</text>
+    <text x="1570" y="411" font-size="9.5" fill="#80868b">payload dedup</text>
+
+    <rect x="1458" y="444" width="224" height="80" rx="7" fill="#f1fbfc" stroke="#00acc1" stroke-width="1.2"/>
+    <text x="1570" y="472" font-size="11.5" font-weight="700" fill="#00838f">Test harness</text>
+    <text x="1570" y="492" font-size="10" fill="#3c4043">promptfoo (regression)</text>
+    <text x="1570" y="509" font-size="9.5" fill="#80868b">wiremock (control-flow)</text>
+
+    <rect x="1458" y="546" width="224" height="80" rx="7" fill="#f1fbfc" stroke="#00acc1" stroke-width="1.2"/>
+    <text x="1570" y="574" font-size="11.5" font-weight="700" fill="#00838f">Eval &amp; training</text>
+    <text x="1570" y="594" font-size="10" fill="#3c4043">Inspect AI &#183; DPO pairs</text>
+    <text x="1570" y="611" font-size="9.5" fill="#80868b">deferred &#183; trace-fed</text>
+  </g>
+  <line x1="1570" y1="230" x2="1570" y2="252" stroke="#00acc1" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="1570" y1="326" x2="1570" y2="348" stroke="#00acc1" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="1570" y1="422" x2="1570" y2="444" stroke="#00acc1" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <line x1="1570" y1="524" x2="1570" y2="546" stroke="#00acc1" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <rect x="1458" y="648" width="224" height="120" rx="7" fill="#e0f7fa" stroke="#00acc1" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="1570" y="672" text-anchor="middle" font-size="11" font-weight="700" fill="#00838f">Why it is the keystone</text>
+  <text x="1462" y="692" font-size="9.6" fill="#3c4043">A turn-elimination cache that ships</text>
+  <text x="1462" y="708" font-size="9.6" fill="#3c4043">invisible to the harness is the exact</text>
+  <text x="1462" y="724" font-size="9.6" fill="#3c4043">failure ADR-0001 prevents. cache_hit +</text>
+  <text x="1462" y="740" font-size="9.6" fill="#3c4043">cache.lookup stop a replay from being</text>
+  <text x="1462" y="756" font-size="9.6" fill="#3c4043">mined as fresh training data (37E).</text>
+
+  <text x="1570" y="800" text-anchor="middle" font-size="11" font-weight="700" fill="#006064">Governing constraints</text>
+  <text x="1462" y="822" font-size="9.8" fill="#3c4043">&#8226; Cost-conscious above all</text>
+  <text x="1462" y="840" font-size="9.8" fill="#3c4043">&#8226; One tool per job (Unix)</text>
+  <text x="1462" y="858" font-size="9.8" fill="#3c4043">&#8226; No breaking argc / llm-functions</text>
+  <text x="1462" y="876" font-size="9.8" fill="#3c4043">&#8226; New deps = Ask First (cargo-gated)</text>
+  <text x="1462" y="894" font-size="9.8" fill="#3c4043">&#8226; Local + frontier model parity</text>
+  <text x="1462" y="912" font-size="9.8" fill="#3c4043">&#8226; Trace as the testing keystone</text>
+  <text x="1462" y="938" font-size="9.6" fill="#80868b">MCP is an outward facade only;</text>
+  <text x="1462" y="954" font-size="9.6" fill="#80868b">tools never speak MCP internally.</text>
+  <text x="1462" y="978" font-size="9.6" fill="#80868b">Exec + stdout + exit code is the</text>
+  <text x="1462" y="994" font-size="9.6" fill="#80868b">tool contract (not a protocol).</text>
+
+  <!-- ===== Flow arrows ===== -->
+  <!-- surfaces routed through gateway -->
+  <line x1="445"  y1="184" x2="445"  y2="216" stroke="#3c4043" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="1005" y1="184" x2="1005" y2="216" stroke="#3c4043" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <line x1="1285" y1="184" x2="1285" y2="216" stroke="#3c4043" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <!-- CLI / legacy direct to core (dashed, left margin) -->
+  <polyline points="165,184 165,200 24,200 24,440 40,440" fill="none" stroke="#3c4043" stroke-width="1.4" stroke-dasharray="6 4" marker-end="url(#arrow)"/>
+  <text x="30" y="320" font-size="9.5" fill="#5f6368" transform="rotate(-90 30 320)">CLI / legacy &#8594; core (in-process)</text>
+  <!-- gateway to core -->
+  <line x1="725" y1="312" x2="725" y2="348" stroke="#3c4043" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <!-- core <-> caching -->
+  <line x1="690" y1="634" x2="690" y2="668" stroke="#3c4043" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="700" y="654" font-size="10" fill="#3c4043">lookup / store</text>
+  <line x1="900" y1="668" x2="900" y2="634" stroke="#3c4043" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="910" y="654" font-size="10" fill="#3c4043">hit / miss</text>
+  <!-- caching to providers (miss) -->
+  <line x1="725" y1="968" x2="725" y2="1002" stroke="#3c4043" stroke-width="1.8" marker-end="url(#arrow)"/>
+  <text x="735" y="990" font-size="10" fill="#3c4043">miss &#8594; call</text>
+  <!-- providers to remote -->
+  <line x1="900" y1="1106" x2="900" y2="1142" stroke="#3c4043" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <!-- core to external tools/MCP (left bus) -->
+  <polyline points="40,560 18,560 18,1175 40,1175" fill="none" stroke="#5f6368" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <polyline points="18,1120 18,1120 550,1120 550,1142" fill="none" stroke="#5f6368" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="34" y="900" font-size="9.5" fill="#5f6368" transform="rotate(-90 34 900)">tools &#183; agents &#183; MCP servers</text>
+  <!-- caching to shared back tier (right sliver, dashed red) -->
+  <polyline points="1410,810 1422,810 1422,1184 1410,1184" fill="none" stroke="#ea4335" stroke-width="1.5" stroke-dasharray="6 4" marker-end="url(#arrowR)"/>
+  <text x="1417" y="1010" font-size="9.5" fill="#c5221f" transform="rotate(-90 1417 1010)">Dual back tier (39D)</text>
+  <!-- trace taps into observability -->
+  <line x1="1410" y1="470" x2="1440" y2="470" stroke="#00acc1" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="1413" y="462" font-size="9" fill="#00838f">events</text>
+  <line x1="1410" y1="906" x2="1440" y2="906" stroke="#00acc1" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <text x="1413" y="898" font-size="9" fill="#00838f">cache_hit</text>
+
+  <!-- ===== Legend ===== -->
+  <g font-size="10.5" fill="#3c4043">
+    <text x="40" y="1258" font-size="11" font-weight="700" fill="#202124">Legend:</text>
+    <rect x="100" y="1249" width="14" height="14" rx="3" fill="#e8f0fe" stroke="#4285f4"/><text x="120" y="1260">Surfaces</text>
+    <rect x="186" y="1249" width="14" height="14" rx="3" fill="#e6f4ea" stroke="#34a853"/><text x="206" y="1260">Gateway</text>
+    <rect x="272" y="1249" width="14" height="14" rx="3" fill="#fef7e0" stroke="#f9ab00"/><text x="292" y="1260">Core</text>
+    <rect x="340" y="1249" width="14" height="14" rx="3" fill="#fce8e6" stroke="#ea4335" stroke-width="2"/><text x="360" y="1260" font-weight="700" fill="#c5221f">Caching (focus)</text>
+    <rect x="470" y="1249" width="14" height="14" rx="3" fill="#f3e8fd" stroke="#a142f4"/><text x="490" y="1260">Providers</text>
+    <rect x="560" y="1249" width="14" height="14" rx="3" fill="#e8eaed" stroke="#5f6368"/><text x="580" y="1260">External</text>
+    <rect x="648" y="1249" width="14" height="14" rx="3" fill="#e0f7fa" stroke="#00acc1"/><text x="668" y="1260">Observability</text>
+    <line x1="780" y1="1256" x2="820" y2="1256" stroke="#5f6368" stroke-width="1.5" stroke-dasharray="6 4"/><text x="826" y="1260">optional / cargo-gated / future</text>
+    <text x="1040" y="1260" fill="#80868b">All caching boxes map to a LiteLLM construct &#8212; see EVAL-0004 (97% feature coverage; distributed third cargo-gated).</text>
+  </g>
+</svg>

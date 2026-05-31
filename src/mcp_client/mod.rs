@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::sync::RwLock;
 
 mod streamable_http;
@@ -46,6 +46,11 @@ impl McpConnection {
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args);
         cmd.args(extra_args);
+        // Phase 31B: ensure children die when their TokioChildProcess transport
+        // is dropped (e.g. on startup timeout). Without this, an orphan stdio
+        // server can keep its pipes open and starve aichat's own stdio loop
+        // when running as `aichat --mcp`.
+        cmd.kill_on_drop(true);
         for (k, v) in &envs {
             cmd.env(k, v);
         }
@@ -251,16 +256,45 @@ impl McpConnectionPool {
         Ok(())
     }
 
-    /// Return tool declarations from all configured servers, connecting lazily.
+    /// Return tool declarations from all configured servers, connecting concurrently.
+    ///
+    /// Phase 31B: connect each server in its own task so a single hung/slow
+    /// server cannot block the others, and per-server failures are isolated
+    /// rather than fail-fast. A misbehaving stdio child (e.g. one that drops
+    /// the initialize handshake or never responds to `tools/list`) used to
+    /// abort the whole loop before reaching later entries — the reported
+    /// "5-server subset returns 0 registered tools" symptom in
+    /// `docs/architecture/integrated-architecture/bridge-retirement.md` was
+    /// this fail-fast pattern, not a tokio runtime saturation issue.
     pub async fn all_tool_declarations(&self) -> Result<Vec<FunctionDeclaration>> {
         let names: Vec<String> = self.configs.keys().cloned().collect();
+
+        let connect_futures = names.iter().map(|name| {
+            let name = name.clone();
+            async move {
+                let result = self.get_or_connect(&name).await;
+                (name, result)
+            }
+        });
+        let results = futures_util::future::join_all(connect_futures).await;
+
         let mut all_decls = Vec::new();
-        for name in &names {
-            self.get_or_connect(name).await?;
-            let conns = self.connections.read().await;
-            if let Some(conn) = conns.get(name) {
-                for tool in conn.tools() {
-                    all_decls.push(mcp_tool_to_declaration(tool, name));
+        let conns = self.connections.read().await;
+        for (name, result) in results {
+            match result {
+                Ok(()) => {
+                    if let Some(conn) = conns.get(&name) {
+                        for tool in conn.tools() {
+                            all_decls.push(mcp_tool_to_declaration(tool, &name));
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "MCP server '{name}' failed to register: {e}\n\
+                         hint: this server's tools will not be available; \
+                         remove it from mcp_servers or fix the config to silence this warning"
+                    );
                 }
             }
         }
@@ -428,6 +462,259 @@ fn resolve_env_vars(env_map: &HashMap<String, String>) -> HashMap<String, String
             (k.clone(), resolved)
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Portable mcp.json loader (Phase 31C)
+//
+// Reads a Claude-Code-compatible declarations file (`{ "mcpServers": {...} }`)
+// from disk, normalizes each entry into McpServerConfig, and merges with the
+// inline `mcp_servers:` block from config.yaml. Inline entries win on key
+// conflict.
+//
+// Spec: docs/architecture/integrated-architecture/SPEC-mcp-json-artifact.md
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct PortableMcpFile {
+    #[serde(rename = "mcpServers", default)]
+    mcp_servers: IndexMap<String, PortableMcpEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PortableMcpEntry {
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    env: Option<HashMap<String, String>>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    headers: Option<HashMap<String, String>>,
+    /// Hint for ambiguous transports; not used today (we infer from
+    /// `command` vs `url`). Accepted to keep the file schema-compatible.
+    #[serde(default, rename = "type")]
+    _transport_type: Option<String>,
+    /// Aichat-specific extensions namespace (`namespace`, `lazyDiscover`).
+    /// Reserved for follow-on; ignored today.
+    #[serde(default, rename = "x-aichat")]
+    _x_aichat: Option<Value>,
+}
+
+impl PortableMcpEntry {
+    fn into_server_config(self, name: &str) -> Result<McpServerConfig> {
+        match (self.command.as_deref(), self.url.as_deref()) {
+            (Some(_), Some(_)) => bail!(
+                "mcp.json entry '{name}' sets both `command` and `url`; \
+                 choose one (stdio vs http/sse)"
+            ),
+            (None, None) => bail!(
+                "mcp.json entry '{name}' must set either `command` (stdio) \
+                 or `url` (http/sse)"
+            ),
+            _ => {}
+        }
+        Ok(McpServerConfig {
+            command: self.command.unwrap_or_default(),
+            args: self.args.unwrap_or_default(),
+            env: self.env.unwrap_or_default(),
+            endpoint: self.url,
+            headers: self.headers.unwrap_or_default(),
+        })
+    }
+}
+
+/// Resolve the path of the portable `mcp.json`. First hit wins.
+///
+/// 1. `explicit` (from `mcp_servers_file:` in config.yaml; expanded for `~`).
+/// 2. `./mcp.json` in the current working directory.
+/// 3. `$XDG_CONFIG_HOME/mcp/mcp.json` (or `~/.config/mcp/mcp.json` if unset).
+///
+/// Returns `Some(path)` only if the resolved file exists. An explicit path
+/// that does not exist is **not** silently ignored — the loader bails so a
+/// typo in `config.yaml` is caught at startup.
+pub fn resolve_mcp_servers_file(explicit: Option<&str>) -> Result<Option<PathBuf>> {
+    if let Some(raw) = explicit {
+        let path = expand_tilde(raw);
+        if !path.exists() {
+            bail!(
+                "mcp_servers_file points to '{}' but no file exists there",
+                path.display()
+            );
+        }
+        return Ok(Some(path));
+    }
+
+    let cwd_candidate = PathBuf::from("./mcp.json");
+    if cwd_candidate.exists() {
+        return Ok(Some(cwd_candidate));
+    }
+
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")));
+    if let Some(base) = xdg {
+        let candidate = base.join("mcp").join("mcp.json");
+        if candidate.exists() {
+            return Ok(Some(candidate));
+        }
+    }
+
+    Ok(None)
+}
+
+fn expand_tilde(raw: &str) -> PathBuf {
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(raw)
+}
+
+/// Parse a portable `mcp.json` file at `path` and return server entries
+/// keyed by name. Each entry is converted to the internal `McpServerConfig`
+/// representation; `${VAR}` interpolation in `env`/`headers` happens at
+/// connection time (see `resolve_env_vars`).
+pub fn load_mcp_servers_file(path: &Path) -> Result<IndexMap<String, McpServerConfig>> {
+    let content = std::fs::read_to_string(path).with_context(|| {
+        format!("failed to read mcp servers file at {}", path.display())
+    })?;
+    let parsed: PortableMcpFile = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "failed to parse mcp servers file at {} as JSON \
+             (expected `{{ \"mcpServers\": {{ ... }} }}`)",
+            path.display()
+        )
+    })?;
+
+    let mut out = IndexMap::with_capacity(parsed.mcp_servers.len());
+    for (name, entry) in parsed.mcp_servers {
+        let server = entry.into_server_config(&name)?;
+        out.insert(name, server);
+    }
+    Ok(out)
+}
+
+/// Merge file-loaded entries into the inline `mcp_servers:` map. Inline wins
+/// on key conflict — the spec treats `config.yaml` as a test/override
+/// surface, not the canonical home.
+pub fn merge_mcp_servers(
+    inline: &mut IndexMap<String, McpServerConfig>,
+    file_loaded: IndexMap<String, McpServerConfig>,
+) {
+    for (name, cfg) in file_loaded {
+        if !inline.contains_key(&name) {
+            inline.insert(name, cfg);
+        }
+    }
+}
+
+/// Phase 31E: implementation of `aichat --validate-mcp-config [PATH]`.
+/// Returns the process exit code (0 = valid, non-zero with diagnostic).
+///
+/// `path_arg` is `Some("path")` for an explicit path, `Some("")` is treated
+/// the same as `None` (uses search order), and `None` means the flag was
+/// not supplied (caller shouldn't reach here).
+pub fn run_validate_mcp_config(
+    path_arg: Option<&str>,
+    output_format: Option<OutputFormat>,
+) -> i32 {
+    let json_output = matches!(output_format, Some(OutputFormat::Json));
+    let explicit = path_arg.filter(|s| !s.is_empty());
+
+    let resolved = match resolve_mcp_servers_file(explicit) {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            emit_validation_error(
+                json_output,
+                None,
+                "no mcp.json found",
+                "set mcp_servers_file:, place ./mcp.json in CWD, \
+                 or create ~/.config/mcp/mcp.json",
+            );
+            return 2;
+        }
+        Err(e) => {
+            emit_validation_error(json_output, None, &e.to_string(), "");
+            return 2;
+        }
+    };
+
+    let entries = match load_mcp_servers_file(&resolved) {
+        Ok(entries) => entries,
+        Err(e) => {
+            emit_validation_error(
+                json_output,
+                Some(&resolved),
+                &e.to_string(),
+                "",
+            );
+            return 1;
+        }
+    };
+
+    let (stdio, http) = entries.values().fold((0u32, 0u32), |(s, h), cfg| {
+        if cfg.endpoint.is_some() {
+            (s, h + 1)
+        } else {
+            (s + 1, h)
+        }
+    });
+
+    if json_output {
+        let payload = json!({
+            "valid": true,
+            "path": resolved.to_string_lossy(),
+            "servers": entries.len(),
+            "stdio": stdio,
+            "http": http,
+            "names": entries.keys().collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    } else {
+        println!("ok: {}", resolved.display());
+        println!(
+            "  {} servers ({} stdio, {} http/sse)",
+            entries.len(),
+            stdio,
+            http,
+        );
+        for (name, cfg) in &entries {
+            let kind = if cfg.endpoint.is_some() { "http" } else { "stdio" };
+            println!("    [{kind}] {name}");
+        }
+    }
+    0
+}
+
+fn emit_validation_error(
+    json: bool,
+    path: Option<&Path>,
+    message: &str,
+    hint: &str,
+) {
+    if json {
+        let payload = json!({
+            "valid": false,
+            "path": path.map(|p| p.to_string_lossy().into_owned()),
+            "error": message,
+            "hint": if hint.is_empty() { Value::Null } else { Value::String(hint.to_string()) },
+        });
+        eprintln!("{}", serde_json::to_string_pretty(&payload).unwrap_or_default());
+    } else {
+        if let Some(p) = path {
+            eprintln!("error: {}: {}", p.display(), message);
+        } else {
+            eprintln!("error: {message}");
+        }
+        if !hint.is_empty() {
+            eprintln!("hint: {hint}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -894,5 +1181,204 @@ mod tests {
         let k1 = cache_key("npx server-a");
         let k2 = cache_key("npx server-b");
         assert_ne!(k1, k2);
+    }
+
+    // ---- Phase 31C: portable mcp.json loader ----
+
+    fn write_tmp_json(content: &str) -> PathBuf {
+        // Phase 22E: key the temp dir on (pid, monotonic counter), not the
+        // wall clock. A timestamp collides when two parallel test threads run
+        // in the same clock tick; an atomic counter is unique by construction,
+        // so no two calls — in any thread of this process — ever share a dir.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "aichat-mcp-test-{}-{}",
+            std::process::id(),
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mcp.json");
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_load_mcp_servers_file_stdio_entry() {
+        let path = write_tmp_json(
+            r#"{
+                "mcpServers": {
+                    "git": {
+                        "command": "/usr/local/bin/uvx",
+                        "args": ["mcp-server-git"]
+                    }
+                }
+            }"#,
+        );
+        let entries = load_mcp_servers_file(&path).unwrap();
+        assert_eq!(entries.len(), 1);
+        let git = &entries["git"];
+        assert_eq!(git.command, "/usr/local/bin/uvx");
+        assert_eq!(git.args, vec!["mcp-server-git"]);
+        assert!(git.endpoint.is_none());
+    }
+
+    #[test]
+    fn test_load_mcp_servers_file_remote_entry() {
+        let path = write_tmp_json(
+            r#"{
+                "mcpServers": {
+                    "remote": {
+                        "url": "https://mcp.example.com/sse",
+                        "headers": { "Authorization": "Bearer ${API_TOKEN}" }
+                    }
+                }
+            }"#,
+        );
+        let entries = load_mcp_servers_file(&path).unwrap();
+        let remote = &entries["remote"];
+        assert_eq!(
+            remote.endpoint.as_deref(),
+            Some("https://mcp.example.com/sse")
+        );
+        assert_eq!(
+            remote.headers.get("Authorization").map(String::as_str),
+            Some("Bearer ${API_TOKEN}")
+        );
+    }
+
+    #[test]
+    fn test_load_mcp_servers_file_rejects_both_command_and_url() {
+        let path = write_tmp_json(
+            r#"{ "mcpServers": { "x": { "command": "a", "url": "b" } } }"#,
+        );
+        let err = load_mcp_servers_file(&path).unwrap_err();
+        assert!(format!("{err}").contains("both `command` and `url`"));
+    }
+
+    #[test]
+    fn test_load_mcp_servers_file_rejects_neither_command_nor_url() {
+        let path = write_tmp_json(r#"{ "mcpServers": { "x": {} } }"#);
+        let err = load_mcp_servers_file(&path).unwrap_err();
+        assert!(format!("{err}").contains("either `command`"));
+    }
+
+    #[test]
+    fn test_load_mcp_servers_file_ignores_x_aichat_extension() {
+        let path = write_tmp_json(
+            r#"{
+                "mcpServers": {
+                    "git": {
+                        "command": "uvx",
+                        "args": ["mcp-server-git"],
+                        "x-aichat": { "namespace": "g", "lazyDiscover": true }
+                    }
+                }
+            }"#,
+        );
+        let entries = load_mcp_servers_file(&path).unwrap();
+        assert_eq!(entries["git"].command, "uvx");
+    }
+
+    #[test]
+    fn test_load_mcp_servers_file_invalid_json() {
+        let path = write_tmp_json("{ not json");
+        assert!(load_mcp_servers_file(&path).is_err());
+    }
+
+    // Phase 22E: `write_tmp_json` must hand back a unique path on every call,
+    // even under heavy parallel contention. The original timestamp-keyed dir
+    // name collided when two test threads landed in the same clock tick — one
+    // clobbered the other's `mcp.json`, so a test that wrote `{}` could read a
+    // sibling's `{ "command": .. , "url": .. }` and assert against the wrong
+    // error string. That is the root cause of the historically flaky
+    // `test_load_mcp_servers_file_rejects_neither_command_nor_url`.
+    #[test]
+    fn write_tmp_json_is_collision_free_across_threads() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+        let seen = Arc::new(Mutex::new(HashSet::new()));
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let seen = Arc::clone(&seen);
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        let p = write_tmp_json("{}");
+                        let mut s = seen.lock().unwrap();
+                        assert!(
+                            s.insert(p.clone()),
+                            "duplicate tmp path handed out: {}",
+                            p.display()
+                        );
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_merge_mcp_servers_inline_wins() {
+        let mut inline = IndexMap::new();
+        inline.insert(
+            "git".to_string(),
+            McpServerConfig {
+                command: "inline-cmd".to_string(),
+                ..Default::default()
+            },
+        );
+
+        let mut from_file = IndexMap::new();
+        from_file.insert(
+            "git".to_string(),
+            McpServerConfig {
+                command: "file-cmd".to_string(),
+                ..Default::default()
+            },
+        );
+        from_file.insert(
+            "fetch".to_string(),
+            McpServerConfig {
+                command: "uvx".to_string(),
+                ..Default::default()
+            },
+        );
+
+        merge_mcp_servers(&mut inline, from_file);
+        assert_eq!(inline.len(), 2);
+        assert_eq!(inline["git"].command, "inline-cmd");
+        assert_eq!(inline["fetch"].command, "uvx");
+    }
+
+    #[test]
+    fn test_resolve_explicit_path_missing_bails() {
+        let err = resolve_mcp_servers_file(Some("/no/such/file.json"))
+            .unwrap_err();
+        assert!(format!("{err}").contains("no file exists"));
+    }
+
+    #[test]
+    fn test_resolve_explicit_path_present() {
+        let path = write_tmp_json(r#"{ "mcpServers": {} }"#);
+        let resolved =
+            resolve_mcp_servers_file(Some(path.to_str().unwrap())).unwrap();
+        assert_eq!(resolved.as_deref(), Some(path.as_path()));
+    }
+
+    #[test]
+    fn test_expand_tilde_with_home() {
+        if let Some(home) = dirs::home_dir() {
+            let expanded = expand_tilde("~/foo/bar.json");
+            assert_eq!(expanded, home.join("foo/bar.json"));
+        }
+    }
+
+    #[test]
+    fn test_expand_tilde_passthrough() {
+        let expanded = expand_tilde("/abs/path");
+        assert_eq!(expanded, PathBuf::from("/abs/path"));
     }
 }

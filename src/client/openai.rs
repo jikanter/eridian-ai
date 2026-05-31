@@ -402,20 +402,30 @@ pub fn openai_extract_chat_completions(data: &Value) -> Result<ChatCompletionsOu
     let mut tool_calls = vec![];
     if let Some(calls) = data["choices"][0]["message"]["tool_calls"].as_array() {
         for call in calls {
-            if let (Some(name), Some(arguments), Some(id)) = (
-                call["function"]["name"].as_str(),
-                call["function"]["arguments"].as_str(),
-                call["id"].as_str(),
-            ) {
-                let arguments: Value = arguments.parse().with_context(|| {
-                    format!("Tool call '{name}' have non-JSON arguments '{arguments}'")
-                })?;
-                tool_calls.push(ToolCall::new(
-                    name.to_string(),
-                    arguments,
-                    Some(id.to_string()),
-                ));
-            }
+            let Some(name) = call["function"]["name"].as_str() else {
+                continue;
+            };
+            // OpenAI-compatible providers vary in how they encode a tool
+            // call. `arguments` may be a JSON string (the OpenAI spec), a
+            // JSON object (vLLM, llama.cpp, some Mistral endpoints), an empty
+            // string, or absent; `id` is also optional on several of them.
+            // Tolerate every shape rather than silently dropping the call.
+            let arguments = match &call["function"]["arguments"] {
+                Value::String(s) => {
+                    let s = s.trim();
+                    if s.is_empty() {
+                        json!({})
+                    } else {
+                        s.parse().with_context(|| {
+                            format!("Tool call '{name}' have non-JSON arguments '{s}'")
+                        })?
+                    }
+                }
+                Value::Null => json!({}),
+                other => other.clone(),
+            };
+            let id = normalize_function_id(call["id"].as_str().unwrap_or_default());
+            tool_calls.push(ToolCall::new(name.to_string(), arguments, id));
         }
     };
 
@@ -590,5 +600,104 @@ mod tests {
         assert_eq!(body["num_ctx"], 32768);
         assert_eq!(body["top_k"], 50);
         assert_eq!(body["repeat_penalty"], 1.1);
+    }
+
+    #[test]
+    fn extract_tool_calls_with_string_arguments() {
+        let data = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": "{\"city\": \"Paris\"}"
+                        }
+                    }]
+                }
+            }]
+        });
+        let output = openai_extract_chat_completions(&data).expect("extract ok");
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(output.tool_calls[0].name, "get_weather");
+        assert_eq!(output.tool_calls[0].arguments, json!({"city": "Paris"}));
+        assert_eq!(output.tool_calls[0].id.as_deref(), Some("call_1"));
+    }
+
+    /// Several OpenAI-compatible providers (vLLM, llama.cpp, some Mistral
+    /// endpoints) return `arguments` as a JSON object rather than a string.
+    /// The strict OpenAI extractor silently dropped these calls.
+    #[test]
+    fn extract_tool_calls_tolerates_object_arguments() {
+        let data = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": {"city": "Paris"}
+                        }
+                    }]
+                }
+            }]
+        });
+        let output = openai_extract_chat_completions(&data).expect("extract ok");
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(output.tool_calls[0].arguments, json!({"city": "Paris"}));
+    }
+
+    /// Some OpenAI-compatible providers omit the `id` field on tool calls.
+    /// The call must still be surfaced (id falls back to None, as in the
+    /// streaming path).
+    #[test]
+    fn extract_tool_calls_tolerates_missing_id() {
+        let data = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": "{}"
+                        }
+                    }]
+                }
+            }]
+        });
+        let output = openai_extract_chat_completions(&data).expect("extract ok");
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(output.tool_calls[0].name, "list_files");
+        assert_eq!(output.tool_calls[0].id, None);
+        assert_eq!(output.tool_calls[0].arguments, json!({}));
+    }
+
+    /// An empty-string `arguments` value (seen from some providers for
+    /// zero-parameter tools) must parse to an empty object, not error.
+    #[test]
+    fn extract_tool_calls_tolerates_empty_string_arguments() {
+        let data = json!({
+            "choices": [{
+                "message": {
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": ""
+                        }
+                    }]
+                }
+            }]
+        });
+        let output = openai_extract_chat_completions(&data).expect("extract ok");
+        assert_eq!(output.tool_calls.len(), 1);
+        assert_eq!(output.tool_calls[0].arguments, json!({}));
     }
 }

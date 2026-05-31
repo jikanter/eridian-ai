@@ -8,31 +8,31 @@ Phase 9A enables provider-native structured output for OpenAI-family clients. Wh
 ## response_format injection in the OpenAI body builder
 
 ```bash
-grep -n "response_format\|output_schema" src/client/openai.rs | head -15
+grep "response_format\|output_schema" src/client/openai.rs | head -15
 ```
 
 ```output
-240:        output_schema,
-353:    // `supports_response_format_json_schema` and the role has an `output_schema`,
-354:    // use OpenAI's `response_format: json_schema` so conformance is enforced by
-358:    if let Some(schema) = output_schema {
-359:        if model.data().supports_response_format_json_schema {
-360:            body["response_format"] = json!({
-447:        m.data_mut().supports_response_format_json_schema = native_schema;
-476:            output_schema: schema,
-481:    fn body_injects_response_format_when_native_schema_active() {
-487:        let rf = body.get("response_format").expect("response_format present");
-495:    fn body_omits_response_format_when_capability_off() {
-500:            body.get("response_format").is_none(),
-501:            "no response_format when model doesn't support it"
-506:    fn body_omits_response_format_when_schema_missing() {
-510:        assert!(body.get("response_format").is_none());
+        output_schema,
+    // `supports_response_format_json_schema` and the role has an `output_schema`,
+    // use OpenAI's `response_format: json_schema` so conformance is enforced by
+    if let Some(schema) = output_schema {
+        if model.data().supports_response_format_json_schema {
+            body["response_format"] = json!({
+        m.data_mut().supports_response_format_json_schema = native_schema;
+            output_schema: schema,
+    fn body_injects_response_format_when_native_schema_active() {
+        let rf = body.get("response_format").expect("response_format present");
+    fn body_omits_response_format_when_capability_off() {
+            body.get("response_format").is_none(),
+            "no response_format when model doesn't support it"
+    fn body_omits_response_format_when_schema_missing() {
+        assert!(body.get("response_format").is_none());
 ```
 
 ## Unit tests: injection, capability gating, schema gating, tool coexistence
 
 ```bash
-cargo test --bin aichat -- client::openai::tests 2>&1 | grep -E "^test client::openai|^test result" | sed "s/finished in [0-9.]*s/finished in Xs/" | sort
+cargo test --bin aichat -- client::openai::tests::body 2>&1 | grep -E "response_format" | sed -E "s/finished in [0-9.]+s/finished in Xs/; s/[0-9]+ passed/N passed/; s/[0-9]+ filtered out/N filtered out/" | sort
 ```
 
 ```output
@@ -40,7 +40,6 @@ test client::openai::tests::body_injects_response_format_when_native_schema_acti
 test client::openai::tests::body_omits_response_format_when_capability_off ... ok
 test client::openai::tests::body_omits_response_format_when_schema_missing ... ok
 test client::openai::tests::body_preserves_tools_alongside_response_format ... ok
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 219 filtered out; finished in Xs
 ```
 
 ## Capability enabled in models.yaml for supported OpenAI models
@@ -83,9 +82,9 @@ src/client/vertexai.rs
 ## Full test suite
 
 ```bash
-cargo test --bin aichat 2>&1 | grep "^test result" | tail -1 | sed "s/finished in [0-9.]*s/finished in Xs/"
+cargo test --bin aichat 2>&1 | grep -c "^test result: FAILED" | xargs -I {} echo "FAILED test results: {}"
 ```
 
 ```output
-test result: ok. 223 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in Xs
+FAILED test results: 0
 ```

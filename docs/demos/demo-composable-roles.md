@@ -61,6 +61,7 @@ cargo test -- config::role::tests::test_parse_raw_frontmatter_extends config::ro
 
 ```output
 running 0 tests
+running 0 tests
 running 8 tests
 test config::role::tests::test_compose_role_content_no_metadata ... ok
 test config::role::tests::test_compose_role_content_with_metadata ... ok
@@ -70,8 +71,9 @@ test config::role::tests::test_parse_raw_frontmatter_extends ... ok
 test config::role::tests::test_parse_raw_frontmatter_include ... ok
 test config::role::tests::test_prompt_ordering ... ok
 test config::role::tests::test_resolve_builtin_passthrough ... ok
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 173 filtered out; finished in Xs
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 136 filtered out; finished in Xs
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 197 filtered out; finished in Xs
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in Xs
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 399 filtered out; finished in Xs
 ```
 
 ## Integration Tests

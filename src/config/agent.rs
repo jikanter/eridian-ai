@@ -58,6 +58,23 @@ impl Agent {
 
         agent_config.load_envs(&definition.name);
 
+        // Phase 19D: bind agent-declared MCP servers into use_tools
+        // using the same expansion the role path uses (Phase 6C).
+        if !agent_config.mcp_servers.is_empty() {
+            let cfg = config.read();
+            let available: std::collections::HashSet<&str> =
+                cfg.mcp_servers.keys().map(|s| s.as_str()).collect();
+            let new_use_tools = super::resolver::expand_mcp_servers_into_use_tools(
+                "Agent",
+                &definition.name,
+                &agent_config.mcp_servers,
+                agent_config.use_tools.as_deref(),
+                &available,
+            );
+            drop(cfg);
+            agent_config.use_tools = new_use_tools;
+        }
+
         let model = {
             let config = config.read();
             match agent_config.model_id.as_ref() {
@@ -421,6 +438,10 @@ pub struct AgentConfig {
     pub pipe_to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub save_to: Option<String>,
+    /// Phase 19D: MCP servers this agent should auto-bind into `use_tools`
+    /// at load time. Mirrors `mcp_servers:` on a Role (Phase 6C).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp_servers: Vec<String>,
 }
 
 impl AgentConfig {
@@ -595,4 +616,75 @@ pub fn complete_agent_variables(agent_name: &str) -> Vec<(String, Option<String>
             (format!("{}=", v.name), Some(description))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_config_default_has_empty_mcp_servers() {
+        let cfg = AgentConfig::default();
+        assert!(cfg.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn agent_config_parses_mcp_servers_field() {
+        let yaml = r#"
+mcp_servers:
+  - github
+  - filesystem
+"#;
+        let cfg: AgentConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.mcp_servers, vec!["github".to_string(), "filesystem".to_string()]);
+    }
+
+    #[test]
+    fn agent_config_omits_empty_mcp_servers_on_serialize() {
+        let cfg = AgentConfig::default();
+        let out = serde_yaml::to_string(&cfg).unwrap();
+        assert!(
+            !out.contains("mcp_servers"),
+            "empty mcp_servers should not be serialized: {out}"
+        );
+    }
+
+    #[test]
+    fn agent_config_round_trips_mcp_servers() {
+        let cfg = AgentConfig {
+            mcp_servers: vec!["github".into(), "fs".into()],
+            ..Default::default()
+        };
+        let yaml = serde_yaml::to_string(&cfg).unwrap();
+        let parsed: AgentConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.mcp_servers, cfg.mcp_servers);
+    }
+
+    #[test]
+    fn agent_config_coexists_with_existing_fields() {
+        // Phase 19D field must not collide with the Phase 7.5C cluster
+        // (input_schema, output_schema, pipe_to, save_to) or earlier fields.
+        let yaml = r#"
+model: claude:claude-sonnet-4-6
+temperature: 0.2
+use_tools: local_lookup
+mcp_servers:
+  - github
+input_schema:
+  type: object
+output_schema:
+  type: string
+pipe_to: jq .
+save_to: out.txt
+"#;
+        let cfg: AgentConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.model_id.as_deref(), Some("claude:claude-sonnet-4-6"));
+        assert_eq!(cfg.temperature, Some(0.2));
+        assert_eq!(cfg.use_tools.as_deref(), Some("local_lookup"));
+        assert_eq!(cfg.mcp_servers, vec!["github".to_string()]);
+        assert!(cfg.input_schema.is_some());
+        assert!(cfg.output_schema.is_some());
+        assert_eq!(cfg.pipe_to.as_deref(), Some("jq ."));
+        assert_eq!(cfg.save_to.as_deref(), Some("out.txt"));
+    }
 }

@@ -52,7 +52,7 @@ EOF
 ---
 test
 EOF
-  run ./target/debug/aichat --list-roles
+  run "$AICHAT_BIN" --list-roles
   [ "$status" -eq 0 ]
   [[ "$output" == *"test-list"* ]]
   rm "$ROLES_DIR/test-list.md"

@@ -14,6 +14,7 @@
 #   ollama:gemma4:26b          — supports_function_calling: true,  vision: true
 #   ollama:llama3.2-vision:11b — vision: true (function calling not required)
 
+AICHAT_BIN="${AICHAT_BIN:-./target/debug/aichat}"
 ROLES_DIR="${AICHAT_ROLES_DIR:-$HOME/Library/Application Support/aichat/roles}"
 ASSETS_DIR="$BATS_TEST_DIRNAME/../../assets"
 
@@ -29,7 +30,7 @@ teardown() {
 }
 
 @test "preflight: rejects use_tools on non-function-calling model" {
-  run bash -c "./target/debug/aichat -r preflight-test-role-with-tools -m ollama:gemma3:4b --dry-run 'test' 2>&1"
+  run bash -c "'$AICHAT_BIN' -r preflight-test-role-with-tools -m ollama:gemma3:4b --dry-run 'test' 2>&1"
   [ "$status" -eq 3 ]
   [[ "$output" == *"Preflight:"* ]]
   [[ "$output" == *"requires tool calling"* ]]
@@ -37,19 +38,19 @@ teardown() {
 }
 
 @test "preflight: accepts use_tools on function-calling model" {
-  run bash -c "./target/debug/aichat -r preflight-test-role-with-tools -m ollama:gemma4:26b --dry-run 'test' 2>&1"
+  run bash -c "'$AICHAT_BIN' -r preflight-test-role-with-tools -m ollama:gemma4:26b --dry-run 'test' 2>&1"
   [ "$status" -eq 0 ]
   [[ "$output" != *"Preflight:"* ]]
 }
 
 @test "preflight: passes role without use_tools on any model" {
-  run bash -c "./target/debug/aichat -r preflight-test-role-no-tools -m ollama:gemma3:4b --dry-run 'test' 2>&1"
+  run bash -c "'$AICHAT_BIN' -r preflight-test-role-no-tools -m ollama:gemma3:4b --dry-run 'test' 2>&1"
   [ "$status" -eq 0 ]
   [[ "$output" != *"Preflight:"* ]]
 }
 
 @test "preflight: rejects image input on non-vision model" {
-  run bash -c "./target/debug/aichat -m ollama:gemma3:4b -f '$ASSETS_DIR/preflight-test-pixel.png' --dry-run 'describe' 2>&1"
+  run bash -c "'$AICHAT_BIN' -m ollama:gemma3:4b -f '$ASSETS_DIR/preflight-test-pixel.png' --dry-run 'describe' 2>&1"
   [ "$status" -eq 3 ]
   [[ "$output" == *"Preflight:"* ]]
   [[ "$output" == *"does not support vision"* ]]
@@ -57,7 +58,7 @@ teardown() {
 }
 
 @test "preflight: accepts image input on vision-capable model" {
-  run bash -c "./target/debug/aichat -m ollama:llama3.2-vision:11b -f '$ASSETS_DIR/preflight-test-pixel.png' --dry-run 'describe' 2>&1"
+  run bash -c "'$AICHAT_BIN' -m ollama:llama3.2-vision:11b -f '$ASSETS_DIR/preflight-test-pixel.png' --dry-run 'describe' 2>&1"
   [ "$status" -eq 0 ]
   [[ "$output" != *"Preflight:"* ]]
 }
@@ -73,7 +74,7 @@ teardown() {
   # The naked happy path: no role, no tools, no images. Catches the case where
   # preflight running ahead of the dry-run short-circuit accidentally fails a
   # previously-passing invocation.
-  run bash -c "./target/debug/aichat --dry-run 'hello' 2>&1"
+  run bash -c "'$AICHAT_BIN' --dry-run 'hello' 2>&1"
   [ "$status" -eq 0 ]
   [[ "$output" != *"Preflight:"* ]]
 }
@@ -82,7 +83,7 @@ teardown() {
   # Before the select!-arm fix, a preflight Err on the streaming path left
   # render_stream waiting on its channel, timing out at ~10s. The explicit
   # timeout here will exit 124 if that regression comes back.
-  run timeout 5 ./target/debug/aichat -r preflight-test-role-with-tools -m ollama:gemma3:4b --dry-run "test"
+  run timeout 5 "$AICHAT_BIN" -r preflight-test-role-with-tools -m ollama:gemma3:4b --dry-run "test"
   [ "$status" -eq 3 ]     # preflight failure, config error
   [ "$status" -ne 124 ]   # not a timeout
 }
@@ -90,7 +91,7 @@ teardown() {
 @test "regression: streaming dry-run happy path completes promptly" {
   # Mirror of the above but with a compatible model — verifies the normal
   # streaming flow still terminates quickly with preflight inside the select.
-  run timeout 5 ./target/debug/aichat -r preflight-test-role-no-tools -m ollama:gemma4:26b --dry-run "test"
+  run timeout 5 "$AICHAT_BIN" -r preflight-test-role-no-tools -m ollama:gemma4:26b --dry-run "test"
   [ "$status" -eq 0 ]
   [ "$status" -ne 124 ]
 }

@@ -73,6 +73,13 @@ impl SseHandler {
         &self.tool_calls
     }
 
+    /// Token usage captured from the provider's streaming response, if it
+    /// reported any. Phase 16D reads this to emit a trailing `usage` chunk
+    /// when the caller set `stream_options: {include_usage: true}`.
+    pub fn usage(&self) -> (Option<u64>, Option<u64>) {
+        (self.input_tokens, self.output_tokens)
+    }
+
     pub fn set_usage(&mut self, input_tokens: Option<u64>, output_tokens: Option<u64>) {
         if input_tokens.is_some() {
             self.input_tokens = input_tokens;

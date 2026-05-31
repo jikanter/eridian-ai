@@ -69,3 +69,53 @@ EOF
     [[ "$output" == *"stages"* ]]
   fi
 }
+
+# ----- Phase 21: DAG primitives -----
+
+@test "pipeline: DAG parallel role passes preflight via dry-run" {
+  cat > "$ROLES_DIR/dag-fan-role.md" <<EOF
+---
+pipeline:
+  - role: stage-a
+  - parallel:
+      - role: stage-a
+      - role: stage-b
+    merge: concatenate
+---
+EOF
+  run_aichat -r dag-fan-role --dry-run "test"
+  [ "$status" -eq 0 ]
+  rm "$ROLES_DIR/dag-fan-role.md"
+}
+
+@test "pipeline: DAG switch role passes preflight via dry-run" {
+  cat > "$ROLES_DIR/dag-switch-role.md" <<EOF
+---
+pipeline:
+  - switch:
+      - when: { contains: "bug" }
+        role: stage-a
+      - otherwise: true
+        role: stage-b
+---
+EOF
+  run_aichat -r dag-switch-role --dry-run "test"
+  [ "$status" -eq 0 ]
+  rm "$ROLES_DIR/dag-switch-role.md"
+}
+
+@test "pipeline: --info on DAG role shows expanded node tree" {
+  cat > "$ROLES_DIR/dag-info-role.md" <<EOF
+---
+pipeline:
+  - role: stage-a
+  - parallel:
+      - role: stage-a
+      - role: stage-b
+---
+EOF
+  run_aichat -r dag-info-role --info "ignored"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"parallel"* ]] || [[ "$stderr" == *"parallel"* ]]
+  rm "$ROLES_DIR/dag-info-role.md"
+}

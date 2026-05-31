@@ -2,6 +2,7 @@
 
 # Regression tests for Macro features described in Macro-Guide.md
 
+AICHAT_BIN="${AICHAT_BIN:-./target/debug/aichat}"
 CONFIG_DIR=$(mktemp -d)
 MACROS_DIR="$CONFIG_DIR/macros"
 
@@ -24,7 +25,7 @@ EOF
 steps:
   - .info
 EOF
-  echo ".macro test-macro" | AICHAT_CONFIG_DIR="$CONFIG_DIR" ./target/debug/aichat 2>&1 || true
+  echo ".macro test-macro" | AICHAT_CONFIG_DIR="$CONFIG_DIR" "$AICHAT_BIN" 2>&1 || true
 }
 
 @test "macros: macro with variables" {
@@ -40,5 +41,5 @@ variables:
 steps:
   - 'echo {{myvar}}'
 EOF
-  echo ".macro var-macro hello" | AICHAT_CONFIG_DIR="$CONFIG_DIR" ./target/debug/aichat 2>&1 || true
+  echo ".macro var-macro hello" | AICHAT_CONFIG_DIR="$CONFIG_DIR" "$AICHAT_BIN" 2>&1 || true
 }

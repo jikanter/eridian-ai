@@ -1,8 +1,8 @@
 # Phase 30: Macro Compilation & Feedback Loop
 
 **Status:** Done
-**Epic:** 11 — Developer Experience & Performance
-**Design:** [discovery-report-macros.md](../analysis/discovery-report-macros.md) (derived from discovery session)
+**Epic:** 12 — Developer Experience & Performance
+**Design:** Derived from a discovery session; no analysis doc was preserved.
 
 ---
 

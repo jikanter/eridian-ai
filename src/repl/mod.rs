@@ -1,5 +1,6 @@
 mod completer;
 mod highlighter;
+pub mod pi;
 mod prompt;
 
 use self::completer::ReplCompleter;
@@ -9,7 +10,7 @@ use self::prompt::ReplPrompt;
 use crate::client::call_react;
 use crate::config::{
     macro_execute, AgentVariables, AssertState, Config, GlobalConfig, Input, LastMessage,
-    StateFlags,
+    RoleLike, StateFlags,
 };
 use crate::render::render_error;
 use crate::utils::{
@@ -269,6 +270,11 @@ Type ".help" for additional help.
                 _ => {}
             }
         }
+        if self.config.read().memory_reflect_on_exit {
+            if let Err(err) = crate::memory::reflect_on_exit(&self.config).await {
+                eprintln!("memory: reflect-on-exit failed: {err}");
+            }
+        }
         self.config.write().exit_session()?;
         Ok(())
     }
@@ -471,6 +477,12 @@ pub async fn run_repl_command(
                             config.write().new_role(name)?;
                         }
                         config.write().use_role(name)?;
+                        // Phase 12D: print a one-line composition summary so
+                        // the user sees what they just switched into without
+                        // having to run `.info` or open the YAML file.
+                        if let Some(role) = config.read().role.as_ref() {
+                            print_role_composition_summary(role);
+                        }
                     }
                 },
                 None => println!(
@@ -783,6 +795,49 @@ async fn ask(
     Config::maybe_autoname_session(config.clone());
     Config::maybe_compress_session(config.clone());
     Ok(())
+}
+
+/// Phase 12D: print a one-line composition summary after the user switches
+/// into a role. Surfaces extends/include, tool count, capabilities, ports,
+/// and pipeline depth — anything that would otherwise require running
+/// `.info` or opening the YAML file. Stays silent for the implicit `%%`
+/// temp role and for entirely-bare roles (no metadata to show).
+fn print_role_composition_summary(role: &crate::config::Role) {
+    if role.name() == "%%" || role.name().is_empty() {
+        return;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(parent) = role.extends() {
+        parts.push(format!("extends: {parent}"));
+    }
+    if !role.include().is_empty() {
+        parts.push(format!("includes: [{}]", role.include().join(", ")));
+    }
+    let tools_count = role
+        .use_tools()
+        .as_deref()
+        .map(|s| s.split(',').filter(|t| !t.trim().is_empty()).count())
+        .unwrap_or(0);
+    if tools_count > 0 {
+        parts.push(format!("tools: {tools_count}"));
+    }
+    if !role.capabilities().is_empty() {
+        parts.push(format!("capabilities: [{}]", role.capabilities().join(", ")));
+    }
+    let in_summary = role.port_input_summary();
+    let out_summary = role.port_output_summary();
+    if in_summary != "any" || out_summary != "text" {
+        parts.push(format!("in: {in_summary}, out: {out_summary}"));
+    }
+    if let Some(nodes) = role.pipeline() {
+        if !nodes.is_empty() {
+            let label = if role.pipeline_has_dag() { "nodes" } else { "stages" };
+            parts.push(format!("pipeline: {} {label}", nodes.len()));
+        }
+    }
+    if !parts.is_empty() {
+        println!("  {}", parts.join("  "));
+    }
 }
 
 fn unknown_command() -> Result<()> {

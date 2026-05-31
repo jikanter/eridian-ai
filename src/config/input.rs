@@ -67,6 +67,10 @@ impl Input {
         role: Option<Role>,
     ) -> Result<Self> {
         let loaders = config.read().document_loaders.clone();
+        // Phase 34B: rewrite `memory:<reference>` entries to resolved topic
+        // file paths before the normal loader sees them. Reserves the
+        // loader-prefix API for Theme 3 (`@path`) / Theme 10 (`.memory load`).
+        let paths = crate::memory::expand_memory_refs(paths);
         let (raw_paths, local_paths, remote_urls, external_cmds, protocol_paths, with_last_reply) =
             resolve_paths(&loaders, paths)?;
         let mut last_reply = None;
@@ -427,6 +431,14 @@ impl Input {
                     }
                 }
             }
+        }
+        // Phase 34A: inject the cached `memory/MEMORY.md` block into the
+        // system message, after the role's prompt body and any output-format
+        // suffix. Read-only standing context; absent when no memory file
+        // exists. Built fresh each turn, so it never double-appends.
+        let memory_preamble = self.config.read().memory_preamble.clone();
+        if let Some(block) = memory_preamble {
+            crate::memory::inject_preamble(&mut messages, &block);
         }
         if let Some(tool_calls) = &self.tool_calls {
             messages.push(Message::new(

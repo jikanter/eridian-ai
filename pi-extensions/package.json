@@ -1,0 +1,21 @@
+{
+  "name": "@aichat/pi-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Slash-command bridge that surfaces aichat roles, agents, sessions, RAG, and macros inside the pi coding-agent REPL.",
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=../assets/pi-extensions/aichat-bridge.js",
+    "build:watch": "npm run build -- --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.74.0",
+    "@types/node": "^20",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}

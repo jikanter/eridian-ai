@@ -129,6 +129,31 @@ pub struct Cli {
     /// Serve the LLM API and WebAPP
     #[clap(long, value_name = "ADDRESS")]
     pub serve: Option<Option<String>>,
+    /// Launch the pi coding-agent harness as the REPL surface instead of the
+    /// built-in Reedline REPL. Requires `pi` on PATH (see https://pi.dev).
+    /// Also honored when the environment variable `AICHAT_REPL=pi` is set.
+    #[clap(long)]
+    pub pi_repl: bool,
+    /// Force the built-in Reedline REPL even when `AICHAT_REPL=pi` would
+    /// otherwise route through pi. Reserved for the cutover window so users
+    /// can fall back to the legacy surface during the deprecation period.
+    #[clap(long, conflicts_with = "pi_repl")]
+    pub legacy_repl: bool,
+    /// Convert an aichat session file to pi's JSONL session-tree format
+    /// and write the result to stdout (or to --out PATH). Accepts either
+    /// a bare session name (resolved against the configured sessions
+    /// directory) or a path to a `.yaml` session file.
+    #[clap(long = "convert-session", value_name = "NAME_OR_PATH")]
+    pub convert_session: Option<String>,
+    /// Conversion target for --convert-session. Currently `pi` is the only
+    /// supported target; the flag exists so future targets fit cleanly.
+    #[clap(long = "to", value_name = "TARGET", default_value = "pi", requires = "convert_session")]
+    pub convert_to: String,
+    /// Destination path for --convert-session output. When omitted, the
+    /// converted JSONL is streamed to stdout so it pipes into `pi` or
+    /// `jq` directly.
+    #[clap(long = "out", value_name = "PATH", requires = "convert_session")]
+    pub convert_out: Option<String>,
     /// Run as an MCP stdio server
     #[clap(long)]
     pub mcp: bool,
@@ -153,9 +178,27 @@ pub struct Cli {
     /// Bypass MCP schema cache (force re-fetch from server)
     #[clap(long)]
     pub refresh: bool,
+    /// Validate a portable `mcp.json` declarations file. With no PATH, searches
+    /// `./mcp.json`, `$XDG_CONFIG_HOME/mcp/mcp.json`, then `~/.config/mcp/mcp.json`.
+    /// Exits 0 when valid, non-zero with a diagnostic when not. Combine with
+    /// `-o json` for machine-readable output.
+    #[clap(long = "validate-mcp-config", value_name = "PATH")]
+    pub validate_mcp_config: Option<Option<String>>,
+    /// Phase 15C: validate a role or pipeline definition without executing it.
+    /// Checks stage existence, model/tool capability, DAG structure, cycles,
+    /// and (for sequential pipelines) cross-stage JSON Schema containment
+    /// (output of stage N must satisfy input of stage N+1). Deterministic and
+    /// zero-token. Combine with `-r <role>`, `--pipe --stage ...`, or
+    /// `--pipe --pipe-def <file>`. Exits 0 when valid, 3 when not. Add
+    /// `-o json` for machine-readable output.
+    #[clap(long)]
+    pub check: bool,
     /// Run a multi-stage pipeline
     #[clap(long)]
     pub pipe: bool,
+    /// Phase 23B: run input through two roles and compare them side-by-side
+    #[clap(long, value_names = ["ROLE1", "ROLE2"], num_args = 2)]
+    pub compare: Vec<String>,
     /// Pipeline stages (role or role@model)
     #[clap(long = "stage", value_name = "ROLE[@MODEL]", requires = "pipe")]
     pub stages: Vec<String>,
@@ -210,6 +253,41 @@ pub struct Cli {
     /// List all roles
     #[clap(long)]
     pub list_roles: bool,
+    /// Phase 13A: create a new role that `extends:` an existing one. Writes
+    /// `<roles_dir>/<NEW_NAME>.md` with parent-override hints commented out
+    /// and the parent prompt body inherited via the extends chain.
+    #[clap(
+        long = "fork-role",
+        value_names = ["SOURCE", "NEW_NAME"],
+        num_args = 2,
+    )]
+    pub fork_role: Vec<String>,
+    /// Phase 13D: print a human-readable description of a role — what it
+    /// does, how it composes (extends/include/pipeline/ports/capabilities),
+    /// and where the source file lives. Pair with `-o json` for machine
+    /// consumption.
+    #[clap(long = "explain-role", value_name = "NAME")]
+    pub explain_role: Option<String>,
+    /// Phase 14D: search roles by capability tag and/or port type. Combine
+    /// with `--capability`, `--accepts`, and/or `--produces` to filter.
+    #[clap(long = "find-role")]
+    pub find_role: bool,
+    /// Phase 14D: filter for `--find-role` — capability tag substring match
+    /// (case-insensitive). Also allowed alongside `--list-roles`.
+    #[clap(long, value_name = "TAG")]
+    pub capability: Option<String>,
+    /// Phase 14D: filter for `--find-role` — input port type
+    /// (`text`, `json`, `array`, or a literal `json{...}` shape).
+    #[clap(long, value_name = "TYPE")]
+    pub accepts: Option<String>,
+    /// Phase 14D: filter for `--find-role` — output port type
+    /// (`text`, `json`, `array`, or a literal `json{...}` shape).
+    #[clap(long, value_name = "TYPE")]
+    pub produces: Option<String>,
+    /// Phase 12C: include port signatures, capabilities, and composition info
+    /// in `--list-roles` / `--find-role` output.
+    #[clap(long)]
+    pub verbose: bool,
     /// List all prompts
     #[clap(long)]
     pub list_prompts: bool,
@@ -259,6 +337,31 @@ pub struct Cli {
     /// Phase 27B: path to a JSONL trace file (use with --knowledge-reflect or --knowledge-curate)
     #[clap(long = "knowledge-trace", value_name = "FILE")]
     pub knowledge_trace: Option<String>,
+    /// Phase 34C: run the memory Reflector over a transcript, emit candidate topic files (JSON)
+    #[clap(long = "memory-reflect")]
+    pub memory_reflect: bool,
+    /// Phase 34D: run the memory curator gate (reflect or --memory-candidates) and write accepted topic files
+    #[clap(long = "memory-curate")]
+    pub memory_curate: bool,
+    /// Phase 34C/D: transcript file for --memory-reflect / --memory-curate (default: stdin)
+    #[clap(long = "memory-transcript", value_name = "FILE")]
+    pub memory_transcript: Option<String>,
+    /// Phase 34D: JSON candidate set; skips the Reflector (use with --memory-curate)
+    #[clap(
+        long = "memory-candidates",
+        value_name = "FILE",
+        requires = "memory_curate"
+    )]
+    pub memory_candidates: Option<String>,
+    /// Phase 34D: auto-accept every memory candidate without prompting (opt-in; hidden by design)
+    #[clap(long = "memory-auto-curate", hide = true, requires = "memory_curate")]
+    pub memory_auto_curate: bool,
+    /// Phase 34B: resolve a topic reference against MEMORY.md and print its (capped) content
+    #[clap(long = "memory-load", value_name = "REFERENCE")]
+    pub memory_load: Option<String>,
+    /// Phase 34C: at REPL exit, reflect over the session and gate memory candidates (opt-in)
+    #[clap(long = "memory-reflect-on-exit")]
+    pub memory_reflect_on_exit: bool,
     /// Input text
     #[clap(trailing_var_arg = true)]
     text: Vec<String>,

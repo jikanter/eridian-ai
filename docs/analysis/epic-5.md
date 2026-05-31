@@ -1,9 +1,10 @@
 # Epic 5: Server Pipeline Engine
 
 **Created:** 2026-03-16
-**Updated:** 2026-04-07 (renumbered from Epic 3; phases 12-14 → 16-18)
-**Status:** Planning
+**Updated:** 2026-04-17
+**Status:** **Deferred 2026-04-17** — Phases 16, 17, and 18 are parked while Epic 9 (Knowledge Evolution) is in flight. The existing `--serve` behavior is unchanged; expanding the server surface is a future-session decision.
 **Depends on:** Phase 8A (cost accounting), Phase 9 (schema fidelity)
+**History:** Renumbered 2026-04-07 from Epic 3 (phases 12-14 → 16-18).
 
 ---
 

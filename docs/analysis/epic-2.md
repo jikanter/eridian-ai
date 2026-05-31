@@ -1,10 +1,11 @@
 # Epic 2: Runtime Intelligence Layer
 
 **Created:** 2026-03-16
-**Status:** Planning
+**Status:** Done (Phase 9, 10, 11A/B shipped; 11C superseded; 11D planned)
 **Depends on:** Phase 8 (observability/tracing infrastructure)
 
-> **[Updated 2026-04-07]** Unified roadmap expanded Phase 10 (10D=cost-aware routing, old 10D→10E) and Phase 11 (+11D=pipeline budget propagation). Epic cross-refs: old Epic 3→**5**, old Epic 4→**9**, old Epic 5→**10**.
+> **[Updated 2026-04-07]** Unified roadmap added Phase 11D (pipeline budget propagation). Epic cross-refs: old Epic 3→**5**, old Epic 4→**9**, old Epic 5→**10**.
+> **[Note]** F-letters used below map to phase items as shipped: F4A → Phase 10B (stage cache), F4B → 10C (stage retry), F4C → 10D (model fallback). Cost-aware model routing was discussed as a possible Phase 10 expansion but was not scoped into the shipped Phase 10; it remains future work.
 
 ---
 

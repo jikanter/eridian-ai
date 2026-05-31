@@ -2,7 +2,7 @@
 
 **Created:** 2026-04-07
 **Status:** Planning
-**Depends on:** Epic 2 Phase 8A1 (run log infrastructure), Epic 4 Phase 14A (capabilities field)
+**Depends on:** Epic 1 Phase 8A1 (run log infrastructure), Epic 4 Phase 14A (capabilities field)
 **Phases:** 23-24
 **Source:** Theme 2 — ML Engineer + ML App Engineer analyses
 

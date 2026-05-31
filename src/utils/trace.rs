@@ -1,5 +1,5 @@
 use crate::client::CallMetrics;
-use crate::config::role::SchemaValidationResult;
+use crate::config::role::{MetricResult, SchemaValidationResult};
 use crate::function::ToolResult;
 
 use std::io::Write;
@@ -249,6 +249,34 @@ impl TraceEmitter {
         }
     }
 
+    /// Phase 23A: emit a trace line for role output metrics. Renders a compact
+    /// `name=PASS/FAIL` line in human mode and a structured event in JSONL.
+    pub fn emit_metrics(&self, results: &[MetricResult]) {
+        if results.is_empty() {
+            return;
+        }
+
+        if self.config.human_trace {
+            let parts: Vec<String> = results
+                .iter()
+                .map(|r| format!("{}={}", r.name, if r.pass { "PASS" } else { "FAIL" }))
+                .collect();
+            eprintln!("[metrics] {}", parts.join("  "));
+        }
+
+        if self.config.jsonl_trace {
+            let metrics: Vec<serde_json::Value> = results
+                .iter()
+                .map(|r| serde_json::json!({ "name": r.name, "pass": r.pass }))
+                .collect();
+            let obj = serde_json::json!({
+                "type": "metrics",
+                "metrics": metrics,
+            });
+            self.write_jsonl(&obj);
+        }
+    }
+
     fn write_jsonl(&self, value: &serde_json::Value) {
         let line = serde_json::to_string(value).unwrap_or_default();
         match &self.config.jsonl_file {
@@ -280,7 +308,62 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::role::{SchemaValidationResult, SchemaViolation};
+    use crate::config::role::{MetricResult, SchemaValidationResult, SchemaViolation};
+
+    #[test]
+    fn test_emit_metrics_empty_no_output() {
+        let tmp = std::env::temp_dir().join("aichat-test-metrics-empty.jsonl");
+        let _ = std::fs::remove_file(&tmp);
+        let config = TraceConfig {
+            human_trace: true,
+            jsonl_trace: true,
+            jsonl_file: Some(tmp.clone()),
+            truncate_at: 500,
+        };
+        let emitter = TraceEmitter::new(config);
+        emitter.emit_metrics(&[]);
+        // Empty metrics must not create a file/record.
+        assert!(!tmp.exists());
+    }
+
+    #[test]
+    fn test_emit_metrics_jsonl_to_file() {
+        let tmp = std::env::temp_dir().join("aichat-test-metrics-trace.jsonl");
+        let _ = std::fs::remove_file(&tmp);
+        let config = TraceConfig {
+            human_trace: false,
+            jsonl_trace: true,
+            jsonl_file: Some(tmp.clone()),
+            truncate_at: 500,
+        };
+        let emitter = TraceEmitter::new(config);
+        emitter.emit_metrics(&[
+            MetricResult { name: "valid_json".into(), pass: true },
+            MetricResult { name: "under_500".into(), pass: false },
+        ]);
+
+        let content = std::fs::read_to_string(&tmp).unwrap();
+        let _ = std::fs::remove_file(&tmp);
+        let parsed: serde_json::Value = serde_json::from_str(content.trim()).unwrap();
+        assert_eq!(parsed["type"], "metrics");
+        let arr = parsed["metrics"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["name"], "valid_json");
+        assert_eq!(arr[0]["pass"], true);
+        assert_eq!(arr[1]["pass"], false);
+    }
+
+    #[test]
+    fn test_emit_metrics_human_no_panic() {
+        let config = TraceConfig {
+            human_trace: true,
+            jsonl_trace: false,
+            jsonl_file: None,
+            truncate_at: 500,
+        };
+        let emitter = TraceEmitter::new(config);
+        emitter.emit_metrics(&[MetricResult { name: "ok".into(), pass: true }]);
+    }
 
     #[test]
     fn test_truncate_short() {

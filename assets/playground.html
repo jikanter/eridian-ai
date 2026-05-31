@@ -833,7 +833,7 @@
   </div>
   <script>
     const QUERY = parseQueryString();
-    const API_BASE = QUERY.api_base || "./v1";
+    const API_BASE = QUERY.api_base || "/v1";
     const API_KEY = QUERY.api_key || "";
     const CHAT_COMPLETIONS_URL = API_BASE + "/chat/completions";
     const MODELS_API = API_BASE + "/models";
@@ -890,7 +890,7 @@
               this.rags.push(...rags);
             }).catch(() => { }),
             fetchJSON(ROLES_API).then(roles => {
-              this.roles.push(...roles.filter(v => !!v.prompt));
+              this.roles.push(...roles);
             }).catch(() => { }),
           ])
           this.$refs.input.addEventListener("paste", (e) => this.handlePaste(e));
@@ -1004,7 +1004,11 @@
           if (this.settings.prompt && !this.settings.role) {
             return;
           }
-          this.settings.prompt = this.roles.find(role => role.name === this.settings.role).prompt;
+          // The role's prompt body is server-private; selecting a role
+          // routes submit through the `role:NAME` virtual model so the
+          // server resolves it. Clear the local textarea so it isn't
+          // also prepended.
+          this.settings.prompt = "";
         },
 
         handleScrollChatBody(event) {
@@ -1205,9 +1209,14 @@
             this.autoScrollChatBodyToBottom();
           });
           const lastMessage = this.messages[this.messages.length - 1];
-          const body = this.buildBody();
           let succeed = false;
+          // Phase 16I: everything that can throw (buildBody, RAG search, the
+          // stream) lives inside the try, and `asking` is cleared in finally.
+          // Previously a throw before/around the stream left `asking` stuck
+          // true, and handleAsk()'s `if (this.asking) return` guard then froze
+          // the UI for the rest of the page's life.
           try {
+            const body = this.buildBody();
             if (this.settings.rag) {
               const message = body.messages[body.messages.length - 1];
               if (message.role === "user" && typeof message.content === "string") {
@@ -1233,11 +1242,13 @@
               lastMessage.error = err?.message || err;
             }
             lastMessage.html = renderMarkdown(lastMessage.content, lastMessage.error);
+          } finally {
+            this.asking = false;
+            this.askAbortController = null;
           }
           if (succeed) {
             this.sessionMode = true;
           }
-          this.asking = false;
         },
 
         async searchRag(name, input) {
@@ -1303,7 +1314,9 @@
           }
           sanitizeMessages(messages);
           const body = {
-            model: this.settings.model,
+            model: this.settings.role
+              ? `role:${this.settings.role}`
+              : this.settings.model,
             messages: messages,
             stream: true,
           };

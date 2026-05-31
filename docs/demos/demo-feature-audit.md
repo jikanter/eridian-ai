@@ -58,17 +58,17 @@ grep -n "pub enum ExitCode\|pub enum AichatError" src/utils/exit_code.rs | head 
 22:    let model_vars = model.map(|m| resolve_model_variables(m));
 
 [2] Composable roles: extends/include (cdb5d9e)
-82:    extends: Option<String>,
-87:    include: Vec<String>,
+204:    extends: Option<String>,
+209:    include: Vec<String>,
 
 [3] Schema-aware stdin/stdout (b57668d)
-59:    input_schema: Option<serde_json::Value>,
-61:    output_schema: Option<serde_json::Value>,
+146:    input_schema: Option<serde_json::Value>,
+148:    output_schema: Option<serde_json::Value>,
 
 [4] Role parameters -v (1dbab28)
 src/cli.rs:118:    #[clap(short = 'v', long = "variable", value_name = "KEY=VALUE")]
-src/main.rs:253:            config.write().role_variables = Some(
-src/main.rs:280:        config.write().role_variables = None;
+src/main.rs:300:            config.write().role_variables = Some(
+src/main.rs:327:        config.write().role_variables = None;
 
 [5] Output format -o (e72d776)
 9:    Json,
@@ -80,14 +80,14 @@ src/main.rs:280:        config.write().role_variables = None;
 
 [6] __INPUT__ de-hoisting (9ce9755)
 19:pub const INPUT_PLACEHOLDER: &str = "__INPUT__";
-281:        // De-hoist __INPUT__ from parent when child extends it:
-282:        // - If child re-declares __INPUT__, strip the parent's (child wins)
+403:        // De-hoist __INPUT__ from parent when child extends it:
+404:        // - If child re-declares __INPUT__, strip the parent's (child wins)
 
 [7] Macro system
-1893:    pub fn load_macro(name: &str) -> Result<Macro> {
-2967:pub async fn macro_execute(
-2973:    let macro_value = Config::load_macro(name)?;
-3004:pub struct Macro {
+1997:    pub fn load_macro(name: &str) -> Result<Macro> {
+3087:pub async fn macro_execute(
+3093:    let macro_value = Config::load_macro(name)?;
+3124:pub struct Macro {
 
 [8] Semantic exit codes
 22:pub enum ExitCode {
@@ -115,17 +115,17 @@ grep -n "saved_model_id\|set_model.*saved" src/pipe.rs | head -3
 === Phase 0: Code-Level Verification ===
 
 [0A] Tool count warning (>20 tools)
-2093:            if functions.len() > 20 {
-2110:            if functions.len() > DEFERRED_TOOL_THRESHOLD
+2213:            if functions.len() > 20 {
+2230:            if functions.len() > DEFERRED_TOOL_THRESHOLD
 
 [0B] Pipeline tool-calling (call_react in pipe.rs)
-3:    call_chat_completions, call_chat_completions_streaming, call_react, CallMetrics,
-183:    // Phase 0B: Use call_react when the stage role has tools
-185:        call_react(&mut input, client.as_ref(), abort_signal).await?
+4:    call_chat_completions, call_chat_completions_streaming, call_react, CallMetrics,
+343:    // Phase 0B: Use call_react when the stage role has tools
+345:        call_react(&mut input, client.as_ref(), abort_signal.clone()).await?
 
 [0C] Pipeline config isolation
-128:    let saved_model_id = config.read().current_model().id();
-133:    if let Err(e) = config.write().set_model(&saved_model_id) {
+172:            let saved_model_id = config.read().current_model().id();
+184:            if let Err(e) = config.write().set_model(&saved_model_id) {
 ```
 
 ## Phase 1: Token Efficiency Foundations (commit dde1078)
@@ -151,25 +151,25 @@ grep -n "pub struct RoleExample\|examples.*Vec<RoleExample>" src/config/role.rs 
 === Phase 1: Code-Level Verification ===
 
 [1A] -o json for --list-* and --info
-102:        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
-116:        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
-143:        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
-180:                Some(crate::cli::OutputFormat::Json) => {
+110:        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
+124:        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
+151:        if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
+219:                Some(crate::cli::OutputFormat::Json) => {
 
 [1B] Role description field
-46:    description: Option<String>,
-635:    pub fn description(&self) -> Option<&str> {
+131:    description: Option<String>,
+824:    pub fn description(&self) -> Option<&str> {
 
 [1C] Deferred tool loading (tool_search)
-src/config/mod.rs:230:    pub deferred_tools: Option<DeferredToolState>,
-src/config/mod.rs:234:/// When more than DEFERRED_TOOL_THRESHOLD tools are selected,
-src/config/mod.rs:235:/// we inject a tool_search meta-function instead of all schemas.
-src/config/mod.rs:237:pub struct DeferredToolState {
-src/config/mod.rs:242:const DEFERRED_TOOL_THRESHOLD: usize = 15;
+src/config/mod.rs:248:    pub deferred_tools: Option<DeferredToolState>,
+src/config/mod.rs:262:/// When more than DEFERRED_TOOL_THRESHOLD tools are selected,
+src/config/mod.rs:263:/// we inject a tool_search meta-function instead of all schemas.
+src/config/mod.rs:265:pub struct DeferredToolState {
+src/config/mod.rs:270:const DEFERRED_TOOL_THRESHOLD: usize = 15;
 
 [1D] Tool use examples in role frontmatter
-63:    examples: Option<Vec<RoleExample>>,
-95:pub struct RoleExample {
+150:    examples: Option<Vec<RoleExample>>,
+217:pub struct RoleExample {
 ```
 
 ## Phase 2: Pipeline & Output Maturity (commit dde1078)
@@ -188,8 +188,8 @@ grep -n "Compact" src/cli.rs | head -3
 === Phase 2: Code-Level Verification ===
 
 [2A] Pipeline-as-Role
-65:    pipeline: Option<Vec<RolePipelineStage>>,
-102:pub struct RolePipelineStage {
+152:    pipeline: Option<Vec<RolePipelineStage>>,
+224:pub struct RolePipelineStage {
 
 [2B] Compact output modifier
 18:    /// Compact output (minimal tokens, for agent consumption)
@@ -239,16 +239,16 @@ grep -n "role_mcp_servers" src/config/role.rs | head -1
 [3C] --call + --json
 148:    #[clap(long = "json", value_name = "JSON", requires = "call")]
 [3D] mcp_servers config
-106:pub struct McpServerConfig {
-177:    pub mcp_servers: IndexMap<String, McpServerConfig>,
+108:pub struct McpServerConfig {
+193:    pub mcp_servers: IndexMap<String, McpServerConfig>,
 
 === Phase 4 (Error Handling): 1e5b7d2 / fec32e4 / fe60f03 ===
 [4A-4C] AichatError + structured JSON errors
 src/utils/exit_code.rs:64:pub enum AichatError {
 src/render/mod.rs:28:pub fn render_error(err: anyhow::Error, output_format: Option<crate::cli::OutputFormat>, code: crate::utils::ExitCode) {
 [4D] Schema validation improvements
-875:    /// Format the terse error message (same as the old validate_schema output).
-929:pub fn validate_schema(context: &str, schema: &Value, text: &str) -> Result<()> {
+1121:    /// Format the terse error message (same as the old validate_schema output).
+1175:pub fn validate_schema(context: &str, schema: &Value, text: &str) -> Result<()> {
 [4E] StageTrace struct
 
 === Phase 5 (Remote MCP): 7f500b8 ===
@@ -259,12 +259,12 @@ src/mcp_client/streamable_http.rs
 
 === Phase 6 (Metadata Framework): 30669d7 ===
 [6A] Shell variable default
-112:    Shell { shell: String },
+234:    Shell { shell: String },
 [6B] pipe_to / save_to on Role
-69:    pipe_to: Option<String>,
-71:    save_to: Option<String>,
+156:    pipe_to: Option<String>,
+158:    save_to: Option<String>,
 [6C] mcp_servers per-role
-79:    role_mcp_servers: Vec<String>,
+179:    role_mcp_servers: Vec<String>,
 ```
 
 ```bash
@@ -314,16 +314,16 @@ grep -n "AICHAT_TRACE\|get_env_name.*trace" src/main.rs | head -2
 === Phase 7 (Error Messages & Tool Execution): d125ee0 ===
 [7A] Stderr capture + ToolExecutionError
 104:            crate::utils::exit_code::AichatError::ToolExecutionError {
-579:        let stderr_display = truncate_stderr(&stderr, 15);
-582:            crate::utils::exit_code::AichatError::ToolExecutionError {
+684:        let stderr_display = truncate_stderr(&stderr, 15);
+687:            crate::utils::exit_code::AichatError::ToolExecutionError {
 [7B] Pre-flight checks
-550:    preflight_check(&cmd_name, &bin_dirs)?;
-675:fn preflight_check(cmd_name: &str, bin_dirs: &[PathBuf]) -> Result<()> {
+655:    preflight_check(&cmd_name, &bin_dirs)?;
+780:fn preflight_check(cmd_name: &str, bin_dirs: &[PathBuf]) -> Result<()> {
 [7C] Retry/dedup
-279:    pub fn dedup(calls: Vec<Self>) -> Vec<Self> {
+310:    pub fn dedup(calls: Vec<Self>) -> Vec<Self> {
 [7C1] Per-tool timeout
 229:    pub timeout: Option<u64>,
-339:        let timeout_secs = resolve_tool_timeout(config, &call_name);
+375:        let timeout_secs = resolve_tool_timeout(config, &call_name);
 [7D1] Async tool execution
 20:pub async fn eval_tool_calls(config: &GlobalConfig, mut calls: Vec<ToolCall>) -> Result<Vec<ToolResult>> {
 70:async fn eval_single_tool(config: &GlobalConfig, call: &ToolCall, is_mcp: bool) -> Value {
@@ -333,43 +333,43 @@ grep -n "AICHAT_TRACE\|get_env_name.*trace" src/main.rs | head -2
 
 === Phase 7.5 (Config Override): fe60f03 ===
 [7.5A] .set pipe_to / save_to / schemas
-721:            items.push(("output_schema", role.output_schema().unwrap().to_string()));
-724:            items.push(("input_schema", role.input_schema().unwrap().to_string()));
-727:            items.push(("pipe_to", role.pipe_to().unwrap().to_string()));
-730:            items.push(("save_to", role.save_to().unwrap().to_string()));
+774:            items.push(("output_schema", role.output_schema().unwrap().to_string()));
+777:            items.push(("input_schema", role.input_schema().unwrap().to_string()));
+780:            items.push(("pipe_to", role.pipe_to().unwrap().to_string()));
+783:            items.push(("save_to", role.save_to().unwrap().to_string()));
 [7.5B] Macro frontmatter
 [7.5C] Agent .set parity
-1049:            agent.set_output_schema(value);
-1069:            agent.set_pipe_to(value);
+1117:            agent.set_output_schema(value);
+1137:            agent.set_pipe_to(value);
 [7.5D] Schema meta-validation
-864:pub struct SchemaValidationResult {
-870:impl SchemaValidationResult {
-875:    /// Format the terse error message (same as the old validate_schema output).
+1110:pub struct SchemaValidationResult {
+1116:impl SchemaValidationResult {
+1121:    /// Format the terse error message (same as the old validate_schema output).
 
 === Phase 8 (Data Processing & Observability): fe60f03 ===
 [8A1] Run log + cost
 src/utils/ledger.rs:7:pub fn append_run_log(path: &Path, record: &Value) -> Result<()> {
-src/client/common.rs:308:pub struct CallMetrics {
-src/client/common.rs:317:impl CallMetrics {
-src/client/common.rs:318:    pub fn merge(&mut self, other: &CallMetrics) {
+src/client/common.rs:340:pub struct CallMetrics {
+src/client/common.rs:349:impl CallMetrics {
+src/client/common.rs:350:    pub fn merge(&mut self, other: &CallMetrics) {
 [8A2] Pipeline trace
-21:struct StageTrace {
-76:    let mut stage_traces: Vec<StageTrace> = Vec::new();
+22:struct StageTrace {
+86:    let mut stage_traces: Vec<StageTrace> = Vec::new();
 [8B] --each batch processing
-src/cli.rs:191:    pub each: bool,
-src/cli.rs:194:    pub parallel: usize,
-src/main.rs:360:        return batch_execute(&config, &cli, text, abort_signal).await;
+src/cli.rs:194:    pub each: bool,
+src/cli.rs:197:    pub parallel: usize,
+src/main.rs:410:        return batch_execute(&config, &cli, text, abort_signal).await;
 [8C] Record field templating
 161:static RE_DOT_FIELD: LazyLock<Regex> =
 166:pub fn interpolate_record_fields(text: &mut String, record: &str) {
 [8D] Headless RAG (CLI --rag)
 122:    pub rag: Option<String>,
-278:            Config::use_rag(&config, Some(rag), abort_signal.clone()).await?;
+325:            Config::use_rag(&config, Some(rag), abort_signal.clone()).await?;
 [8F] --trace flag
-188:    pub trace: bool,
+191:    pub trace: bool,
 [8G] AICHAT_TRACE env var
-217:    // Trace config from --trace flag or AICHAT_TRACE env var
-219:        let env_trace = std::env::var(get_env_name("trace"))
+264:    // Trace config from --trace flag or AICHAT_TRACE env var
+266:        let env_trace = std::env::var(get_env_name("trace"))
 ```
 
 ## Summary

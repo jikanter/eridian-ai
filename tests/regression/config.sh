@@ -4,7 +4,7 @@
 load common.bash
 
 @test "config: --info shows config file path" {
-  run ./target/debug/aichat --info
+  run "$AICHAT_BIN" --info
   [ "$status" -eq 0 ]
   [[ "$output" == *"config_file"* ]]
 }

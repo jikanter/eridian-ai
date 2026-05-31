@@ -19,16 +19,7 @@
 # $AICHAT as a config-dir override (see docs), so users may already have it
 # exported.
 
-# Default: prefer the local debug build if present, otherwise fall back to
-# whichever aichat is on PATH.
-AICHAT_BIN="${AICHAT_BIN:-}"
-if [ -z "$AICHAT_BIN" ]; then
-  if [ -x "./target/debug/aichat" ]; then
-    AICHAT_BIN="$(cd "$(dirname ./target/debug/aichat)" && pwd)/aichat"
-  else
-    AICHAT_BIN="$(command -v aichat || true)"
-  fi
-fi
+AICHAT_BIN="${AICHAT_BIN:-./target/debug/aichat}"
 
 CAPTURE_SERVER="$BATS_TEST_DIRNAME/../../assets/extensions-capture-server.py"
 

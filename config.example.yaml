@@ -81,7 +81,12 @@ right_prompt:
   '{color.purple}{?session {?consume_tokens {consume_tokens}({consume_percent}%)}{!consume_tokens {consume_tokens}}}{color.reset}'
 
 # ---- misc ----
-serve_addr: 127.0.0.1:8000                  # Server listening address 
+serve_addr: 127.0.0.1:8000                  # Server listening address
+# serve_api_key: sk-my-secret-key           # If set, every request needs `Authorization: Bearer <key>` (except OPTIONS and GET /health)
+# serve_cors_origins:                       # Cross-origin allowlist (localhost is always allowed)
+#   - http://localhost:3000
+#   - http://host.docker.internal:3000
+# serve_cors_allow_all: false               # On trusted networks, echo any request Origin instead of using the allowlist
 user_agent: null                            # Set User-Agent HTTP header, use `auto` for aichat/<current-version>
 save_shell_history: true                    # Whether to save shell execution command to the history file
 # URL to sync model changes from, e.g., https://cdn.jsdelivr.net/gh/sigoden/aichat@main/models.yaml
@@ -98,6 +103,16 @@ sync_models_url: https://raw.githubusercontent.com/sigoden/aichat/refs/heads/mai
 #   filesystem:
 #     command: npx
 #     args: ["@modelcontextprotocol/server-filesystem", "/home/user"]
+
+# ---- remotes (Phase 20C) ----
+# Named remote aichat instances for federated role/pipeline composition.
+# Reference them in pipelines or under `-r` as `remote:<name>/<role-name>`.
+# remotes:
+#   staging:
+#     endpoint: http://staging.internal:8080
+#     api_key: ${STAGING_API_KEY}           # ${VAR} substitution at request time
+#   security:
+#     endpoint: http://security-scanner.internal:8080
 
 # ---- clients ----
 clients:

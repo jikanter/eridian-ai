@@ -61,6 +61,75 @@ impl KnowledgeBinding {
     }
 }
 
+/// Phase 23A: one output-scoring metric declared on a role. The `shell`
+/// command receives the role's final output on stdin and exits 0 (pass) or
+/// non-zero (fail). Metrics are evaluated after output-schema validation
+/// succeeds, before lifecycle hooks.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RoleMetric {
+    pub name: String,
+    pub shell: String,
+}
+
+/// Phase 23A: the pass/fail result of evaluating one `RoleMetric`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MetricResult {
+    pub name: String,
+    pub pass: bool,
+}
+
+/// Phase 23A: evaluate a role's metrics against its final output. Each metric's
+/// `shell` command runs via `sh -c <shell>` with `output` piped to stdin;
+/// `pass` is true iff the command exits with a success status. A spawn failure
+/// counts as a failed metric. Synchronous and side-effect-free apart from the
+/// metric subprocesses.
+pub fn evaluate_metrics(metrics: &[RoleMetric], output: &str) -> Vec<MetricResult> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    metrics
+        .iter()
+        .map(|metric| {
+            let pass = (|| -> std::io::Result<bool> {
+                let mut child = Command::new("sh")
+                    .arg("-c")
+                    .arg(&metric.shell)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    // Ignore broken-pipe errors: a metric that doesn't read
+                    // stdin (e.g. `true`) may close it before we finish.
+                    let _ = stdin.write_all(output.as_bytes());
+                }
+                let status = child.wait()?;
+                Ok(status.success())
+            })()
+            .unwrap_or(false);
+            MetricResult {
+                name: metric.name.clone(),
+                pass,
+            }
+        })
+        .collect()
+}
+
+/// Phase 23D: sanitize a role name for use as a ledger filename component.
+/// Replaces path separators, `:` and whitespace with `_` so addressed roles
+/// (`mcp:foo`, `bar/baz`) map to a single flat file.
+pub fn sanitize_role_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c == '/' || c == '\\' || c == ':' || c.is_whitespace() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// Phase 26C: parse the flexible `knowledge:` frontmatter into a list of
 /// bindings. Accepts three shapes:
 /// - `knowledge: my-kb` (string → single binding)
@@ -131,6 +200,11 @@ pub struct Role {
     description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tags: Option<Vec<String>>,
+    /// Phase 14A: free-form capability tags for discovery (e.g. `code-review`,
+    /// `summarization`). Distinct from `tags`: capabilities describe *what the
+    /// role can do*, while tags are organizational labels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    capabilities: Vec<String>,
     #[serde(
         rename(serialize = "model", deserialize = "model"),
         skip_serializing_if = "Option::is_none"
@@ -149,7 +223,12 @@ pub struct Role {
     #[serde(skip_serializing_if = "Option::is_none")]
     examples: Option<Vec<RoleExample>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pipeline: Option<Vec<RolePipelineStage>>,
+    pipeline: Option<Vec<PipelineNode>>,
+
+    // Phase 11D: dollar budget for the whole pipeline, divided across stages
+    // by `budget_weight`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pipeline_budget_usd: Option<f64>,
 
     // Phase 6B: Lifecycle hooks
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -188,6 +267,11 @@ pub struct Role {
     #[serde(default, skip_serializing_if = "Vec::is_empty", skip_deserializing)]
     knowledge_bindings: Vec<KnowledgeBinding>,
 
+    // Phase 23A: output-scoring metrics. Each runs a shell command against the
+    // role's final output and records pass/fail in the trace + run log.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    metrics: Vec<RoleMetric>,
+
     /// Phase 26E: inject (default) auto-attaches retrieved facts to the
     /// user message; tool exposes `search_knowledge` for the LLM to call.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -225,6 +309,576 @@ pub struct RolePipelineStage {
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Phase 11D: relative share of the pipeline's `pipeline_budget_usd`.
+    /// `None` means the implicit default of 1.0. See
+    /// [`crate::context_budget::allocate_stage_budgets`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_weight: Option<f64>,
+}
+
+// Phase 21: DAG primitives — a pipeline is a list of `PipelineNode`s. The
+// existing sequential stage is the `Stage` variant; `Parallel` is fan-out;
+// `Switch` is conditional routing.
+#[derive(Debug, Clone)]
+pub enum PipelineNode {
+    Stage(RolePipelineStage),
+    Parallel(ParallelNode),
+    Switch(SwitchNode),
+}
+
+#[derive(Debug, Clone)]
+pub struct ParallelNode {
+    pub branches: Vec<PipelineNode>,
+    pub merge: MergeStrategy,
+}
+
+#[derive(Debug, Clone)]
+pub enum MergeStrategy {
+    /// Join outputs with `\n---\n` separator.
+    Concatenate,
+    /// Wrap outputs in a JSON array.
+    JsonArray,
+    /// Pipe the concatenated outputs through a merge role.
+    CustomRole(String),
+}
+
+impl Default for MergeStrategy {
+    fn default() -> Self {
+        MergeStrategy::Concatenate
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SwitchNode {
+    pub branches: Vec<SwitchBranch>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SwitchBranch {
+    /// `None` means the branch is the `otherwise:` fallback.
+    pub predicate: Option<Predicate>,
+    pub node: Box<PipelineNode>,
+}
+
+/// Deterministic predicate evaluated against the previous stage's output.
+/// All checks are zero-token: parse output as JSON, walk `output_field`
+/// (dotted path), compare. If output is not JSON or the field is missing,
+/// the predicate fails (does not match).
+#[derive(Debug, Clone, Default)]
+pub struct Predicate {
+    /// Dotted JSON path (e.g. `"category"` or `"meta.kind"`). When `None`,
+    /// the comparison runs against the raw text output (the whole previous
+    /// stage's body).
+    pub output_field: Option<String>,
+    pub equals: Option<serde_json::Value>,
+    pub contains: Option<String>,
+    pub gt: Option<f64>,
+    pub lt: Option<f64>,
+}
+
+impl Predicate {
+    /// Evaluate this predicate against the raw text output of the prior stage.
+    /// Returns `true` when all configured conditions match.
+    pub fn evaluate(&self, prior_output: &str) -> bool {
+        // Resolve the value to compare against.
+        let target: serde_json::Value = if let Some(field) = &self.output_field {
+            let json: serde_json::Value = match serde_json::from_str(prior_output) {
+                Ok(v) => v,
+                Err(_) => return false,
+            };
+            match lookup_dotted_path(&json, field) {
+                Some(v) => v.clone(),
+                None => return false,
+            }
+        } else {
+            serde_json::Value::String(prior_output.to_string())
+        };
+
+        if let Some(eq) = &self.equals {
+            if !value_equals(&target, eq) {
+                return false;
+            }
+        }
+        if let Some(needle) = &self.contains {
+            let haystack = match &target {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            if !haystack.contains(needle) {
+                return false;
+            }
+        }
+        if let Some(threshold) = self.gt {
+            let n = match value_as_f64(&target) {
+                Some(n) => n,
+                None => return false,
+            };
+            if !(n > threshold) {
+                return false;
+            }
+        }
+        if let Some(threshold) = self.lt {
+            let n = match value_as_f64(&target) {
+                Some(n) => n,
+                None => return false,
+            };
+            if !(n < threshold) {
+                return false;
+            }
+        }
+        // A predicate with no clauses set is treated as "always true". This is
+        // mostly defensive — parsing rejects empty predicates and produces an
+        // explicit `otherwise:` branch instead.
+        true
+    }
+}
+
+fn lookup_dotted_path<'a>(
+    json: &'a serde_json::Value,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
+    let mut cur = json;
+    for segment in path.split('.') {
+        if segment.is_empty() {
+            return None;
+        }
+        cur = match cur {
+            serde_json::Value::Object(map) => map.get(segment)?,
+            _ => return None,
+        };
+    }
+    Some(cur)
+}
+
+fn value_as_f64(v: &serde_json::Value) -> Option<f64> {
+    match v {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn value_equals(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    // Allow loose equality across string/number: `"category": "bug"` should
+    // match both `equals: "bug"` and `equals: bug` (YAML often unquotes).
+    if a == b {
+        return true;
+    }
+    if let (serde_json::Value::String(s), other) | (other, serde_json::Value::String(s)) =
+        (a, b)
+    {
+        if let Some(n) = value_as_f64(other) {
+            if let Ok(parsed) = s.parse::<f64>() {
+                return (parsed - n).abs() < f64::EPSILON;
+            }
+        }
+        // Bool stringification — "true" == true, "false" == false
+        if let serde_json::Value::Bool(b) = other {
+            return s.eq_ignore_ascii_case(if *b { "true" } else { "false" });
+        }
+    }
+    false
+}
+
+/// Parse a single pipeline-node JSON value (originally YAML). The dispatch
+/// is map-key based: `parallel:` → Parallel, `switch:` → Switch, otherwise
+/// treat as a leaf Stage (`role:` + optional `model:`).
+pub fn parse_pipeline_node(value: &serde_json::Value) -> Result<PipelineNode> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| anyhow!("Pipeline node must be a YAML mapping, got: {value}"))?;
+
+    if let Some(parallel) = map.get("parallel") {
+        let arr = parallel
+            .as_array()
+            .ok_or_else(|| anyhow!("`parallel:` must be a list of nodes"))?;
+        if arr.is_empty() {
+            bail!("`parallel:` requires at least one branch");
+        }
+        let branches: Result<Vec<PipelineNode>> =
+            arr.iter().map(parse_pipeline_node).collect();
+        let branches = branches?;
+        let merge = match map.get("merge") {
+            None => MergeStrategy::default(),
+            Some(serde_json::Value::String(s)) => match s.as_str() {
+                "concatenate" => MergeStrategy::Concatenate,
+                "json_array" => MergeStrategy::JsonArray,
+                other => bail!(
+                    "Unknown merge strategy '{other}'. Use 'concatenate', \
+                     'json_array', or a mapping with `custom_role:`"
+                ),
+            },
+            Some(serde_json::Value::Object(o)) => {
+                let role = o
+                    .get("custom_role")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        anyhow!("merge mapping requires `custom_role: <role-name>`")
+                    })?;
+                MergeStrategy::CustomRole(role.to_string())
+            }
+            Some(other) => bail!("Invalid `merge:` value: {other}"),
+        };
+        return Ok(PipelineNode::Parallel(ParallelNode { branches, merge }));
+    }
+
+    if let Some(switch) = map.get("switch") {
+        let arr = switch
+            .as_array()
+            .ok_or_else(|| anyhow!("`switch:` must be a list of conditional branches"))?;
+        if arr.is_empty() {
+            bail!("`switch:` requires at least one branch");
+        }
+        let mut branches: Vec<SwitchBranch> = Vec::with_capacity(arr.len());
+        let mut seen_otherwise = false;
+        for (idx, raw) in arr.iter().enumerate() {
+            let m = raw.as_object().ok_or_else(|| {
+                anyhow!("switch branch {} must be a mapping", idx + 1)
+            })?;
+            let has_otherwise = m.contains_key("otherwise");
+            let has_when = m.contains_key("when");
+            if has_otherwise && has_when {
+                bail!(
+                    "switch branch {} mixes `when:` and `otherwise:` — pick one",
+                    idx + 1
+                );
+            }
+            if !has_otherwise && !has_when {
+                bail!(
+                    "switch branch {} requires either `when:` or `otherwise:`",
+                    idx + 1
+                );
+            }
+            if has_otherwise {
+                if seen_otherwise {
+                    bail!("switch has more than one `otherwise:` branch");
+                }
+                seen_otherwise = true;
+            }
+
+            let predicate = if has_when {
+                Some(parse_predicate(&m["when"]).with_context(|| {
+                    format!("switch branch {} has invalid `when:` predicate", idx + 1)
+                })?)
+            } else {
+                None
+            };
+
+            // Extract the body. If the branch carries a `role:`/`parallel:`/
+            // `switch:` sibling, that is the body. Otherwise, if `otherwise:`
+            // is itself a mapping describing a node, use that.
+            let body = build_branch_body(m).with_context(|| {
+                format!("switch branch {} has no executable body", idx + 1)
+            })?;
+            branches.push(SwitchBranch {
+                predicate,
+                node: Box::new(body),
+            });
+        }
+        return Ok(PipelineNode::Switch(SwitchNode { branches }));
+    }
+
+    // Leaf stage — must have `role:`.
+    let stage: RolePipelineStage = serde_json::from_value(value.clone())
+        .with_context(|| format!("Invalid pipeline stage: {value}"))?;
+    if stage.role.trim().is_empty() {
+        bail!("Pipeline stage requires a non-empty `role:`");
+    }
+    Ok(PipelineNode::Stage(stage))
+}
+
+fn build_branch_body(
+    m: &serde_json::Map<String, serde_json::Value>,
+) -> Result<PipelineNode> {
+    // Prefer a sibling `role:`/`parallel:`/`switch:` at the same level as
+    // the predicate. This is the natural YAML shape and matches the design
+    // doc samples.
+    let mut body_map = serde_json::Map::new();
+    let mut has_body = false;
+    for key in ["role", "model", "parallel", "merge", "switch"] {
+        if let Some(v) = m.get(key) {
+            body_map.insert(key.to_string(), v.clone());
+            if key != "model" && key != "merge" {
+                has_body = true;
+            }
+        }
+    }
+    if has_body {
+        return parse_pipeline_node(&serde_json::Value::Object(body_map));
+    }
+    // Fall back to a body nested under `otherwise:` (e.g.
+    // `otherwise: { role: general-review }`).
+    if let Some(serde_json::Value::Object(_)) = m.get("otherwise") {
+        return parse_pipeline_node(&m["otherwise"]);
+    }
+    bail!("branch must specify `role:`, `parallel:`, or `switch:`")
+}
+
+fn parse_predicate(value: &serde_json::Value) -> Result<Predicate> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| anyhow!("`when:` must be a mapping"))?;
+    let mut p = Predicate::default();
+    let mut any = false;
+    for (k, v) in map {
+        match k.as_str() {
+            "output_field" => {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| anyhow!("`output_field` must be a string"))?;
+                p.output_field = Some(s.to_string());
+            }
+            "equals" => {
+                p.equals = Some(v.clone());
+                any = true;
+            }
+            "contains" => {
+                let s = v
+                    .as_str()
+                    .ok_or_else(|| anyhow!("`contains` must be a string"))?;
+                p.contains = Some(s.to_string());
+                any = true;
+            }
+            "gt" => {
+                let n = value_as_f64(v)
+                    .ok_or_else(|| anyhow!("`gt` must be a number"))?;
+                p.gt = Some(n);
+                any = true;
+            }
+            "lt" => {
+                let n = value_as_f64(v)
+                    .ok_or_else(|| anyhow!("`lt` must be a number"))?;
+                p.lt = Some(n);
+                any = true;
+            }
+            other => bail!("Unknown predicate key '{other}'"),
+        }
+    }
+    if !any {
+        bail!("Predicate requires at least one of: equals, contains, gt, lt");
+    }
+    Ok(p)
+}
+
+impl PipelineNode {
+    /// Collect every leaf `Stage` reachable from this node. Used for
+    /// preflight validation that doesn't need to honor routing — every
+    /// declared role must exist.
+    pub fn all_stages(&self) -> Vec<&RolePipelineStage> {
+        let mut out = Vec::new();
+        self.collect_stages(&mut out);
+        out
+    }
+
+    fn collect_stages<'a>(&'a self, out: &mut Vec<&'a RolePipelineStage>) {
+        match self {
+            PipelineNode::Stage(s) => out.push(s),
+            PipelineNode::Parallel(p) => {
+                for b in &p.branches {
+                    b.collect_stages(out);
+                }
+                if let MergeStrategy::CustomRole(_) = p.merge {
+                    // The custom-role merger is a stage too; we synthesize a
+                    // stub here so preflight can validate its existence
+                    // without owning the RolePipelineStage memory.
+                    // (See PipelineNode::merge_role_names for the actual
+                    // collection path used by preflight.)
+                }
+            }
+            PipelineNode::Switch(s) => {
+                for b in &s.branches {
+                    b.node.collect_stages(out);
+                }
+            }
+        }
+    }
+
+    /// Collect every custom-role merger name reachable from this node.
+    /// Preflight checks these as well — a missing merge role is a
+    /// declarative error, even if no branch fans out at runtime.
+    pub fn merge_role_names(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.collect_merge_roles(&mut out);
+        out
+    }
+
+    fn collect_merge_roles(&self, out: &mut Vec<String>) {
+        match self {
+            PipelineNode::Stage(_) => {}
+            PipelineNode::Parallel(p) => {
+                if let MergeStrategy::CustomRole(name) = &p.merge {
+                    out.push(name.clone());
+                }
+                for b in &p.branches {
+                    b.collect_merge_roles(out);
+                }
+            }
+            PipelineNode::Switch(s) => {
+                for b in &s.branches {
+                    b.node.collect_merge_roles(out);
+                }
+            }
+        }
+    }
+
+    /// Phase 21D: shallow structural validation — every parallel/switch must
+    /// have at least one branch, every switch must have at most one
+    /// `otherwise:`, etc. Parser guarantees most of this; this is a defense
+    /// for nodes constructed programmatically.
+    pub fn structural_check(&self) -> Result<()> {
+        match self {
+            PipelineNode::Stage(s) => {
+                if s.role.trim().is_empty() {
+                    bail!("Stage has empty role name");
+                }
+            }
+            PipelineNode::Parallel(p) => {
+                if p.branches.is_empty() {
+                    bail!("Parallel node has no branches");
+                }
+                for b in &p.branches {
+                    b.structural_check()?;
+                }
+            }
+            PipelineNode::Switch(s) => {
+                if s.branches.is_empty() {
+                    bail!("Switch node has no branches");
+                }
+                let mut otherwise_count = 0;
+                for b in &s.branches {
+                    if b.predicate.is_none() {
+                        otherwise_count += 1;
+                    }
+                    b.node.structural_check()?;
+                }
+                if otherwise_count > 1 {
+                    bail!("Switch node has more than one `otherwise:` branch");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// Serde plumbing for PipelineNode: we use the structural parser above for
+// deserialization (so YAML errors are friendlier) and round-trip to a
+// minimal JSON shape for serialization. Round-tripping isn't a primary use
+// case — pipelines live in source YAML — but `Role::export()` calls
+// serde_json::json! on the field, so a Serialize impl keeps that path
+// working.
+impl<'de> serde::Deserialize<'de> for PipelineNode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        parse_pipeline_node(&v).map_err(serde::de::Error::custom)
+    }
+}
+
+impl serde::Serialize for PipelineNode {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            PipelineNode::Stage(s) => s.serialize(serializer),
+            PipelineNode::Parallel(p) => {
+                use serde::ser::SerializeMap;
+                let mut m = serializer.serialize_map(Some(2))?;
+                m.serialize_entry("parallel", &p.branches)?;
+                match &p.merge {
+                    MergeStrategy::Concatenate => {
+                        m.serialize_entry("merge", "concatenate")?
+                    }
+                    MergeStrategy::JsonArray => {
+                        m.serialize_entry("merge", "json_array")?
+                    }
+                    MergeStrategy::CustomRole(name) => {
+                        let mut o = serde_json::Map::new();
+                        o.insert(
+                            "custom_role".into(),
+                            serde_json::Value::String(name.clone()),
+                        );
+                        m.serialize_entry("merge", &o)?;
+                    }
+                }
+                m.end()
+            }
+            PipelineNode::Switch(s) => {
+                use serde::ser::SerializeMap;
+                let mut m = serializer.serialize_map(Some(1))?;
+                let arr: Vec<serde_json::Value> = s
+                    .branches
+                    .iter()
+                    .map(|b| {
+                        let mut o = serde_json::Map::new();
+                        match &b.predicate {
+                            Some(p) => {
+                                let mut wp = serde_json::Map::new();
+                                if let Some(f) = &p.output_field {
+                                    wp.insert(
+                                        "output_field".into(),
+                                        serde_json::Value::String(f.clone()),
+                                    );
+                                }
+                                if let Some(eq) = &p.equals {
+                                    wp.insert("equals".into(), eq.clone());
+                                }
+                                if let Some(c) = &p.contains {
+                                    wp.insert(
+                                        "contains".into(),
+                                        serde_json::Value::String(c.clone()),
+                                    );
+                                }
+                                if let Some(g) = p.gt {
+                                    wp.insert(
+                                        "gt".into(),
+                                        serde_json::Value::Number(
+                                            serde_json::Number::from_f64(g).unwrap_or_else(
+                                                || serde_json::Number::from(0),
+                                            ),
+                                        ),
+                                    );
+                                }
+                                if let Some(l) = p.lt {
+                                    wp.insert(
+                                        "lt".into(),
+                                        serde_json::Value::Number(
+                                            serde_json::Number::from_f64(l).unwrap_or_else(
+                                                || serde_json::Number::from(0),
+                                            ),
+                                        ),
+                                    );
+                                }
+                                o.insert(
+                                    "when".into(),
+                                    serde_json::Value::Object(wp),
+                                );
+                            }
+                            None => {
+                                o.insert(
+                                    "otherwise".into(),
+                                    serde_json::Value::Bool(true),
+                                );
+                            }
+                        }
+                        // Inline the body so the YAML matches the design.
+                        if let Ok(body) = serde_json::to_value(b.node.as_ref()) {
+                            if let serde_json::Value::Object(body_map) = body {
+                                for (k, v) in body_map {
+                                    o.insert(k, v);
+                                }
+                            }
+                        }
+                        serde_json::Value::Object(o)
+                    })
+                    .collect();
+                m.serialize_entry("switch", &arr)?;
+                m.end()
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -266,6 +920,263 @@ pub struct RoleVariable {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<VariableDefault>,
+}
+
+/// Phase 33B: render a resolved slot value into the string spliced into the
+/// prompt at `{{name}}`. Scalars render bare (no quotes); arrays and objects
+/// render as compact JSON by default, or pretty-printed when the property is
+/// annotated `x-aichat: { render: pretty }`. `null` renders empty. Strings
+/// pass through unchanged, so existing string-only `variables:` slots render
+/// exactly as they did before this phase.
+pub(crate) fn render_slot(value: &Value, pretty: bool) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        Value::Bool(_) | Value::Number(_) => value.to_string(),
+        Value::Array(_) | Value::Object(_) => {
+            if pretty {
+                serde_json::to_string_pretty(value).unwrap_or_default()
+            } else {
+                serde_json::to_string(value).unwrap_or_default()
+            }
+        }
+    }
+}
+
+/// Phase 33A: a per-property default declared inside an `input_schema`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum SlotDefault {
+    /// A literal JSON default (`default: "main"`, `default: 3`, `default: [..]`).
+    Literal(Value),
+    /// A shell-injected default (`default: { shell: "date +%F" }`).
+    Shell(String),
+}
+
+/// Phase 33A: one declared parameter slot extracted from an `input_schema`'s
+/// `properties`. `pretty` reflects `x-aichat: { render: pretty }`; `required`
+/// mirrors the schema's `required:` list.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SchemaSlot {
+    pub name: String,
+    pub default: Option<SlotDefault>,
+    pub required: bool,
+    pub pretty: bool,
+    /// Phase 33C: the property's declared JSON Schema `type` (`"string"`,
+    /// `"integer"`, `"array"`, …), used to coerce a CLI `-v` string into the
+    /// right JSON type. `None` when the property declares no `type`.
+    pub slot_type: Option<String>,
+}
+
+impl SlotDefault {
+    /// Resolve to a concrete JSON value. Literals pass through; shell directives
+    /// run the command and yield its trimmed stdout as a string (reusing
+    /// [`VariableDefault`]'s shell execution).
+    pub(crate) fn resolve(&self) -> anyhow::Result<Value> {
+        match self {
+            SlotDefault::Literal(v) => Ok(v.clone()),
+            SlotDefault::Shell(cmd) => VariableDefault::Shell { shell: cmd.clone() }
+                .resolve()
+                .map(Value::String),
+        }
+    }
+}
+
+/// Phase 33A/33B/33E: fold a role's two declared input channels — the legacy
+/// string-only `variables:` block and the typed `input_schema:` properties —
+/// into one rendered `{{name}} -> string` map.
+///
+/// Precedence per slot: CLI `-v` > declared default. `variables:` keeps today's
+/// semantics exactly, including the hard error when a variable has no value and
+/// no default. `input_schema` properties are **additive**: a property with
+/// neither a CLI value nor a `default:` is left unresolved (skipped) rather than
+/// erroring — the schema's own message validation still enforces `required:`,
+/// so roles that pass their payload as the message (not via `-v`) keep working.
+/// On a name collision the schema property wins (the schema is the source of
+/// truth, Phase 33E). Typed values are rendered with [`render_slot`].
+pub(crate) fn resolve_slots(
+    variables: &[RoleVariable],
+    input_schema: Option<&Value>,
+    cli: Option<&IndexMap<String, String>>,
+) -> anyhow::Result<IndexMap<String, String>> {
+    let mut typed: IndexMap<String, (Value, bool)> = IndexMap::new();
+
+    for var in variables {
+        let value = cli
+            .and_then(|m| m.get(&var.name))
+            .cloned()
+            .or_else(|| {
+                var.default.as_ref().and_then(|d| match d.resolve() {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        warn!("Shell variable '{}' failed: {e}", var.name);
+                        None
+                    }
+                })
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Role variable '{}' is required but not provided (use -v {}=VALUE)",
+                    var.name,
+                    var.name
+                )
+            })?;
+        typed.insert(var.name.clone(), (Value::String(value), false));
+    }
+
+    if let Some(schema) = input_schema {
+        for slot in schema_slots(schema) {
+            // Phase 33C: a CLI `-v` value is coerced against the property's
+            // declared type (and propagates the error if it doesn't fit);
+            // otherwise fall back to the declared default.
+            let value: Option<Value> = match cli.and_then(|m| m.get(&slot.name)) {
+                Some(raw) => Some(coerce_cli_value(&slot.name, raw, slot.slot_type.as_deref())?),
+                None => slot.default.as_ref().and_then(|d| match d.resolve() {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        warn!("Shell default for '{}' failed: {e}", slot.name);
+                        None
+                    }
+                }),
+            };
+            if let Some(v) = value {
+                typed.insert(slot.name.clone(), (v, slot.pretty));
+            }
+        }
+    }
+
+    Ok(typed
+        .into_iter()
+        .map(|(k, (v, pretty))| (k, render_slot(&v, pretty)))
+        .collect())
+}
+
+/// Phase 33A: flatten an `input_schema`'s `properties` into the declared
+/// parameter slots. A `default` that is an object with the single key `shell`
+/// (a string) is read as a shell directive; any other `default` is a literal
+/// JSON value. Returns an empty vec for a schema with no `properties`.
+pub(crate) fn schema_slots(schema: &Value) -> Vec<SchemaSlot> {
+    let props = match schema.get("properties").and_then(Value::as_object) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let required: std::collections::HashSet<&str> = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+
+    props
+        .iter()
+        .map(|(name, prop)| {
+            let default = prop.get("default").map(|d| match d.as_object() {
+                Some(obj)
+                    if obj.len() == 1
+                        && obj.get("shell").and_then(Value::as_str).is_some() =>
+                {
+                    SlotDefault::Shell(obj["shell"].as_str().unwrap().to_string())
+                }
+                _ => SlotDefault::Literal(d.clone()),
+            });
+            let pretty = prop
+                .get("x-aichat")
+                .and_then(|x| x.get("render"))
+                .and_then(Value::as_str)
+                == Some("pretty");
+            let slot_type = prop
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            SchemaSlot {
+                name: name.clone(),
+                default,
+                required: required.contains(name.as_str()),
+                pretty,
+                slot_type,
+            }
+        })
+        .collect()
+}
+
+/// Phase 33C: coerce a CLI `-v name=value` string into the JSON type declared
+/// by the matching schema property.
+///
+/// - `@path` reads the file: parsed as JSON for non-string slots, used verbatim
+///   for a `string` slot (so a text file can populate a string slot).
+/// - `string` (or an undeclared type) keeps the raw value.
+/// - `integer` / `number` / `boolean` parse to the scalar, erroring with a
+///   message that names the property, the value, and the expected type.
+/// - `array` / `object` parse as JSON and must produce the matching container.
+pub(crate) fn coerce_cli_value(
+    name: &str,
+    raw: &str,
+    slot_type: Option<&str>,
+) -> anyhow::Result<Value> {
+    // `@path` pulls the value from a file. For a string slot the file content is
+    // the value verbatim; otherwise the content is parsed as JSON.
+    let (text, from_file) = match raw.strip_prefix('@') {
+        Some(path) => {
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("-v {name}=@{path}: failed to read file"))?;
+            (content, true)
+        }
+        None => (raw.to_string(), false),
+    };
+    let body = if from_file { text.trim() } else { text.as_str() };
+
+    let coerce_err = |expected: &str| {
+        anyhow::anyhow!("-v {name}={body}: value is not a valid {expected}")
+    };
+
+    match slot_type {
+        None | Some("string") => Ok(Value::String(if from_file {
+            text.clone()
+        } else {
+            raw.to_string()
+        })),
+        Some("integer") => body
+            .parse::<i64>()
+            .map(|n| Value::Number(n.into()))
+            .map_err(|_| coerce_err("integer")),
+        Some("number") => body
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .ok_or_else(|| coerce_err("number")),
+        Some("boolean") => body
+            .parse::<bool>()
+            .map(Value::Bool)
+            .map_err(|_| coerce_err("boolean")),
+        Some(t @ ("array" | "object")) => {
+            let v: Value = serde_json::from_str(body).map_err(|_| coerce_err(t))?;
+            let ok = (t == "array" && v.is_array()) || (t == "object" && v.is_object());
+            if ok {
+                Ok(v)
+            } else {
+                Err(coerce_err(t))
+            }
+        }
+        // Unknown / unsupported type annotation: leave it a string.
+        Some(_) => Ok(Value::String(raw.to_string())),
+    }
+}
+
+/// Phase 33C: the name of the schema property annotated
+/// `x-aichat: { source: stdin }`, if any. That slot receives the stdin/message
+/// content (the conventional name is `body`). Returns the first such property;
+/// `None` when no property opts in (the common case — existing roles).
+pub(crate) fn stdin_slot(schema: &Value) -> Option<String> {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)?
+        .iter()
+        .find(|(_, prop)| {
+            prop.get("x-aichat")
+                .and_then(|x| x.get("source"))
+                .and_then(Value::as_str)
+                == Some("stdin")
+        })
+        .map(|(name, _)| name.clone())
 }
 
 #[derive(Debug)]
@@ -465,6 +1376,91 @@ fn compose_role_content(parts: &RawRoleParts) -> String {
     }
 }
 
+/// Phase 16F / 16G: federation-safe projection of a `Role`.
+///
+/// Designed for the `/v1/roles` and `/v1/roles/{name}` endpoints. Surfaces
+/// only the fields a remote caller needs to decide whether to invoke the
+/// role and what shape its I/O takes. Deliberately omits anything the
+/// server's operator would consider sensitive:
+///
+/// - `prompt` body (may contain proprietary instructions, secrets, internal
+///   tone/voice guidance)
+/// - shell-injective variable defaults (`{shell: "cmd"}`) — those are
+///   commands, not data
+/// - `pipe_to` / `save_to` (server-local shell commands and filesystem paths)
+/// - `mcp_servers` / `use_tools` (internal binding wiring)
+/// - pipeline stage definitions beyond a length count (stage role names are
+///   server-local identifiers; exposing them leaks the server's role
+///   namespace)
+///
+/// Schemas (`input_schema`, `output_schema`) are included verbatim: they are
+/// the contract the remote caller needs to satisfy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RolePublicView {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<Value>,
+    pub has_pipeline: bool,
+    pub pipeline_length: usize,
+    /// Phase 14B port summary, e.g. `"text"`, `"json{a, b}"`, `"any"`.
+    pub port_input: String,
+    pub port_output: String,
+    /// Opt-in only: populated when callers explicitly request the prompt
+    /// body (e.g. the local playground via `?include_prompt=1`). Default
+    /// `From<&Role>` leaves this `None` so federated/remote `/v1/roles`
+    /// responses still hide it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+}
+
+impl RolePublicView {
+    pub fn with_prompt(mut self, role: &Role) -> Self {
+        self.prompt = Some(role.prompt().to_string());
+        self
+    }
+}
+
+impl From<&Role> for RolePublicView {
+    fn from(role: &Role) -> Self {
+        RolePublicView {
+            name: role.name().to_string(),
+            description: role.description().map(str::to_string),
+            tags: role.tags().map(<[String]>::to_vec),
+            capabilities: role.capabilities().to_vec(),
+            // Prefer the user-declared model_id; fall back to the resolved
+            // model's id if one is attached, otherwise omit.
+            model: role
+                .model_id()
+                .map(str::to_string)
+                .or_else(|| {
+                    let id = role.model.id();
+                    if id.is_empty() {
+                        None
+                    } else {
+                        Some(id)
+                    }
+                }),
+            input_schema: role.input_schema().cloned(),
+            output_schema: role.output_schema().cloned(),
+            has_pipeline: role.is_pipeline(),
+            pipeline_length: role.pipeline().map(<[PipelineNode]>::len).unwrap_or(0),
+            port_input: role.port_input_summary(),
+            port_output: role.port_output_summary(),
+            prompt: None,
+        }
+    }
+}
+
 impl Role {
     pub fn resolve(name: &str) -> Result<Self> {
         let mut visited = Vec::new();
@@ -520,6 +1516,14 @@ impl Role {
                                         );
                                     }
                                 }
+                                "capabilities" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.capabilities = arr
+                                            .iter()
+                                            .filter_map(|v| v.as_str().map(String::from))
+                                            .collect();
+                                    }
+                                }
                                 "examples" => {
                                     if let Some(arr) = value.as_array() {
                                         role.examples = Some(
@@ -539,16 +1543,20 @@ impl Role {
                                     if let Some(arr) = value.as_array() {
                                         role.pipeline = Some(
                                             arr.iter()
-                                                .filter_map(|v| match serde_json::from_value::<RolePipelineStage>(v.clone()) {
-                                                    Ok(stage) => Some(stage),
+                                                .filter_map(|v| match parse_pipeline_node(v) {
+                                                    Ok(node) => Some(node),
                                                     Err(e) => {
-                                                        warn!("Skipping invalid pipeline stage in role '{}': {e}", name);
+                                                        warn!("Skipping invalid pipeline node in role '{}': {e}", name);
                                                         None
                                                     }
                                                 })
                                                 .collect(),
                                         );
                                     }
+                                }
+                                // Phase 11D: total dollar budget for the pipeline.
+                                "pipeline_budget_usd" => {
+                                    role.pipeline_budget_usd = value.as_f64();
                                 }
                                 "extends" => role.extends = value.as_str().map(|v| v.to_string()),
                                 "include" => {
@@ -611,6 +1619,21 @@ impl Role {
                                     role.knowledge_mode =
                                         value.as_str().map(|v| v.to_string())
                                 }
+                                // Phase 23A: output-scoring metrics
+                                "metrics" => {
+                                    if let Some(arr) = value.as_array() {
+                                        role.metrics = arr
+                                            .iter()
+                                            .filter_map(|v| match serde_json::from_value::<RoleMetric>(v.clone()) {
+                                                Ok(m) => Some(m),
+                                                Err(e) => {
+                                                    warn!("Skipping invalid metric in role '{}': {e}", name);
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+                                    }
+                                }
                                 // Phase 27D: per-fact citation markers in LLM output
                                 "attributed_output" => {
                                     role.attributed_output =
@@ -661,6 +1684,12 @@ impl Role {
         if let Some(tags) = &self.tags {
             meta.insert("tags".into(), serde_json::to_value(tags).unwrap_or_default());
         }
+        if !self.capabilities.is_empty() {
+            meta.insert(
+                "capabilities".into(),
+                serde_json::to_value(&self.capabilities).unwrap_or_default(),
+            );
+        }
         if let Some(model) = self.model_id() {
             meta.insert("model".into(), Value::String(model.to_string()));
         }
@@ -682,8 +1711,14 @@ impl Role {
         if let Some(examples) = &self.examples {
             meta.insert("examples".into(), serde_json::json!(examples));
         }
+        if !self.metrics.is_empty() {
+            meta.insert("metrics".into(), serde_json::json!(self.metrics));
+        }
         if let Some(pipeline) = &self.pipeline {
             meta.insert("pipeline".into(), serde_json::json!(pipeline));
+        }
+        if let Some(budget) = self.pipeline_budget_usd {
+            meta.insert("pipeline_budget_usd".into(), serde_json::json!(budget));
         }
         if let Some(pipe_to) = &self.pipe_to {
             meta.insert("pipe_to".into(), Value::String(pipe_to.clone()));
@@ -821,12 +1856,43 @@ impl Role {
         self.output_schema.is_some()
     }
 
+    /// Phase 14B: human-readable summary of the role's input port. Returns
+    /// `"any"` (no schema), `"text"` (string schema), `"json{a, b, c}"` (object
+    /// schema), `"array"` (array schema), or `"json"` (other shapes).
+    pub fn port_input_summary(&self) -> String {
+        port_summary_from_schema(self.input_schema.as_ref())
+    }
+
+    /// Phase 14B: human-readable summary of the role's output port. Defaults
+    /// to `"text"` when no `output_schema` is declared (the LLM emits free
+    /// text by default).
+    pub fn port_output_summary(&self) -> String {
+        port_summary_from_schema_for_output(self.output_schema.as_ref())
+    }
+
+    /// Phase 14B: does the input port accept the given type-string? Tolerant
+    /// match against the human form returned by `port_input_summary` — e.g.
+    /// `"json"` matches `"json{a, b}"`.
+    pub fn port_accepts(&self, type_query: &str) -> bool {
+        port_signature_matches(&self.port_input_summary(), type_query)
+    }
+
+    /// Phase 14B: does the output port produce the given type-string?
+    pub fn port_produces(&self, type_query: &str) -> bool {
+        port_signature_matches(&self.port_output_summary(), type_query)
+    }
+
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
     }
 
     pub fn tags(&self) -> Option<&[String]> {
         self.tags.as_deref()
+    }
+
+    /// Phase 14A: capability tags declared by this role for discovery.
+    pub fn capabilities(&self) -> &[String] {
+        &self.capabilities
     }
 
     pub fn description_or_derived(&self) -> String {
@@ -854,12 +1920,73 @@ impl Role {
         self.examples.as_deref()
     }
 
-    pub fn pipeline(&self) -> Option<&[RolePipelineStage]> {
+    /// Phase 21: returns the full DAG node list. Sequential stages, fan-out
+    /// (`Parallel`), and conditional routing (`Switch`) all live here.
+    pub fn pipeline(&self) -> Option<&[PipelineNode]> {
         self.pipeline.as_deref()
+    }
+
+    /// Backward-compatible view: returns the leaf stage list when the
+    /// pipeline is purely sequential (every top-level node is a `Stage`).
+    /// For DAG pipelines, returns `None` — callers that need a flat list
+    /// should use `pipeline_all_stages()` instead, which walks the tree.
+    pub fn pipeline_sequential(&self) -> Option<Vec<RolePipelineStage>> {
+        let nodes = self.pipeline.as_ref()?;
+        let mut out = Vec::with_capacity(nodes.len());
+        for n in nodes {
+            match n {
+                PipelineNode::Stage(s) => out.push(s.clone()),
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+
+    /// Phase 21: every leaf stage reachable from the pipeline, including
+    /// stages inside parallel branches and switch arms. Used for preflight
+    /// validation — `validate_pipeline_stages` checks each one exists.
+    pub fn pipeline_all_stages(&self) -> Vec<RolePipelineStage> {
+        let nodes = match &self.pipeline {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for n in nodes {
+            for s in n.all_stages() {
+                out.push(s.clone());
+            }
+        }
+        out
+    }
+
+    /// Phase 21: custom-role merger names reachable from any parallel node.
+    pub fn pipeline_merge_roles(&self) -> Vec<String> {
+        let nodes = match &self.pipeline {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for n in nodes {
+            for name in n.merge_role_names() {
+                out.push(name);
+            }
+        }
+        out
     }
 
     pub fn is_pipeline(&self) -> bool {
         self.pipeline.as_ref().is_some_and(|p| !p.is_empty())
+    }
+
+    /// Phase 21: true iff the pipeline contains any DAG primitive
+    /// (`parallel:` or `switch:`). Purely sequential pipelines return false.
+    pub fn pipeline_has_dag(&self) -> bool {
+        match &self.pipeline {
+            Some(nodes) => nodes
+                .iter()
+                .any(|n| !matches!(n, PipelineNode::Stage(_))),
+            None => false,
+        }
     }
 
     pub fn pipe_to(&self) -> Option<&str> {
@@ -891,9 +2018,20 @@ impl Role {
         &self.fallback_models
     }
 
+    /// Phase 11D: Total dollar budget for this role's pipeline, divided
+    /// across stages by `budget_weight`. `None` means no budget enforced.
+    pub fn pipeline_budget_usd(&self) -> Option<f64> {
+        self.pipeline_budget_usd
+    }
+
     /// Phase 26C: Knowledge-base bindings declared by this role.
     pub fn knowledge_bindings(&self) -> &[KnowledgeBinding] {
         &self.knowledge_bindings
+    }
+
+    /// Phase 23A: output-scoring metrics declared by this role.
+    pub fn metrics(&self) -> &[RoleMetric] {
+        &self.metrics
     }
 
     /// Phase 26E: "inject" (default) or "tool". When `tool`, the
@@ -930,6 +2068,18 @@ impl Role {
         &self.role_mcp_servers
     }
 
+    /// Phase 12A: parent role this one extends (post-resolution this is None;
+    /// preserved when `Role::new` is called directly on raw frontmatter).
+    pub fn extends(&self) -> Option<&str> {
+        self.extends.as_deref()
+    }
+
+    /// Phase 12A: included role names (post-resolution this is empty;
+    /// preserved when `Role::new` is called directly on raw frontmatter).
+    pub fn include(&self) -> &[String] {
+        &self.include
+    }
+
     pub fn variables(&self) -> &[RoleVariable] {
         &self.variables
     }
@@ -937,6 +2087,31 @@ impl Role {
     pub fn apply_variables(&mut self, vars: &IndexMap<String, String>) {
         for (k, v) in vars {
             self.prompt = self.prompt.replace(&format!("{{{{{k}}}}}"), v);
+        }
+    }
+
+    /// Phase 33C: true when this role's `input_schema` declares a property with
+    /// `x-aichat: { source: stdin }`. Such roles take their message as free text
+    /// (routed into that slot), so the raw message is not validated against the
+    /// object schema.
+    pub fn has_stdin_slot(&self) -> bool {
+        self.input_schema
+            .as_ref()
+            .map(|s| stdin_slot(s).is_some())
+            .unwrap_or(false)
+    }
+
+    /// Phase 33C: route the `x-aichat: { source: stdin }` slot to the input by
+    /// rewriting its `{{name}}` token to the `INPUT_PLACEHOLDER` sentinel, so the
+    /// existing embedded-prompt machinery splices the message there at build
+    /// time. No-op when no slot opts into stdin.
+    pub fn route_stdin_slot(&mut self) {
+        if let Some(schema) = &self.input_schema {
+            if let Some(name) = stdin_slot(schema) {
+                self.prompt = self
+                    .prompt
+                    .replace(&format!("{{{{{name}}}}}"), INPUT_PLACEHOLDER);
+            }
         }
     }
 
@@ -1262,6 +2437,502 @@ fn save_output_to_path(template: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
+/// Phase 13A: produce the contents of a new role file that `extends:` an
+/// existing one. The parent's metadata is inspected so the new file's
+/// frontmatter carries commented-out hints for the fields the parent
+/// declares (model/temperature/top_p/use_tools/input_schema/output_schema).
+/// The parent prompt body is *not* duplicated — it is inherited via the
+/// extends chain. Pure function so it can be unit-tested without touching
+/// the filesystem.
+pub fn render_forked_role(source_name: &str, parent_metadata: &serde_json::Map<String, Value>) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    out.push_str("---\n");
+    let _ = writeln!(out, "extends: {source_name}");
+
+    // Order the hint lines the way a reader scans frontmatter: model first,
+    // then sampling, then I/O contracts, then tools. Each commented line
+    // shows the parent's current value so the fork starts as a no-op
+    // override the user can quickly toggle on.
+    let hint_keys: &[&str] = &[
+        "model",
+        "temperature",
+        "top_p",
+        "use_tools",
+        "input_schema",
+        "output_schema",
+    ];
+    for key in hint_keys {
+        if let Some(value) = parent_metadata.get(*key) {
+            push_commented_yaml_field(&mut out, key, value);
+        } else {
+            push_commented_placeholder(&mut out, key);
+        }
+    }
+    out.push_str("---\n");
+
+    // Encourage the writer to put *additions* here. The parent prompt is
+    // inherited; this body is appended after it during resolution (see
+    // `resolve_role_content`).
+    out.push_str("# Add your prompt additions here. The parent prompt is inherited.\n");
+    out
+}
+
+/// Phase 13A: format a single frontmatter field as YAML and prefix each line
+/// with `# ` so it sits in the new file as a hint, not an active override.
+/// Handles scalar values inline and falls back to multi-line emission for
+/// objects/arrays (input_schema, output_schema).
+fn push_commented_yaml_field(out: &mut String, key: &str, value: &Value) {
+    use std::fmt::Write;
+
+    match value {
+        Value::String(s) => {
+            let _ = writeln!(out, "# {key}: {}", yaml_scalar(s));
+        }
+        Value::Bool(b) => {
+            let _ = writeln!(out, "# {key}: {b}");
+        }
+        Value::Number(n) => {
+            let _ = writeln!(out, "# {key}: {n}");
+        }
+        Value::Null => {
+            let _ = writeln!(out, "# {key}: null");
+        }
+        _ => {
+            // Object/array — emit on multiple lines so the YAML stays valid
+            // when the user uncomments.
+            let yaml = serde_yaml::to_string(value).unwrap_or_else(|_| "{}".to_string());
+            let _ = writeln!(out, "# {key}:");
+            for line in yaml.lines() {
+                if line.is_empty() {
+                    continue;
+                }
+                let _ = writeln!(out, "#   {line}");
+            }
+        }
+    }
+}
+
+fn push_commented_placeholder(out: &mut String, key: &str) {
+    use std::fmt::Write;
+
+    let placeholder = match key {
+        "model" => "claude:claude-sonnet-4-6",
+        "temperature" => "0.7",
+        "top_p" => "1.0",
+        "use_tools" => "search,fs",
+        "input_schema" => "{ type: object, properties: { ... } }",
+        "output_schema" => "{ type: object, properties: { ... } }",
+        _ => "<value>",
+    };
+    let _ = writeln!(out, "# {key}: {placeholder}");
+}
+
+/// Quote a YAML scalar only if it'd be parsed as something other than a
+/// plain string (contains a colon, leading dash, etc). Good enough for the
+/// commented hints — the user is going to read and edit these by hand.
+fn yaml_scalar(s: &str) -> String {
+    let needs_quotes = s.is_empty()
+        || s.starts_with(' ')
+        || s.starts_with('-')
+        || s.starts_with('#')
+        || s.contains(':')
+        || s.contains('"')
+        || s.contains('\'')
+        || s.contains('\n');
+    if needs_quotes {
+        format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// Phase 13A: source role lookup that exposes its raw frontmatter (not the
+/// resolved/merged one). Used by `fork_role` so the hint comments reflect
+/// what the parent actually declares — without inheriting its own parent's
+/// fields a second time.
+pub fn read_role_raw_metadata(name: &str) -> Result<serde_json::Map<String, Value>> {
+    let content = read_raw_role_content(name)?;
+    let parts = parse_raw_frontmatter(&content);
+    Ok(parts.metadata)
+}
+
+/// Phase 13B: format a multi-line teaching error for a pipeline stage whose
+/// input failed schema validation. Shows the actual JSON keys produced by
+/// the upstream stage (or the raw text if non-JSON) alongside the consumer
+/// schema's required/declared properties, plus a hint suggesting a transform
+/// role between the two. Returns `None` when the input parses but is not an
+/// object — there's no key-level diff to compute in that case, so the caller
+/// should fall back to the terse error.
+pub fn format_pipeline_input_schema_error(
+    stage_num: usize,
+    role_name: &str,
+    schema: &Value,
+    input_text: &str,
+    underlying: &str,
+) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "pipeline stage {stage_num} input schema validation failed (role '{role_name}'):"
+    );
+    let _ = writeln!(out, "  {}", underlying.trim());
+
+    let (consumer_required, consumer_props) = schema_object_field_names(schema);
+    let produced = parse_input_field_names(input_text);
+
+    out.push('\n');
+    match produced {
+        Some(ref keys) => {
+            let _ = writeln!(out, "  Stage {} produced: {}", stage_num - 1, format_field_list(keys));
+        }
+        None => {
+            let preview: String = input_text.chars().take(60).collect();
+            let suffix = if input_text.chars().count() > 60 { "..." } else { "" };
+            let _ = writeln!(
+                out,
+                "  Stage {} produced: <non-JSON> {:?}{}",
+                stage_num - 1,
+                preview,
+                suffix
+            );
+        }
+    }
+    let consumer_summary = if !consumer_required.is_empty() {
+        format_field_list(&consumer_required)
+    } else if !consumer_props.is_empty() {
+        format_field_list(&consumer_props)
+    } else {
+        "<no declared properties>".to_string()
+    };
+    let _ = writeln!(out, "  Stage {stage_num} expects: {consumer_summary}");
+
+    if let Some(producer_keys) = produced {
+        let missing: Vec<&String> = consumer_required
+            .iter()
+            .filter(|k| !producer_keys.contains(k))
+            .collect();
+        let extra: Vec<&String> = producer_keys
+            .iter()
+            .filter(|k| !consumer_props.contains(k) && !consumer_required.contains(k))
+            .collect();
+        if !missing.is_empty() {
+            let _ = writeln!(
+                out,
+                "  Missing fields: {}",
+                missing.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+        if !extra.is_empty() {
+            let _ = writeln!(
+                out,
+                "  Extra fields: {}",
+                extra.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
+    out.push('\n');
+    out.push_str(
+        "  hint: shape mismatches between adjacent stages are usually fixed by a\n\
+         \x20       transform role between them. To start one:\n\
+         \x20       aichat --fork-role <parent> my-adapter\n",
+    );
+    out
+}
+
+fn schema_object_field_names(schema: &Value) -> (Vec<String>, Vec<String>) {
+    let required = schema
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let props = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .map(|obj| obj.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    (required, props)
+}
+
+fn parse_input_field_names(input_text: &str) -> Option<Vec<String>> {
+    let parsed: Value = serde_json::from_str(input_text.trim()).ok()?;
+    let obj = parsed.as_object()?;
+    Some(obj.keys().cloned().collect())
+}
+
+fn format_field_list(keys: &[String]) -> String {
+    if keys.is_empty() {
+        "{}".to_string()
+    } else {
+        format!("{{ {} }}", keys.join(", "))
+    }
+}
+
+/// Phase 13D: snapshot of a resolved role's authoring-relevant fields, in a
+/// form that's easy to render either as human-readable text or as JSON.
+/// Lives here so both the CLI renderer and any future surface (server,
+/// pi extension) can reuse the same shape.
+#[derive(Debug, Clone, Serialize)]
+pub struct RoleExplanation {
+    pub name: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    pub builtin: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    pub input: String,
+    pub output: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub knowledge: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fallback_models: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipe_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_to: Option<String>,
+    pub has_pipeline: bool,
+    pub pipeline_stage_count: usize,
+    pub pipeline_has_dag: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pipeline_stage_roles: Vec<String>,
+    pub embedded_input: bool,
+    pub prompt_length: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_extends: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub raw_includes: Vec<String>,
+}
+
+/// Phase 13D: build an explanation for the given role name. The role is
+/// loaded via the normal resolution path (so `extends:` is applied and the
+/// prompt is fully materialized) AND its raw frontmatter is re-read to
+/// expose the `extends:`/`include:` declarations that resolution would
+/// otherwise flatten away.
+pub fn build_role_explanation(name: &str) -> Result<RoleExplanation> {
+    let role = Role::resolve(name)?;
+
+    // Re-read the raw file so we can show extends/include even after
+    // resolution has merged them.
+    let raw = parse_raw_frontmatter(&read_raw_role_content(name)?);
+
+    // A role is "builtin" iff there's no user-config file shadowing it.
+    let on_disk = Config::list_roles(false);
+    let builtin = !on_disk.contains(&name.to_string())
+        && Role::list_builtin_role_names().contains(&name.to_string());
+    let source_path = if builtin {
+        Some(format!("<builtin asset: {name}.md>"))
+    } else if on_disk.contains(&name.to_string()) {
+        Some(Config::role_file(name).display().to_string())
+    } else {
+        None
+    };
+
+    let tools_str = role.use_tools().unwrap_or_default();
+    let tools: Vec<String> = tools_str
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let knowledge = if role.knowledge_bindings().is_empty() {
+        None
+    } else {
+        Some(
+            role.knowledge_bindings()
+                .iter()
+                .map(|b| b.name.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    let pipeline_stage_roles: Vec<String> = role
+        .pipeline_all_stages()
+        .iter()
+        .map(|s| s.role.clone())
+        .collect();
+
+    Ok(RoleExplanation {
+        name: role.name().to_string(),
+        description: role.description_or_derived(),
+        source_path,
+        builtin,
+        model: role.model_id().map(String::from),
+        temperature: role.temperature(),
+        top_p: role.top_p(),
+        capabilities: role.capabilities().to_vec(),
+        tags: role.tags().map(|s| s.to_vec()).unwrap_or_default(),
+        input: role.port_input_summary(),
+        output: role.port_output_summary(),
+        tools,
+        knowledge,
+        fallback_models: role.fallback_models().to_vec(),
+        pipe_to: role.pipe_to().map(String::from),
+        save_to: role.save_to().map(String::from),
+        has_pipeline: role.is_pipeline(),
+        pipeline_stage_count: role.pipeline_all_stages().len(),
+        pipeline_has_dag: role.pipeline_has_dag(),
+        pipeline_stage_roles,
+        embedded_input: role.is_embedded_prompt(),
+        prompt_length: role.prompt().len(),
+        raw_extends: raw.extends,
+        raw_includes: raw.includes,
+    })
+}
+
+/// Phase 13D: render an explanation as human-readable text. JSON output is
+/// handled by the caller via `serde_json::to_string_pretty(&exp)`.
+pub fn format_role_explanation(exp: &RoleExplanation) -> String {
+    use std::fmt::Write;
+
+    let mut out = String::new();
+    let _ = writeln!(out, "Role: {}", exp.name);
+    if !exp.description.is_empty() {
+        let _ = writeln!(out, "  description: {}", exp.description);
+    }
+    if let Some(path) = &exp.source_path {
+        let _ = writeln!(out, "  source: {path}");
+    }
+    if let Some(model) = &exp.model {
+        let _ = writeln!(out, "  model: {model}");
+    } else {
+        out.push_str("  model: <default>\n");
+    }
+    if !exp.fallback_models.is_empty() {
+        let _ = writeln!(out, "  fallback_models: [{}]", exp.fallback_models.join(", "));
+    }
+    if let Some(t) = exp.temperature {
+        let _ = writeln!(out, "  temperature: {t}");
+    }
+    if let Some(p) = exp.top_p {
+        let _ = writeln!(out, "  top_p: {p}");
+    }
+    let _ = writeln!(out, "  in: {}  out: {}", exp.input, exp.output);
+    if !exp.capabilities.is_empty() {
+        let _ = writeln!(out, "  capabilities: [{}]", exp.capabilities.join(", "));
+    }
+    if !exp.tags.is_empty() {
+        let _ = writeln!(out, "  tags: [{}]", exp.tags.join(", "));
+    }
+    if !exp.tools.is_empty() {
+        let _ = writeln!(out, "  tools: [{}]", exp.tools.join(", "));
+    }
+    if let Some(kbs) = &exp.knowledge {
+        let _ = writeln!(out, "  knowledge: [{}]", kbs.join(", "));
+    }
+    if let Some(parent) = &exp.raw_extends {
+        let _ = writeln!(out, "  extends: {parent}");
+    }
+    if !exp.raw_includes.is_empty() {
+        let _ = writeln!(out, "  includes: [{}]", exp.raw_includes.join(", "));
+    }
+    if exp.has_pipeline {
+        let kind = if exp.pipeline_has_dag { "DAG" } else { "sequential" };
+        let _ = writeln!(
+            out,
+            "  pipeline: {} stage{} ({kind})",
+            exp.pipeline_stage_count,
+            if exp.pipeline_stage_count == 1 { "" } else { "s" }
+        );
+        if !exp.pipeline_stage_roles.is_empty() {
+            let _ = writeln!(out, "    stages: {}", exp.pipeline_stage_roles.join(" -> "));
+        }
+    }
+    if let Some(pipe) = &exp.pipe_to {
+        let _ = writeln!(out, "  pipe_to: {pipe}");
+    }
+    if let Some(save) = &exp.save_to {
+        let _ = writeln!(out, "  save_to: {save}");
+    }
+    let _ = writeln!(
+        out,
+        "  prompt: {} char{}{}",
+        exp.prompt_length,
+        if exp.prompt_length == 1 { "" } else { "s" },
+        if exp.embedded_input { " (embeds __INPUT__)" } else { "" }
+    );
+    out
+}
+
+/// Phase 14B: render a JSON Schema fragment into a one-line human-readable
+/// type. Used for `port_input_summary` and `port_output_summary`. Returns
+/// `"any"` when no schema is declared so the same helper drives both ports.
+fn port_summary_from_schema(schema: Option<&Value>) -> String {
+    let Some(schema) = schema else {
+        return "any".to_string();
+    };
+    port_summary_render(schema)
+}
+
+/// For the output port, treat "no schema" as `"text"` rather than `"any"` —
+/// the LLM produces free text unless told otherwise.
+fn port_summary_from_schema_for_output(schema: Option<&Value>) -> String {
+    let Some(schema) = schema else {
+        return "text".to_string();
+    };
+    port_summary_render(schema)
+}
+
+fn port_summary_render(schema: &Value) -> String {
+    let kind = schema.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    match kind {
+        "string" => "text".to_string(),
+        "array" => "array".to_string(),
+        "object" => {
+            // List the top-level property names, comma-joined inside `json{}`.
+            // No properties? Just `"json"` — reflects an open-shape object.
+            if let Some(props) = schema.get("properties").and_then(|p| p.as_object()) {
+                if props.is_empty() {
+                    "json".to_string()
+                } else {
+                    let names: Vec<&str> = props.keys().map(|s| s.as_str()).collect();
+                    format!("json{{{}}}", names.join(", "))
+                }
+            } else {
+                "json".to_string()
+            }
+        }
+        "" => "json".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Tolerant match between a port summary and a user-supplied query.
+/// `"json"` matches `"json{...}"`; otherwise prefix-match is used so that
+/// `"text"` matches itself but not `"text-something"` accidentally.
+fn port_signature_matches(summary: &str, query: &str) -> bool {
+    let s = summary.trim();
+    let q = query.trim();
+    if q.is_empty() {
+        return true;
+    }
+    if s == q {
+        return true;
+    }
+    // `json` is the broad family; `json{...}` is a narrower form.
+    if q == "json" && (s == "json" || s.starts_with("json{")) {
+        return true;
+    }
+    false
+}
+
 fn parse_structure_prompt(prompt: &str) -> (&str, Vec<(&str, &str)>) {
     let mut text = prompt;
     let mut search_input = true;
@@ -1313,6 +2984,303 @@ fn parse_structure_prompt(prompt: &str) -> (&str, Vec<(&str, &str)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    // ---- Phase 33B: type-aware slot rendering ----
+
+    #[test]
+    fn render_slot_string_passes_through_unquoted() {
+        assert_eq!(render_slot(&json!("main"), false), "main");
+    }
+
+    #[test]
+    fn render_slot_scalars_render_bare() {
+        assert_eq!(render_slot(&json!(3), false), "3");
+        assert_eq!(render_slot(&json!(true), false), "true");
+        assert_eq!(render_slot(&json!(1.5), false), "1.5");
+    }
+
+    #[test]
+    fn render_slot_null_is_empty() {
+        assert_eq!(render_slot(&json!(null), false), "");
+    }
+
+    #[test]
+    fn render_slot_array_is_compact_json_by_default() {
+        assert_eq!(render_slot(&json!(["a", "b"]), false), r#"["a","b"]"#);
+    }
+
+    #[test]
+    fn render_slot_object_is_compact_json_by_default() {
+        assert_eq!(render_slot(&json!({"k": 1}), false), r#"{"k":1}"#);
+    }
+
+    #[test]
+    fn render_slot_pretty_expands_arrays() {
+        let out = render_slot(&json!(["a", "b"]), true);
+        assert!(out.contains('\n'), "pretty render should be multi-line: {out}");
+        assert!(out.contains("\"a\""));
+    }
+
+    // ---- Phase 33A: schema slot extraction ----
+
+    fn slot<'a>(slots: &'a [SchemaSlot], name: &str) -> &'a SchemaSlot {
+        slots.iter().find(|s| s.name == name).expect("slot present")
+    }
+
+    #[test]
+    fn schema_slots_empty_without_properties() {
+        assert!(schema_slots(&json!({"type": "object"})).is_empty());
+    }
+
+    #[test]
+    fn schema_slots_reads_literal_defaults_by_type() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "target": { "type": "string", "default": "main" },
+                "depth":  { "type": "integer", "default": 3 },
+                "tags":   { "type": "array", "default": ["a", "b"] }
+            }
+        });
+        let slots = schema_slots(&schema);
+        assert_eq!(slot(&slots, "target").default, Some(SlotDefault::Literal(json!("main"))));
+        assert_eq!(slot(&slots, "depth").default, Some(SlotDefault::Literal(json!(3))));
+        assert_eq!(slot(&slots, "tags").default, Some(SlotDefault::Literal(json!(["a", "b"]))));
+    }
+
+    #[test]
+    fn schema_slots_reads_shell_default() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "today": { "type": "string", "default": { "shell": "date +%F" } } }
+        });
+        let slots = schema_slots(&schema);
+        assert_eq!(slot(&slots, "today").default, Some(SlotDefault::Shell("date +%F".to_string())));
+    }
+
+    #[test]
+    fn schema_slots_marks_required_and_pretty() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "files": { "type": "array", "x-aichat": { "render": "pretty" } },
+                "target": { "type": "string", "default": "main" }
+            },
+            "required": ["files"]
+        });
+        let slots = schema_slots(&schema);
+        let files = slot(&slots, "files");
+        assert!(files.required, "files is required");
+        assert!(files.pretty, "files renders pretty");
+        assert!(files.default.is_none());
+        assert!(!slot(&slots, "target").required);
+    }
+
+    // ---- Phase 33A/33B/33E: resolve_slots (unification core) ----
+
+    fn vars(pairs: &[(&str, &str)]) -> IndexMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn resolve_slots_fills_schema_literal_default() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "target": { "type": "string", "default": "main" } }
+        });
+        let out = resolve_slots(&[], Some(&schema), None).unwrap();
+        assert_eq!(out.get("target").map(String::as_str), Some("main"));
+    }
+
+    #[test]
+    fn resolve_slots_cli_overrides_schema_default() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "target": { "type": "string", "default": "main" } }
+        });
+        let cli = vars(&[("target", "dev")]);
+        let out = resolve_slots(&[], Some(&schema), Some(&cli)).unwrap();
+        assert_eq!(out.get("target").map(String::as_str), Some("dev"));
+    }
+
+    #[test]
+    fn resolve_slots_renders_typed_defaults() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "depth": { "type": "integer", "default": 3 },
+                "tags":  { "type": "array", "default": ["a", "b"] }
+            }
+        });
+        let out = resolve_slots(&[], Some(&schema), None).unwrap();
+        assert_eq!(out.get("depth").map(String::as_str), Some("3"));
+        assert_eq!(out.get("tags").map(String::as_str), Some(r#"["a","b"]"#));
+    }
+
+    #[test]
+    fn resolve_slots_skips_required_property_without_value() {
+        // A required schema property with no default and no -v must NOT error
+        // here — message validation still enforces it. It is simply absent.
+        let schema = json!({
+            "type": "object",
+            "properties": { "files": { "type": "array" } },
+            "required": ["files"]
+        });
+        let out = resolve_slots(&[], Some(&schema), None).unwrap();
+        assert!(!out.contains_key("files"), "unresolved required prop is skipped, not errored");
+    }
+
+    #[test]
+    fn resolve_slots_variable_required_without_value_errors() {
+        let var = RoleVariable { name: "who".into(), default: None };
+        let err = resolve_slots(&[var], None, None).unwrap_err();
+        assert!(err.to_string().contains("required but not provided"), "{err}");
+    }
+
+    #[test]
+    fn resolve_slots_variable_default_and_cli() {
+        let var = RoleVariable {
+            name: "target".into(),
+            default: Some(VariableDefault::Value("main".into())),
+        };
+        let out = resolve_slots(std::slice::from_ref(&var), None, None).unwrap();
+        assert_eq!(out.get("target").map(String::as_str), Some("main"));
+
+        let cli = vars(&[("target", "dev")]);
+        let out = resolve_slots(&[var], None, Some(&cli)).unwrap();
+        assert_eq!(out.get("target").map(String::as_str), Some("dev"));
+    }
+
+    #[test]
+    fn resolve_slots_schema_wins_on_name_collision() {
+        // A variable and a schema property share a name; the schema's typed
+        // default is the source of truth.
+        let var = RoleVariable {
+            name: "depth".into(),
+            default: Some(VariableDefault::Value("legacy".into())),
+        };
+        let schema = json!({
+            "type": "object",
+            "properties": { "depth": { "type": "integer", "default": 7 } }
+        });
+        let out = resolve_slots(&[var], Some(&schema), None).unwrap();
+        assert_eq!(out.get("depth").map(String::as_str), Some("7"));
+    }
+
+    #[test]
+    fn resolve_slots_shell_default_runs() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "greeting": { "type": "string", "default": { "shell": "printf hi" } } }
+        });
+        let out = resolve_slots(&[], Some(&schema), None).unwrap();
+        assert_eq!(out.get("greeting").map(String::as_str), Some("hi"));
+    }
+
+    // ---- Phase 33C: CLI value coercion ----
+
+    #[test]
+    fn coerce_string_and_undeclared_keep_raw() {
+        assert_eq!(coerce_cli_value("a", "hello", Some("string")).unwrap(), json!("hello"));
+        assert_eq!(coerce_cli_value("a", "hello", None).unwrap(), json!("hello"));
+    }
+
+    #[test]
+    fn coerce_integer_parses_or_errors() {
+        assert_eq!(coerce_cli_value("depth", "5", Some("integer")).unwrap(), json!(5));
+        let err = coerce_cli_value("depth", "abc", Some("integer")).unwrap_err().to_string();
+        assert!(err.contains("depth") && err.contains("integer"), "{err}");
+    }
+
+    #[test]
+    fn coerce_number_and_boolean() {
+        assert_eq!(coerce_cli_value("x", "1.5", Some("number")).unwrap(), json!(1.5));
+        assert_eq!(coerce_cli_value("ok", "true", Some("boolean")).unwrap(), json!(true));
+        assert!(coerce_cli_value("ok", "yes", Some("boolean")).is_err());
+    }
+
+    #[test]
+    fn coerce_array_and_object_parse_json() {
+        assert_eq!(
+            coerce_cli_value("files", r#"["a","b"]"#, Some("array")).unwrap(),
+            json!(["a", "b"])
+        );
+        assert_eq!(
+            coerce_cli_value("cfg", r#"{"k":1}"#, Some("object")).unwrap(),
+            json!({"k": 1})
+        );
+    }
+
+    #[test]
+    fn coerce_array_rejects_non_array_json() {
+        // Valid JSON, but a scalar where an array was declared.
+        let err = coerce_cli_value("files", "42", Some("array")).unwrap_err().to_string();
+        assert!(err.contains("files") && err.contains("array"), "{err}");
+    }
+
+    #[test]
+    fn coerce_at_file_reads_json_for_container_and_text_for_string() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("cfg.json");
+        std::fs::File::create(&json_path).unwrap().write_all(br#"{"k":1}"#).unwrap();
+        let arg = format!("@{}", json_path.display());
+        assert_eq!(coerce_cli_value("cfg", &arg, Some("object")).unwrap(), json!({"k": 1}));
+
+        let txt_path = dir.path().join("note.txt");
+        std::fs::File::create(&txt_path).unwrap().write_all(b"plain text").unwrap();
+        let targ = format!("@{}", txt_path.display());
+        assert_eq!(coerce_cli_value("body", &targ, Some("string")).unwrap(), json!("plain text"));
+    }
+
+    #[test]
+    fn stdin_slot_finds_annotated_property() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "target": { "type": "string" },
+                "body": { "type": "string", "x-aichat": { "source": "stdin" } }
+            }
+        });
+        assert_eq!(stdin_slot(&schema).as_deref(), Some("body"));
+    }
+
+    #[test]
+    fn stdin_slot_honors_custom_name() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "payload": { "type": "string", "x-aichat": { "source": "stdin" } } }
+        });
+        assert_eq!(stdin_slot(&schema).as_deref(), Some("payload"));
+    }
+
+    #[test]
+    fn stdin_slot_none_when_unannotated() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "target": { "type": "string", "default": "main" } }
+        });
+        assert_eq!(stdin_slot(&schema), None);
+    }
+
+    #[test]
+    fn coerce_cli_value_flows_through_resolve_slots() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "depth": { "type": "integer", "default": 1 } }
+        });
+        // A bad -v value for a typed slot fails resolution (coercion is wired in).
+        let bad = vars(&[("depth", "abc")]);
+        assert!(
+            resolve_slots(&[], Some(&schema), Some(&bad)).is_err(),
+            "non-integer -v for an integer slot must error through resolve_slots"
+        );
+        // A good value coerces and renders.
+        let good = vars(&[("depth", "5")]);
+        let out = resolve_slots(&[], Some(&schema), Some(&good)).unwrap();
+        assert_eq!(out.get("depth").map(String::as_str), Some("5"));
+    }
 
     #[test]
     fn test_parse_structure_prompt1() {
@@ -1567,6 +3535,110 @@ Extract all named entities."#;
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("not valid JSON"));
+    }
+
+    #[test]
+    fn test_role_capabilities_parsed_and_exported() {
+        let content = r#"---
+capabilities: [code-review, security-audit, rust]
+---
+You are a code reviewer."#;
+        let role = Role::new("reviewer", content);
+        assert_eq!(
+            role.capabilities(),
+            &[
+                "code-review".to_string(),
+                "security-audit".to_string(),
+                "rust".to_string()
+            ]
+        );
+        // Round-trip: export and re-parse preserves capabilities
+        let exported = role.export();
+        assert!(exported.contains("capabilities"));
+        let reparsed = Role::new("reviewer", &exported);
+        assert_eq!(reparsed.capabilities(), role.capabilities());
+    }
+
+    #[test]
+    fn test_role_capabilities_empty_when_absent() {
+        let content = "---\nmodel: gpt-4\n---\nNo caps declared.";
+        let role = Role::new("plain", content);
+        assert!(role.capabilities().is_empty());
+        // Empty capabilities should not appear in the exported frontmatter
+        assert!(!role.export().contains("capabilities"));
+    }
+
+    #[test]
+    fn test_port_summary_no_schemas() {
+        let role = Role::new("plain", "---\n---\nHi.");
+        assert_eq!(role.port_input_summary(), "any");
+        assert_eq!(role.port_output_summary(), "text");
+    }
+
+    #[test]
+    fn test_port_summary_string_schema() {
+        let content = r#"---
+input_schema:
+  type: string
+---
+text in."#;
+        let role = Role::new("text-in", content);
+        assert_eq!(role.port_input_summary(), "text");
+    }
+
+    #[test]
+    fn test_port_summary_object_schema_lists_properties() {
+        let content = r#"---
+input_schema:
+  type: object
+  properties:
+    code: { type: string }
+    language: { type: string }
+output_schema:
+  type: object
+  properties:
+    issues: { type: array }
+    severity: { type: string }
+---
+review."#;
+        let role = Role::new("reviewer", content);
+        assert_eq!(role.port_input_summary(), "json{code, language}");
+        assert_eq!(role.port_output_summary(), "json{issues, severity}");
+    }
+
+    #[test]
+    fn test_port_accepts_and_produces() {
+        let content = r#"---
+input_schema:
+  type: object
+  properties:
+    text: { type: string }
+output_schema:
+  type: object
+  properties:
+    label: { type: string }
+---
+classify."#;
+        let role = Role::new("classifier", content);
+        // Tolerant: bare "json" matches "json{...}"
+        assert!(role.port_accepts("json"));
+        assert!(role.port_produces("json"));
+        // Exact summary matches
+        assert!(role.port_accepts("json{text}"));
+        assert!(role.port_produces("json{label}"));
+        // Mismatched type does not match
+        assert!(!role.port_accepts("text"));
+        assert!(!role.port_produces("array"));
+    }
+
+    #[test]
+    fn test_port_accepts_text_for_no_input_schema() {
+        // No input_schema → "any". User asking for "any" matches; "text" does not.
+        let role = Role::new("plain", "---\n---\nplain.");
+        assert!(role.port_accepts("any"));
+        assert!(!role.port_accepts("text"));
+        // Output defaults to "text" when no output_schema declared
+        assert!(role.port_produces("text"));
     }
 
     #[test]
@@ -2305,6 +4377,92 @@ Prompt."#;
         );
     }
 
+    // ---- Phase 11D: Pipeline budget propagation ----
+
+    #[test]
+    fn test_pipeline_budget_usd_default_none() {
+        let content = "---\nmodel: a\n---\nPrompt.";
+        let role = Role::new("no-budget", content);
+        assert_eq!(role.pipeline_budget_usd(), None);
+    }
+
+    #[test]
+    fn test_pipeline_budget_usd_parsed_from_frontmatter() {
+        let content = r#"---
+pipeline_budget_usd: 0.05
+pipeline:
+  - role: extract
+  - role: review
+---
+Prompt."#;
+        let role = Role::new("budgeted-pipeline", content);
+        assert_eq!(role.pipeline_budget_usd(), Some(0.05));
+    }
+
+    #[test]
+    fn test_pipeline_budget_usd_in_export() {
+        let content = r#"---
+pipeline_budget_usd: 0.10
+---
+Prompt."#;
+        let role = Role::new("export-budget", content);
+        let exported = role.export();
+        assert!(
+            exported.contains("pipeline_budget_usd"),
+            "budget must round-trip: {exported}"
+        );
+        assert!(exported.contains("0.1"));
+    }
+
+    #[test]
+    fn test_pipeline_budget_allocates_proportionally_via_allocator() {
+        // End-to-end: role frontmatter → pipeline_sequential() → allocator.
+        // Verifies the wiring `invoke_role`/`run()` rely on lines up: a 4 USD
+        // budget split across stages with weights [default=1, 2, default=1]
+        // gives [1.0, 2.0, 1.0] (totals 4.0).
+        let content = r#"---
+pipeline_budget_usd: 4.0
+pipeline:
+  - role: extract
+  - role: review
+    budget_weight: 2.0
+  - role: format
+---
+Prompt."#;
+        let role = Role::new("alloc-end-to-end", content);
+        let total = role.pipeline_budget_usd().expect("budget set");
+        let weights: Vec<Option<f64>> = role
+            .pipeline_sequential()
+            .unwrap()
+            .iter()
+            .map(|s| s.budget_weight)
+            .collect();
+        let shares = crate::context_budget::allocate_stage_budgets(&weights, total);
+        assert_eq!(shares.len(), 3);
+        assert!((shares[0] - 1.0).abs() < 1e-9);
+        assert!((shares[1] - 2.0).abs() < 1e-9);
+        assert!((shares[2] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_pipeline_stage_budget_weight_parsed() {
+        let content = r#"---
+pipeline_budget_usd: 1.0
+pipeline:
+  - role: extract
+  - role: review
+    budget_weight: 2.0
+  - role: format
+---
+Prompt."#;
+        let role = Role::new("weighted-stages", content);
+        let stages = role.pipeline_sequential().expect("sequential pipeline");
+        assert_eq!(stages.len(), 3);
+        assert_eq!(stages[0].budget_weight, None);
+        assert_eq!(stages[1].budget_weight, Some(2.0));
+        assert_eq!(stages[2].budget_weight, None);
+    }
+
     // ---- Phase 26C: Knowledge-base bindings ----
 
     #[test]
@@ -2479,5 +4637,433 @@ Prompt."#;
         let exported = role.export();
         let round = Role::new("roundtrip", &exported);
         assert_eq!(round.schema_retries(), Some(2));
+    }
+
+    // ----- Phase 21: DAG primitives -----
+
+    fn yaml_to_node(yaml: &str) -> Result<PipelineNode> {
+        let v: serde_json::Value = serde_yaml::from_str(yaml)?;
+        parse_pipeline_node(&v)
+    }
+
+    #[test]
+    fn pipeline_node_sequential_stage_parses() {
+        let node = yaml_to_node("role: summarize\nmodel: claude-haiku").unwrap();
+        match node {
+            PipelineNode::Stage(s) => {
+                assert_eq!(s.role, "summarize");
+                assert_eq!(s.model.as_deref(), Some("claude-haiku"));
+            }
+            _ => panic!("expected Stage"),
+        }
+    }
+
+    #[test]
+    fn pipeline_node_parallel_parses_default_merge() {
+        let yaml = r#"
+parallel:
+  - role: security-review
+  - role: style-review
+"#;
+        let node = yaml_to_node(yaml).unwrap();
+        match node {
+            PipelineNode::Parallel(p) => {
+                assert_eq!(p.branches.len(), 2);
+                assert!(matches!(p.merge, MergeStrategy::Concatenate));
+            }
+            _ => panic!("expected Parallel"),
+        }
+    }
+
+    #[test]
+    fn pipeline_node_parallel_json_array_merge() {
+        let yaml = r#"
+parallel:
+  - role: a
+  - role: b
+merge: json_array
+"#;
+        let node = yaml_to_node(yaml).unwrap();
+        match node {
+            PipelineNode::Parallel(p) => {
+                assert!(matches!(p.merge, MergeStrategy::JsonArray));
+            }
+            _ => panic!("expected Parallel"),
+        }
+    }
+
+    #[test]
+    fn pipeline_node_parallel_custom_role_merge() {
+        let yaml = r#"
+parallel:
+  - role: a
+  - role: b
+merge:
+  custom_role: synthesize
+"#;
+        let node = yaml_to_node(yaml).unwrap();
+        match node {
+            PipelineNode::Parallel(p) => match p.merge {
+                MergeStrategy::CustomRole(r) => assert_eq!(r, "synthesize"),
+                _ => panic!("expected CustomRole"),
+            },
+            _ => panic!("expected Parallel"),
+        }
+    }
+
+    #[test]
+    fn pipeline_node_parallel_rejects_empty_branches() {
+        let yaml = r#"
+parallel: []
+"#;
+        let err = yaml_to_node(yaml).unwrap_err();
+        assert!(err.to_string().contains("at least one branch"));
+    }
+
+    #[test]
+    fn pipeline_node_parallel_rejects_unknown_merge() {
+        let yaml = r#"
+parallel:
+  - role: a
+merge: weird
+"#;
+        let err = yaml_to_node(yaml).unwrap_err();
+        assert!(err.to_string().contains("Unknown merge"));
+    }
+
+    #[test]
+    fn pipeline_node_switch_parses_when_and_otherwise() {
+        let yaml = r#"
+switch:
+  - when: { output_field: "category", equals: "bug" }
+    role: bug-triage
+  - when: { output_field: "category", equals: "feature" }
+    role: feature-review
+  - otherwise: true
+    role: general-review
+"#;
+        let node = yaml_to_node(yaml).unwrap();
+        match node {
+            PipelineNode::Switch(s) => {
+                assert_eq!(s.branches.len(), 3);
+                assert!(s.branches[0].predicate.is_some());
+                assert!(s.branches[2].predicate.is_none());
+                match s.branches[2].node.as_ref() {
+                    PipelineNode::Stage(stg) => {
+                        assert_eq!(stg.role, "general-review")
+                    }
+                    _ => panic!("expected Stage in otherwise"),
+                }
+            }
+            _ => panic!("expected Switch"),
+        }
+    }
+
+    #[test]
+    fn pipeline_node_switch_rejects_double_otherwise() {
+        let yaml = r#"
+switch:
+  - otherwise: true
+    role: a
+  - otherwise: true
+    role: b
+"#;
+        let err = yaml_to_node(yaml).unwrap_err();
+        assert!(err.to_string().contains("more than one `otherwise:`"));
+    }
+
+    #[test]
+    fn pipeline_node_switch_rejects_branch_with_no_predicate_or_otherwise() {
+        let yaml = r#"
+switch:
+  - role: lonely
+"#;
+        let err = yaml_to_node(yaml).unwrap_err();
+        assert!(err.to_string().contains("requires either `when:` or `otherwise:`"));
+    }
+
+    #[test]
+    fn pipeline_node_switch_rejects_when_with_no_body() {
+        let yaml = r#"
+switch:
+  - when: { contains: "foo" }
+"#;
+        let err = yaml_to_node(yaml).unwrap_err();
+        // anyhow chain: outer context names the branch, inner gives the rule.
+        let full = format!("{err:#}");
+        assert!(full.contains("has no executable body"));
+        assert!(full.contains("must specify `role:`, `parallel:`, or `switch:`"));
+    }
+
+    #[test]
+    fn pipeline_node_nested_parallel_inside_switch() {
+        let yaml = r#"
+switch:
+  - when: { output_field: "kind", equals: "deep" }
+    parallel:
+      - role: a
+      - role: b
+    merge: json_array
+  - otherwise: true
+    role: quick
+"#;
+        let node = yaml_to_node(yaml).unwrap();
+        match node {
+            PipelineNode::Switch(s) => match s.branches[0].node.as_ref() {
+                PipelineNode::Parallel(p) => {
+                    assert_eq!(p.branches.len(), 2);
+                    assert!(matches!(p.merge, MergeStrategy::JsonArray));
+                }
+                _ => panic!("expected Parallel inside Switch"),
+            },
+            _ => panic!("expected Switch"),
+        }
+    }
+
+    #[test]
+    fn predicate_equals_matches_text_output() {
+        let p = Predicate {
+            contains: Some("error".into()),
+            ..Default::default()
+        };
+        assert!(p.evaluate("there was an error in the build"));
+        assert!(!p.evaluate("all clean"));
+    }
+
+    #[test]
+    fn predicate_equals_on_json_field() {
+        let p = Predicate {
+            output_field: Some("category".into()),
+            equals: Some(serde_json::Value::String("bug".into())),
+            ..Default::default()
+        };
+        assert!(p.evaluate(r#"{"category": "bug", "id": 7}"#));
+        assert!(!p.evaluate(r#"{"category": "feature"}"#));
+        assert!(!p.evaluate("not json at all"));
+    }
+
+    #[test]
+    fn predicate_dotted_field() {
+        let p = Predicate {
+            output_field: Some("meta.kind".into()),
+            equals: Some(serde_json::Value::String("urgent".into())),
+            ..Default::default()
+        };
+        assert!(p.evaluate(r#"{"meta": {"kind": "urgent"}}"#));
+        assert!(!p.evaluate(r#"{"meta": {"kind": "low"}}"#));
+        assert!(!p.evaluate(r#"{"meta": "not-an-object"}"#));
+    }
+
+    #[test]
+    fn predicate_gt_lt_numeric() {
+        let p_gt = Predicate {
+            output_field: Some("score".into()),
+            gt: Some(0.5),
+            ..Default::default()
+        };
+        assert!(p_gt.evaluate(r#"{"score": 0.9}"#));
+        assert!(!p_gt.evaluate(r#"{"score": 0.1}"#));
+        let p_lt = Predicate {
+            output_field: Some("score".into()),
+            lt: Some(0.5),
+            ..Default::default()
+        };
+        assert!(p_lt.evaluate(r#"{"score": 0.1}"#));
+        assert!(!p_lt.evaluate(r#"{"score": 0.9}"#));
+    }
+
+    #[test]
+    fn predicate_loose_string_number_equality() {
+        // YAML often unquotes numbers — `equals: 1` and `equals: "1"`
+        // should both match a string "1" or number 1.
+        let p = Predicate {
+            output_field: Some("v".into()),
+            equals: Some(serde_json::Value::Number(serde_json::Number::from(1))),
+            ..Default::default()
+        };
+        assert!(p.evaluate(r#"{"v": 1}"#));
+        assert!(p.evaluate(r#"{"v": "1"}"#));
+        assert!(!p.evaluate(r#"{"v": 2}"#));
+    }
+
+    #[test]
+    fn role_frontmatter_parses_full_dag() {
+        let content = r#"---
+pipeline:
+  - role: extract
+  - parallel:
+      - role: security-review
+      - role: style-review
+    merge: concatenate
+  - role: synthesize
+---
+Body."#;
+        let role = Role::new("dag-role", content);
+        assert!(role.is_pipeline());
+        assert!(role.pipeline_has_dag());
+        let nodes = role.pipeline().unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert!(matches!(nodes[1], PipelineNode::Parallel(_)));
+        // pipeline_all_stages walks into branches.
+        let all = role.pipeline_all_stages();
+        let names: Vec<String> = all.iter().map(|s| s.role.clone()).collect();
+        assert_eq!(
+            names,
+            vec!["extract", "security-review", "style-review", "synthesize"]
+        );
+        // Sequential view bails on DAG.
+        assert!(role.pipeline_sequential().is_none());
+    }
+
+    #[test]
+    fn role_frontmatter_parses_pure_sequential_via_new_path() {
+        // Sequential pipelines still appear in pipeline_sequential.
+        let content = r#"---
+pipeline:
+  - role: a
+  - role: b
+    model: claude-haiku
+---
+Body."#;
+        let role = Role::new("seq", content);
+        assert!(!role.pipeline_has_dag());
+        let seq = role.pipeline_sequential().unwrap();
+        assert_eq!(seq.len(), 2);
+        assert_eq!(seq[1].model.as_deref(), Some("claude-haiku"));
+    }
+
+    #[test]
+    fn structural_check_rejects_empty_stage_role() {
+        let node = PipelineNode::Stage(RolePipelineStage {
+            role: " ".into(),
+            model: None,
+            budget_weight: None,
+        });
+        let err = node.structural_check().unwrap_err();
+        assert!(err.to_string().contains("empty role"));
+    }
+
+    #[test]
+    fn pipeline_merge_roles_collected_recursively() {
+        let yaml = r#"
+parallel:
+  - role: a
+  - parallel:
+      - role: b
+      - role: c
+    merge:
+      custom_role: inner-merge
+merge:
+  custom_role: outer-merge
+"#;
+        let node = yaml_to_node(yaml).unwrap();
+        let mergers = node.merge_role_names();
+        assert!(mergers.contains(&"inner-merge".to_string()));
+        assert!(mergers.contains(&"outer-merge".to_string()));
+        assert_eq!(mergers.len(), 2);
+    }
+
+    // ---- Phase 16F/16G: RolePublicView ----
+
+    #[test]
+    fn public_view_redacts_prompt_body() {
+        let content = r#"---
+description: A summarizer
+---
+INTERNAL: secret system prompt body that must not leak."#;
+        let role = Role::new("summarize", content);
+        let view = RolePublicView::from(&role);
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(
+            !json.contains("INTERNAL"),
+            "prompt body must not leak via public view: {json}"
+        );
+        assert!(
+            !json.contains("secret"),
+            "prompt body must not leak via public view: {json}"
+        );
+    }
+
+    #[test]
+    fn public_view_exposes_metadata_and_schemas() {
+        let content = r#"---
+description: Classifies text
+tags: [text, classification]
+capabilities: [text-classification, label]
+model: openai:gpt-4o
+input_schema:
+  type: string
+output_schema:
+  type: object
+  properties:
+    label: { type: string }
+---
+Secret prompt."#;
+        let role = Role::new("classify", content);
+        let view = RolePublicView::from(&role);
+        assert_eq!(view.name, "classify");
+        assert_eq!(view.description.as_deref(), Some("Classifies text"));
+        assert_eq!(
+            view.tags.as_deref(),
+            Some(&["text".to_string(), "classification".to_string()][..])
+        );
+        assert_eq!(
+            view.capabilities,
+            vec!["text-classification".to_string(), "label".to_string()]
+        );
+        assert_eq!(view.model.as_deref(), Some("openai:gpt-4o"));
+        assert!(view.input_schema.is_some());
+        assert!(view.output_schema.is_some());
+    }
+
+    #[test]
+    fn public_view_reports_pipeline_shape_without_stage_names() {
+        let content = r#"---
+description: Multi-stage role
+pipeline:
+  - role: stage-one
+  - role: stage-two
+  - role: stage-three
+---
+"#;
+        let role = Role::new("pipe", content);
+        let view = RolePublicView::from(&role);
+        assert!(view.has_pipeline);
+        assert_eq!(view.pipeline_length, 3);
+        // Stage role names belong to the server's namespace; the public view
+        // must not echo them.
+        let json = serde_json::to_string(&view).unwrap();
+        assert!(!json.contains("stage-one"), "stage names leaked: {json}");
+        assert!(!json.contains("stage-two"), "stage names leaked: {json}");
+        assert!(!json.contains("stage-three"), "stage names leaked: {json}");
+    }
+
+    #[test]
+    fn public_view_port_signatures_default_to_text() {
+        // No schema means free-form text I/O — Phase 14B convention.
+        let role = Role::new("plain", "---\n---\n");
+        let view = RolePublicView::from(&role);
+        assert_eq!(view.port_input, "any");
+        assert_eq!(view.port_output, "text");
+    }
+
+    #[test]
+    fn public_view_skips_empty_optional_fields_in_json() {
+        let role = Role::new("bare", "---\n---\n");
+        let view = RolePublicView::from(&role);
+        let json: serde_json::Value = serde_json::to_value(&view).unwrap();
+        let obj = json.as_object().unwrap();
+        // Required fields always present
+        assert!(obj.contains_key("name"));
+        assert!(obj.contains_key("has_pipeline"));
+        assert!(obj.contains_key("pipeline_length"));
+        assert!(obj.contains_key("port_input"));
+        assert!(obj.contains_key("port_output"));
+        // Optional fields elided when empty
+        assert!(!obj.contains_key("description"));
+        assert!(!obj.contains_key("tags"));
+        assert!(!obj.contains_key("capabilities"));
+        assert!(!obj.contains_key("input_schema"));
+        assert!(!obj.contains_key("output_schema"));
     }
 }

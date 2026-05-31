@@ -3,7 +3,7 @@
 **Created:** 2026-03-16 (as "RAG Evolution")
 **Updated:** 2026-04-16 (fully reshaped: moved from vector-RAG improvements to atomic-fact knowledge compilation; research-driven rewrite)
 **Status:** Planning
-**Depends on:** Phase 8D (headless RAG — inherited pattern), Phase 8F (interaction trace), Phase 10B (pipeline stage cache), Phase 11C (budget-aware retrieval)
+**Depends on:** Phase 8D (headless RAG — inherited pattern), Phase 8F (interaction trace), Phase 10B (pipeline stage cache), Phase 11A (context budget allocator — replaces the superseded 11C)
 
 ---
 

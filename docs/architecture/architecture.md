@@ -1,5 +1,11 @@
 # Architecture Notes
 
+> **Future-state diagram:** [`docs/architecture.svg`](../architecture.svg) renders the whole
+> system top-to-bottom (surfaces → gateway → core → caching → providers → external) with the
+> open-harness observability rail. The caching subsystem (Phases 37→41, a LiteLLM
+> feature-for-feature port per [`EVAL-0004`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md))
+> is highlighted as the active build focus.
+
 ---
 
 ### Key Files
@@ -17,9 +23,17 @@
 | `src/mcp.rs` | ~270 | MCP server mode with lazy discovery (Phase 5B) |
 | `src/pipe.rs` | ~220 | Pipeline execution with tool-calling and config isolation |
 | `src/rag/mod.rs` | ~1,030 | RAG: hybrid HNSW+BM25 search, RRF, embedding, sync (Phases 15-17) |
-| `src/serve.rs` | ~960 | HTTP server: OpenAI-compatible API, playground, arena (Phases 12-14) |
+| `src/serve.rs` | ~960 | HTTP server: OpenAI-compatible API, playground, arena (Phases 12-14), bridge `/v1/state/*` for pi REPL |
+| `src/repl/pi.rs` | ~220 | Pi-coding-agent launcher: PATH probe, in-process server, bundled extension staging |
+| `pi-extensions/` | ~250 (TS) | Source for the `aichat-bridge.js` pi extension that surfaces aichat's role/agent/macro/rag commands as slash commands |
 | `src/utils/exit_code.rs` | ~710 | Semantic exit codes, error chain classification, typed tool errors, ToolTimeout |
 | `src/client/common.rs` | — | `call_react` agent loop, model data, provider abstraction |
+
+### Interactive REPL (pi)
+
+The default user-facing REPL is the [pi coding-agent harness](https://github.com/earendil-works/pi). Bare `aichat` launches pi when it's on PATH; if pi isn't installed, aichat warns once and falls back to the built-in Reedline REPL. `--pi-repl` makes the pi launch strict (errors if pi is missing); `--legacy-repl` (or `AICHAT_REPL=legacy`) forces the built-in REPL. The legacy surface stays in-tree under `src/repl/{mod.rs, completer.rs, highlighter.rs, prompt.rs}` with no scheduled removal — the two REPLs are maintained side-by-side.
+
+The launcher (`src/repl/pi.rs`) mints a localhost bridge port, stages `assets/pi-extensions/aichat-bridge.js` into `<cwd>/.pi/extensions/`, and execs `pi` with `AICHAT_BRIDGE_URL` + `AICHAT_BRIDGE_TOKEN` in the env. Pi owns the TUI; aichat owns inference and state. Slash commands (`/role`, `/agent`, `/macro`, `/rag`, `/aichat-session`, `/info`, `/exit-context`) round-trip through `/v1/state/*` on the in-process server, gated by a per-launch bearer token. (`/aichat-session` is namespaced because pi reserves `/session` for its own use.) See [`docs/features/repl-pi.md`](../features/repl-pi.md) and [`docs/features/pi-repl-migration.md`](../features/pi-repl-migration.md).
 
 ### Configuration Hierarchy
 

@@ -1,12 +1,15 @@
 # Phase 16: Server — Hardening & Knowledge Exposure
 
-**Status:** Deferred (2026-04-17)
+**Status:** Done (2026-05-29)
 **Epic:** 5 — Server Pipeline Engine
 **Design:** [epic-5.md](../analysis/epic-5.md)
 
-> **[DEFERRED 2026-04-17]** Epic 5 (Phases 16, 17, 18) is explicitly parked
-> while Epic 9 (Knowledge Evolution) is in flight. The server surface is
-> stable at its current feature set; returning to it is a future-session decision.
+> **[DONE 2026-05-29]** 16A–E and 16I landed in `src/serve.rs` (config keys
+> in `src/config/mod.rs`), completing the hardening surface. 16F/G/H shipped
+> earlier alongside Phase 20 federation. Tests: unit in `src/serve.rs` +
+> [`tests/integration/server-hardening.sh`](../../tests/integration/server-hardening.sh).
+> 16J/F7/F8 (OpenAPI spec, cost-estimation endpoint) were never part of
+> Phase 16's table and remain unbuilt — see Phase 18 / [epic-5.md](../analysis/epic-5.md).
 
 ---
 
@@ -17,17 +20,20 @@
 
 | Item | Status | Notes                                                                                                                                                                                                                                                                                              |
 |---|---|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| 16A. Configurable CORS origins | — | Replace hardcoded `is_local_origin()` with configurable `serve_cors_origins:` list in config.yaml. `serve_cors_allow_all: true` for trusted networks. Unblocks Docker/OpenWebUI bridge network access.                                                                                             |
-| 16B. Optional bearer token auth | — | `serve_api_key:` in config.yaml. When set, checks `Authorization: Bearer <token>` on every request. Returns 401 on mismatch. When unset, no auth (current behavior).                                                                                                                               |
-| 16C. Health endpoint | — | `GET /health` → `200 {"status": "ok", "models": N, "roles": N}`. Required for Docker/K8s/systemd orchestration.                                                                                                                                                                                    |
-| 16D. Streaming usage in final SSE chunk | — | Add `usage` object (input_tokens, output_tokens, cost_usd) to the final SSE chunk. OpenWebUI relies on this for streaming token accounting.                                                                                                                                                        |
-| 16E. Hot-reload endpoint | — | `POST /v1/reload` → reloads roles and models from disk without restart. Eliminates restart friction during role development.                                                                                                                                                                       |
-| 16F. Role metadata security (`RolePublicView`) | — | Replace full `Role` serialization in `/v1/roles` with `RolePublicView` that exposes: name, description, model_id, input_schema, output_schema, variable names (not shell commands), pipeline stage names. Hides: prompt text, pipe_to/save_to paths, MCP server configs, shell-injective defaults. |
-| 16G. Single-role retrieval | — | `GET /v1/roles/{name}` returns `RolePublicView` for one role. `GET /v1/roles/{name}/schema` returns input/output schemas. Avoids listing all roles to find one.                                                                                                                                    |
-| 16H. Cost in API responses | — | Multiply `ModelData.{input,output}_price` × response tokens. Add `usage.cost_usd` to every `/v1/chat/completions` response. Add `X-AIChat-Cost-USD`, `X-AIChat-Model`, `X-AIChat-Latency-Ms` response headers.                                                                                     |
-| 16I. Playground Refresh | - | Fix playground UI bugs (loss of interactivity in the Playground Ux). for refresh and reload.                                                                                                                                                                                                       |
-**Parallelization:** All items are independently implementable. 16A-16E are server infrastructure changes to `serve.rs`. 16F-16G are serialization changes. 16H is arithmetic. All can run in parallel.
+| 16A. Configurable CORS origins | **Done** | `CorsPolicy` replaces the hardcoded `is_local_origin()` gate: localhost is always allowed, `serve_cors_origins:` widens the allowlist, `serve_cors_allow_all: true` echoes any origin. Unblocks Docker/OpenWebUI bridge network access. |
+| 16B. Optional bearer token auth | **Done** | `serve_api_key:` in config.yaml. When set, `check_api_key` enforces `Authorization: Bearer <key>` → 401 on mismatch. `OPTIONS` and `GET /health` exempt; the `/v1/state/*` bridge keeps its own token. Unset → no auth (historical behavior). |
+| 16C. Health endpoint | **Done** | `GET /health` → `200 {"status":"ok","models":N,"roles":N}`, unauthenticated. `models` excludes `role:*` virtual models. Required for Docker/K8s/systemd orchestration. |
+| 16D. Streaming usage in final SSE chunk | **Done** | `stream_options.include_usage` (OpenAI semantics) → trailing usage-only chunk (`choices:[]`) with `prompt/completion/total_tokens` + `cost_usd` before `[DONE]`. aichat injects `stream_options` upstream; falls back to 0 when the provider doesn't report. |
+| 16E. Hot-reload endpoint | **Done** | `POST /v1/reload` → re-reads roles/prompts/rags from disk and rebuilds the model listing (`Server.listing` is `RwLock<Listing>`). Returns `{roles, models}`. Provider `clients:` changes still need a restart. |
+| 16F. Role metadata security (`RolePublicView`) | **Done** | Full `Role` serialization in `/v1/roles` replaced with `RolePublicView`: exposes name, description, model_id, input/output schema, variable names, pipeline stage names; hides prompt text, pipe_to/save_to, MCP configs, shell defaults. |
+| 16G. Single-role retrieval | **Done** | `GET /v1/roles/{name}` returns `RolePublicView` for one role, 404 on miss. |
+| 16H. Cost in API responses | **Done** | `X-AIChat-Cost-USD` header on `/v1/roles/{name}/invoke`, `/v1/pipelines/run`, `/v1/batch`; `usage.cost_usd` in role/pipeline envelopes. |
+| 16I. Playground Refresh | **Done** | `ask()` in `assets/playground.html` wrapped in `try/finally` so `asking` (and `askAbortController`) always reset. Previously a throw before/around the stream left `asking` stuck `true`, and `handleAsk()`'s `if (this.asking) return` guard froze the UI. |
 
-**Key files:** `src/serve.rs` (all items), `src/config/mod.rs` (16A/16B config parsing).
+**Implementation:** All items are server-side changes to `src/serve.rs`; 16A/16B config keys parse in `src/config/mod.rs`; 16I is a JS fix in `assets/playground.html`. Tests: unit (`serve.rs` — `CorsPolicy`, `check_api_key`, `stream_options`, usage chunk) and integration ([`tests/integration/server-hardening.sh`](../../tests/integration/server-hardening.sh), 12 cases including a Python mock-SSE streaming-usage round-trip).
 
-16I Bug description: In some cases, the Playground UI becomes unresponsive. This typically happens during a chat session, while the server is responding to a chat request.
+**Key files:** `src/serve.rs` (all server items), `src/config/mod.rs` (16A/16B config parsing), `assets/playground.html` (16I).
+
+**Demo:** [`docs/demos/phase-16-server-hardening.md`](../demos/phase-16-server-hardening.md) — a runnable showboat walk-through that exercises each knob against a live server and finishes with the full integration suite. User-facing reference: [`docs/features/server.md`](../features/server.md).
+
+**16I Bug description:** In some cases the Playground UI becomes unresponsive — typically during a chat session while the server is responding. Root cause: `buildBody()` (and any other throw) sat outside the try block, and `this.asking = false` ran only at the function tail, so an exception left the send/input path permanently disabled.

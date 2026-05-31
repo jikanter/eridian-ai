@@ -2,7 +2,7 @@
 
 **Created:** 2026-04-07
 **Status:** Planning
-**Depends on:** Epic 5 (server pipeline engine), Epic 4 Phase 15 (contract testing)
+**Depends on:** Epic 4 Phase 15 (contract testing). Epic 5 (server pipeline engine) is **deferred 2026-04-17**, so DAG primitives target the in-process pipeline runner (`pipe.rs`) first; HTTP/server exposure waits for Epic 5 to resume.
 **Phases:** 21-22
 **Source:** Theme 4 — AI Architect
 

@@ -16,6 +16,16 @@ fn free_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
+/// Resolve the aichat binary to launch.
+///
+/// Defaults to the Cargo-built dev binary (`CARGO_BIN_EXE_aichat`). Override
+/// with `AICHAT_BIN=/path/to/aichat cargo test --test client` to point these
+/// tests at an installed/production build. `AICHAT_CONFIG_DIR` is inherited
+/// from the test environment automatically.
+fn aichat_binary() -> String {
+    std::env::var("AICHAT_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_aichat").to_string())
+}
+
 /// Start the aichat server and return (child process, base_url).
 /// Waits until the server is accepting connections.
 async fn start_server() -> (std::process::Child, String) {
@@ -23,7 +33,7 @@ async fn start_server() -> (std::process::Child, String) {
     let addr = format!("127.0.0.1:{port}");
     let base_url = format!("http://{addr}");
 
-    let child = Command::new(env!("CARGO_BIN_EXE_aichat"))
+    let child = Command::new(aichat_binary())
         .arg("--serve")
         .arg(&addr)
         .stdout(std::process::Stdio::null())
