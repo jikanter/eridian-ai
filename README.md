@@ -253,6 +253,7 @@ Supports custom dark and light themes, which highlight response text and code bl
 
 ## License
 
+Copyright (c) 2026, Jordan Kanter. All Rights Reserved - https://jordankanter.com
 Copyright (c) 2023-2025 Eridian contributors. Forked from [sigoden/aichat](https://github.com/sigoden/aichat).
 
 Eridian is made available under the terms of either the MIT License or the Apache License 2.0, at your option.
