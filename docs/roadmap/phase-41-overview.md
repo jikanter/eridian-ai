@@ -4,7 +4,7 @@
 phase ports LiteLLM's cache **admin and observability surface** — `/cache/ping`,
 `/cache/delete`, `HealthCheckCacheParams`, the cache-key-in-response convention, caching
 across model groups, and the `enable_cache`/`disable_cache`/`update_cache` runtime
-toggles ([`EVAL-0004`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) §2.11,
+toggles ([`EVAL-0004`](../analysis/caching/EVAL-0004-litellm-cache-parity.md) §2.11,
 §2.6). [Phase 37D](phase-37-overview.md) already specifies `GET /v1/cache/stats`,
 `POST /v1/cache/clear`, and `/v1/cache/{enable,disable}` plus the pi slash commands; 41
 completes the surface to full LiteLLM parity and adds the **one-tool-per-job CLI**
@@ -247,7 +247,7 @@ the user silently. It stays empty until the user declares a group they understan
 
 ## References
 
-- [`EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) §2.11, §2.6 — admin/observability + model-group feature map
+- [`EVAL-0004-litellm-cache-parity.md`](../analysis/caching/EVAL-0004-litellm-cache-parity.md) §2.11, §2.6 — admin/observability + model-group feature map
 - [`phase-37-overview.md`](phase-37-overview.md) — 37D's `/v1/cache/*` block + pi commands this extends; 37E trace
 - [`phase-38-overview.md`](phase-38-overview.md) — the trait methods 41 adapts to every surface
 - [`phase-39-overview.md`](phase-39-overview.md) — remote backends whose connection `ping`/`health` verify

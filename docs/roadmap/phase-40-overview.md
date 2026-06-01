@@ -3,7 +3,7 @@
 **Status (2026-05-29):** **Planned — design draft.** No items below are implemented. This
 phase ports LiteLLM's **embedding caching** ([`caching.py:735-806`](https://github.com/BerriAI/litellm/blob/main/litellm/caching/caching.py))
 and its `supported_call_types` breadth beyond chat completion
-([`EVAL-0004`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) §2.10, §2.6).
+([`EVAL-0004`](../analysis/caching/EVAL-0004-litellm-cache-parity.md) §2.10, §2.6).
 [Phase 37](phase-37-overview.md) caches *chat responses*; LiteLLM also caches embeddings,
 reranks, transcriptions, and Responses-API calls keyed by their inputs. aichat's analogues
 are the **embedding** and **rerank** calls that power RAG — `embeddings()` at
@@ -235,7 +235,7 @@ free. The RAG store stays a search index, not a call memo.
 
 ## References
 
-- [`EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) §2.10 — embedding/rerank feature map
+- [`EVAL-0004-litellm-cache-parity.md`](../analysis/caching/EVAL-0004-litellm-cache-parity.md) §2.10 — embedding/rerank feature map
 - [`phase-38-overview.md`](phase-38-overview.md) — the `ResponseCache` front + `CacheableCall` gate this consumes
 - [`phase-37-overview.md`](phase-37-overview.md) — accounting (37A), trace (37E), semantic L2 (37F) this composes with
 - [`phase-39-overview.md`](phase-39-overview.md) — team back tier that shares embedding entries

@@ -24,7 +24,7 @@ After retirement:
 
 - The CLI itself (`aichat -r role`, `aichat --each`, `aichat call …`) — humans, scripts, and `argc`-driven pipelines.
 - The HTTP server (`aichat --serve`) — OpenAI-compatible API, OpenWebUI integration. Phases 16-18 (deferred).
-- The trace JSONL — the test harness, eval, and (future) training pipelines. See [`docs/analysis/open-harness/ECOSYSTEM.md`](../../analysis/open-harness/ECOSYSTEM.md).
+- The trace JSONL — the test harness, eval, and (future) training pipelines. See [`docs/analysis/caching/ECOSYSTEM.md`](../../analysis/caching/ECOSYSTEM.md).
 - The future harness interface (TBD; see [`README.md`](README.md)) — the cross-tool consumption point that lets agentic clients see aichat's roles, agents, and tools as a single unit.
 
 This plan retires the Node bridge so `aichat --mcp` and `mcp_pool` can do their jobs cleanly. It does **not** elevate `aichat --mcp` to "the surface." If the harness interface materializes and supersedes the MCP exposure, that is a separate decision; this plan does not block it.

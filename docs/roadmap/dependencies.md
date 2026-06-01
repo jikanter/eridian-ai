@@ -32,7 +32,7 @@ Epic 1 (Core Platform)         ──── DONE ──────────�
 
 **Critical path (active):** Phase 11D → Phase 13 → Phase 15 (B/C) → Phase 22.
 Epic 8 (23-24) and Epic 10 (28-29) are independent tracks that can proceed in parallel.
-The **caching sub-track** (Epic 2, Phases 37 → 38 → 39 → 40 → 41) is an independent parallel track that ports [LiteLLM's caching subsystem](https://github.com/BerriAI/litellm/tree/main/litellm/caching) feature-for-feature ([`EVAL-0004`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md)):
+The **caching sub-track** (Epic 2, Phases 37 → 38 → 39 → 40 → 41) is an independent parallel track that ports [LiteLLM's caching subsystem](https://github.com/BerriAI/litellm/tree/main/litellm/caching) feature-for-feature ([`EVAL-0004`](../analysis/caching/EVAL-0004-litellm-cache-parity.md)):
 
 ```
 Phase 37 (layers: L1/L2/L3, accounting, trace, pi)   37A → 37B → 37C → 37D → 37E   (37F deferred)

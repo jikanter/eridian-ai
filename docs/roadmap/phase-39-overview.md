@@ -8,7 +8,7 @@ phase ports LiteLLM's remote cache backends —
 [`GCSCache`](https://github.com/BerriAI/litellm/blob/main/litellm/caching/gcs_cache.py),
 [`AzureBlobCache`](https://github.com/BerriAI/litellm/blob/main/litellm/caching/azure_blob_cache.py) —
 as implementations of the [Phase 38](phase-38-overview.md) `CacheBackend` trait. Per the
-parity map ([`EVAL-0004`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) §2.8)
+parity map ([`EVAL-0004`](../analysis/caching/EVAL-0004-litellm-cache-parity.md) §2.8)
 **and the project's *Ask First* constraint on dependencies**, every remote backend is
 **gated behind a Cargo feature** — `cargo build` with default features pulls in **zero**
 new dependencies and produces a byte-identical cost-conscious binary. This phase
@@ -284,7 +284,7 @@ reachable service, and always run the **degrade-to-disk** path in CI (no service
 
 ## References
 
-- [`EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) §2.8 — remote-backend feature map
+- [`EVAL-0004-litellm-cache-parity.md`](../analysis/caching/EVAL-0004-litellm-cache-parity.md) §2.8 — remote-backend feature map
 - [`phase-38-overview.md`](phase-38-overview.md) — the `CacheBackend` trait + `DualBackend` these implement
 - [`phase-37-response-caching.md`](phase-37-response-caching.md) — the "distributed cache out of scope" note this reverses
 - [LiteLLM `RedisCache`](https://github.com/BerriAI/litellm/blob/main/litellm/caching/redis_cache.py), [`S3Cache`](https://github.com/BerriAI/litellm/blob/main/litellm/caching/s3_cache.py)

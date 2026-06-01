@@ -32,9 +32,16 @@ graph TB
         manifest[("manifest.jsonl<br/>per parent session")]:::artifact
     end
 
+    subgraph substrate_layer["Cache/cassette/mock substrate (eridian-replay)"]
+        substrate["eridian-replay<br/>(wire-level reverse gateway,<br/>pointed at by base_url)"]:::phase2
+        cas[("replay-core CAS<br/>+ SSE synthesis")]:::artifact
+        cassette_sets[("committed cassette sets<br/>(pinned, content-addressed)")]:::artifact
+        provider["LLM provider<br/>(real upstream)"]:::external
+    end
+
     subgraph testing["Test harness (Phase 2)"]
         promptfoo["promptfoo<br/>regression tests"]:::phase2
-        wiremock["wiremock<br/>HTTP provider mock"]:::phase2
+        wiremock["wiremock<br/>in-process mock<br/>(tokio::time::pause)"]:::phase2
         ctrlflow["Rust integration tests<br/>control-flow / retry / fallback"]:::phase2
     end
 
@@ -57,7 +64,6 @@ graph TB
 
     subgraph dev["Dev / exploration (later)"]
         marimo["marimo<br/>reactive trace explorer"]:::phase3
-        cassettes["VCR cassettes<br/>recorded API calls"]:::phase3
     end
 
     subgraph human["Human"]
@@ -74,14 +80,22 @@ graph TB
     writer ==> blobs
     writer ==> manifest
 
+    %% Substrate sits below base_url; accounting projects onto the keystone trace
+    aichat -.HTTP via base_url + X-Eridian-Session-Id.-> substrate
+    substrate -.miss → forward.-> provider
+    substrate <==CAS/SSE==> cas
+    substrate <==record/replay==> cassette_sets
+    substrate ==cache.lookup / cache_hit (37E)==> writer
+    cassette_sets -.replay (offline, token-free).-> substrate
+
     %% Tests consume traces
     promptfoo --drives--> aichat
-    aichat -.HTTP via --api-base.-> wiremock
+    promptfoo -.replay mode via base_url.-> substrate
+    inspect -.deferred: replay via base_url.-> substrate
     ctrlflow --drives--> aichat
     ctrlflow --scripts--> wiremock
     jsonl ==assertions==> promptfoo
     jsonl ==assertions==> ctrlflow
-    cassettes -.replay.-> wiremock
 
     %% Eval and training (later)
     jsonl ==> inspect
@@ -132,6 +146,27 @@ tools, green = data artifacts.
   (prompts, RAG contexts, tool outputs). Referenced from events by hash.
 - **`manifest.jsonl`** — per parent-session listing of child turn session IDs
   in order. Lets `tail -f manifest.jsonl` watch a whole conversation.
+
+### Cache/cassette/mock substrate
+
+- **`eridian-replay`** — a separate workspace binary (decided in
+  [`ADR-0005`](ADR-0005-cache-substrate-extraction.md), contracted in
+  [`SPEC-003`](SPEC-003-cache-substrate.md)). A **wire-level reverse gateway pointed at by
+  `base_url`** — not a forward MITM, no TLS interception. It serves three policies off one
+  mechanism: transparent **cache** (TTL/LRU), **cassette** (pinned, deterministic,
+  token-free — the eval-replay payload), and **mock** (scripted provider faults,
+  cross-process). It keys on the **canonicalized request body** only. It does **not** own
+  the structure-aware `StageCache` `(role, model, input)` key or provider prompt caching
+  (L3), which **stay in Eridian** (`ADR-0005` §1). Its hit/miss/$-saved accounting and
+  `cache_hit` flag are a **projection of the keystone trace** (37A/37E), correlated to the
+  turn via an `X-Eridian-Session-Id` header Eridian injects — never a parallel telemetry
+  surface (`SPEC-003` §6).
+- **`replay-core`** — the shared crate holding the content-addressed store + SSE synthesis,
+  used by both `eridian-replay` and `aichat`'s in-tree `StageCache`/serve path. Shared
+  *mechanism*, not shared keying.
+- **Committed cassette sets** — pinned, content-addressed recordings (`tests/.../cassettes/`)
+  that promptfoo (and the deferred Inspect consumer) replay offline for deterministic,
+  token-free eval. See [`SPEC-004`](SPEC-004-ecosystem-surfaces.md) for every surface.
 
 ### Test harness
 
@@ -184,9 +219,11 @@ tools, green = data artifacts.
   extraction rules, and debugging tricky test cases. The reactive model
   re-renders downstream cells when trace files change, which is genuinely
   useful for iteration.
-- **VCR cassettes** — recorded real API calls replayed via wiremock for
-  prompt-template regression tests. Phase 3 because it adds management overhead
-  (cassette refresh, secret scrubbing) that Phase 2's scripted mocks don't.
+- **VCR cassettes** — *superseded.* Recorded API calls are now first-class in the
+  `eridian-replay` substrate (cassette policy), not a wiremock side-channel. The management
+  overhead this item flagged (cassette refresh, secret scrubbing) is specced as the
+  record→review→commit workflow + inline redaction in [`SPEC-003`](SPEC-003-cache-substrate.md)
+  §7/§6. See the "Cache/cassette/mock substrate" section above.
 
 ## What is *not* in this picture
 

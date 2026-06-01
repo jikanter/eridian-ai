@@ -3,7 +3,7 @@
 **Status (2026-05-29):** **Planned — design draft.** No items below are implemented. This
 phase ports the *horizontal abstractions* of [LiteLLM's caching subsystem](https://github.com/BerriAI/litellm/tree/main/litellm/caching)
 into aichat, per the feature-for-feature parity map in
-[`EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md).
+[`EVAL-0004-litellm-cache-parity.md`](../analysis/caching/EVAL-0004-litellm-cache-parity.md).
 Where [Phase 37](phase-37-overview.md) builds the *layers* (L1 exact, L2 semantic, L3
 provider) against the concrete [`StageCache`](../../src/cache.rs), Phase 38 builds the
 *seam underneath them*: a `CacheBackend` trait (LiteLLM `BaseCache`), the two backends
@@ -344,7 +344,7 @@ Per project guideline ("*Always* add integration tests via bats in addition to u
 
 ## References
 
-- [`EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) — the feature map this phase implements (§2.1–2.7)
+- [`EVAL-0004-litellm-cache-parity.md`](../analysis/caching/EVAL-0004-litellm-cache-parity.md) — the feature map this phase implements (§2.1–2.7)
 - [`phase-37-overview.md`](phase-37-overview.md) — the layers this seam sits beneath
 - [`phase-39-overview.md`](phase-39-overview.md) — remote backends that plug into 38A's trait
 - [`phase-40-overview.md`](phase-40-overview.md) — auxiliary-call caching gated by 38E

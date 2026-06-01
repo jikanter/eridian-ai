@@ -1,6 +1,6 @@
 # Phase 37: Transparent Response Caching : Overview - Epic 2
 
-**Status (2026-05-27):** **Planned — design draft.** No items below are implemented. Closes the gap inventoried in [`docs/analysis/open-harness/EVAL-0002-full-caching.md`](../analysis/open-harness/EVAL-0002-full-caching.md) — aichat ships a partial L1 (`src/cache.rs`'s `StageCache`, scoped to pipeline stages and per-file knowledge extraction) and no L2/L3/L4. This phase wires response caching across the ordinary request path, the OpenAI-compatible server (which is the pi REPL substrate), and the trace, in the C→B→A→D ordering EVAL-0002 prescribes. Aligns with the three-pattern spec (exact / semantic / proxy) and adds the layer (L3 provider prompt caching) the spec omitted but the project's cost-conscious constraint mandates.
+**Status (2026-05-27):** **Planned — design draft.** No items below are implemented. Closes the gap inventoried in [`docs/analysis/caching/EVAL-0002-full-caching.md`](../analysis/caching/EVAL-0002-full-caching.md) — aichat ships a partial L1 (`src/cache.rs`'s `StageCache`, scoped to pipeline stages and per-file knowledge extraction) and no L2/L3/L4. This phase wires response caching across the ordinary request path, the OpenAI-compatible server (which is the pi REPL substrate), and the trace, in the C→B→A→D ordering EVAL-0002 prescribes. Aligns with the three-pattern spec (exact / semantic / proxy) and adds the layer (L3 provider prompt caching) the spec omitted but the project's cost-conscious constraint mandates.
 
 | Item | Description | Status |
 |---|---|---|
@@ -28,7 +28,7 @@ Phase 37 builds the *layers* of response caching against the concrete
 the most complete open-source treatment of the problem — surfaced a set of *horizontal
 abstractions* that cut across these layers and are worth porting. That study and its
 traceability map live in
-[`EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md)
+[`EVAL-0004-litellm-cache-parity.md`](../analysis/caching/EVAL-0004-litellm-cache-parity.md)
 (97% feature coverage; the distributed third gated behind cargo features). The result is a
 cohesive **caching sub-track within Epic 2**:
 
@@ -338,8 +338,8 @@ Per project guideline ("*Always* add integration tests via bats in addition to u
 
 ## References
 
-- [`docs/analysis/open-harness/EVAL-0002-full-caching.md`](../analysis/open-harness/EVAL-0002-full-caching.md) — the gap inventory this phase implements
-- [`docs/analysis/open-harness/EVAL-0004-litellm-cache-parity.md`](../analysis/open-harness/EVAL-0004-litellm-cache-parity.md) — the LiteLLM feature-for-feature parity map driving the 37→41 sub-track
+- [`docs/analysis/caching/EVAL-0002-full-caching.md`](../analysis/caching/EVAL-0002-full-caching.md) — the gap inventory this phase implements
+- [`docs/analysis/caching/EVAL-0004-litellm-cache-parity.md`](../analysis/caching/EVAL-0004-litellm-cache-parity.md) — the LiteLLM feature-for-feature parity map driving the 37→41 sub-track
 - [Phase 38 overview](phase-38-overview.md) — `CacheBackend` trait + cache-control protocol (the abstraction 37 sits on)
 - [Phase 39 overview](phase-39-overview.md) — distributed/remote backends (cargo-gated)
 - [Phase 40 overview](phase-40-overview.md) — embedding/rerank caching

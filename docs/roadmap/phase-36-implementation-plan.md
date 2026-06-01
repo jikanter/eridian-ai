@@ -8,11 +8,11 @@
 
 ## §0.0 Scope decisions (resolved 2026-05-30)
 
-| Decision | Choice |
-|---|---|
-| **`working_directory`** | **Implement as a new feature this phase.** Add `working_directory: Option<PathBuf>` to `Config`, apply it at the tool-spawn point in `src/function.rs::run_command_with_stderr_timeout` via `Command::current_dir` (per-command, **not** the process-global `std::env::set_current_dir` — that would race across concurrent fan-out branches). Include the path-descendant escalation guard in 36C. |
-| **`config_override.mcp_servers`** | **Disable-only this phase.** Support only the empty list (`mcp_servers: []` → clear `Config.mcp_servers`). Reject a non-empty list at preflight with "not supported; use `[]` to disable". Full re-selection is a later follow-up. |
-| **Stage cache key** | **Fold the override into the key.** Hash the applied `PartialConfig` into `StageCache::key` so a sampling override (temperature/top_p) correctly invalidates a cached stage output. |
+| Decision                          | Choice                                                                                                                                                                                                                                                                                                                                                                                              |
+|-----------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **`working_directory`**           | **Implement as a new feature this phase.** Add `working_directory: Option<PathBuf>` to `Config`, apply it at the tool-spawn point in `src/function.rs::run_command_with_stderr_timeout` via `Command::current_dir` (per-command, **not** the process-global `std::env::set_current_dir` — that would race across concurrent fan-out branches). Include the path-descendant escalation guard in 36C. |
+| **`config_override.mcp_servers`** | **Disable-only this phase.** Support only the empty list (`mcp_servers: []` → clear `Config.mcp_servers`). Reject a non-empty list at preflight with "not supported; use `[]` to disable". Full re-selection is a later follow-up.                                                                                                                                                                  |
+| **Stage cache key**               | **Fold the override into the key.** Hash the applied `PartialConfig` into `StageCache::key` so a sampling override (temperature/top_p) correctly invalidates a cached stage output.                                                                                                                                                                                                                 |
 
 ---
 
