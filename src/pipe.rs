@@ -5,8 +5,8 @@ use crate::client::{
 };
 use crate::config::{
     pipeline_stage_admissible, run_lifecycle_hooks, validate_schema_traced, Agent, Config,
-    EntityRef, GlobalConfig, Input, MergeStrategy, ParallelNode, PipelineNode, Role, RoleLike,
-    RolePipelineStage, SwitchNode,
+    EntityRef, GlobalConfig, Input, MergeStrategy, ParallelNode, PartialConfig, PipelineNode, Role,
+    RoleLike, RolePipelineStage, SwitchNode,
 };
 use crate::utils::*;
 
@@ -15,6 +15,7 @@ use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[derive(Default)]
 struct PipelineStage {
     role_name: String,
     model_id: Option<String>,
@@ -23,6 +24,11 @@ struct PipelineStage {
     /// as its only limit. When `Some`, `run_stage_inner` tail-truncates the
     /// post-knowledge input text to fit `budget_usd_to_input_token_cap`.
     budget_usd: Option<f64>,
+    /// Phase 36A: opt-in config isolation for this stage (see
+    /// `RolePipelineStage::config_override`). `None` ⇒ shared `Config`, as
+    /// before this phase. Carried through retries/fallbacks (`attempt_stage`)
+    /// so isolation survives a model fallback.
+    config_override: Option<PartialConfig>,
 }
 
 /// Phase 17B: per-stage execution trace. Public so server-side invocation
@@ -51,6 +57,12 @@ pub struct StageTrace {
     pub node_index: usize,
     #[serde(default, skip_serializing_if = "is_false")]
     pub cached: bool,
+    /// Phase 36D: names of the `config_override:` fields applied to this stage
+    /// (e.g. `["use_tools","working_directory"]`). Empty/absent for a stage
+    /// that declared no override. `-o json` consumers see exactly what changed
+    /// per stage; `-o text` / the trace tree omit it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub config_overrides_applied: Vec<String>,
 }
 
 /// serde `skip_serializing_if` predicate for booleans — keeps `cached: false`
@@ -104,6 +116,8 @@ fn build_pipeline_nodes(cli: &Cli) -> Result<(Vec<PipelineNode>, Option<f64>)> {
                             role: s.role_name,
                             model: s.model_id,
                             budget_weight: None,
+                            // CLI `--stage` carries no override surface.
+                            config_override: None,
                         })
                     })
                     .collect(),
@@ -147,6 +161,9 @@ pub async fn run(config: GlobalConfig, cli: Cli, text: Option<String>) -> Result
         crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
         crate::config::preflight::validate_pipeline_dag_structure(&nodes)
             .context("Pipeline DAG validation failed")?;
+        // Phase 36C: the CLI `--stage` / `--pipe-def` forms carry no parent role
+        // and no `config_override:`, so the escalation guard is a no-op here —
+        // it runs in the role-frontmatter paths (`invoke_role[_streaming]`).
     }
     // Phase 33D: adjacent-stage shape check (sequential pipelines only).
     preflight_shape(&config, &nodes)?;
@@ -290,6 +307,37 @@ fn preflight_shape(config: &GlobalConfig, nodes: &[PipelineNode]) -> Result<()> 
     Ok(())
 }
 
+/// Phase 36C: run the escalation guard over every stage that declared a
+/// `config_override:`. The parent (pipeline-owning) `role` supplies the
+/// permission ceiling. A no-op for `--stage` / inline-server pipelines (no
+/// parent role, no overrides). Called from the same preflight blocks that
+/// already run `validate_pipeline_stages`.
+fn preflight_overrides(
+    config: &GlobalConfig,
+    parent_role: &Role,
+    stages: &[RolePipelineStage],
+) -> Result<()> {
+    let overrides: Vec<(usize, String, PartialConfig)> = stages
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| s.config_override.clone().map(|ov| (i, s.role.clone(), ov)))
+        .collect();
+    if overrides.is_empty() {
+        return Ok(());
+    }
+    let parent_cwd = config
+        .read()
+        .working_directory
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    crate::config::preflight::validate_pipeline_overrides(
+        parent_role.name(),
+        parent_role.use_tools().as_deref(),
+        &parent_cwd,
+        &overrides,
+    )
+}
+
 async fn run_stage(
     config: &GlobalConfig,
     stage: &PipelineStage,
@@ -299,6 +347,24 @@ async fn run_stage(
     is_last: bool,
     abort_signal: AbortSignal,
 ) -> Result<(String, CallMetrics)> {
+    // Phase 36B: config isolation seam. When the stage declares a non-empty
+    // `config_override:`, run it against a *clone* of the global `Config` with
+    // the config-scoped fields (`working_directory`, `mcp_servers`) merged in.
+    // The clone is dropped when this stage returns, so mutations never leak to
+    // the parent config or sibling stages — mirroring the macro-isolation
+    // pattern in `config/resolver.rs`. Role-scoped fields (tools, sampling) are
+    // applied to the stage's own role inside `run_stage_inner`. Stages without
+    // an override share the parent handle, byte-for-byte today's behavior.
+    let owned_config: Option<GlobalConfig> = match &stage.config_override {
+        Some(p) if !p.is_empty() => {
+            let mut cloned = config.read().clone();
+            cloned.apply_partial(p)?;
+            Some(std::sync::Arc::new(parking_lot::RwLock::new(cloned)))
+        }
+        _ => None,
+    };
+    let config: &GlobalConfig = owned_config.as_ref().unwrap_or(config);
+
     // Phase 10C/10D: peek at the role once for the retry budget and the model
     // fallback chain. If the role fails to load, fall through to a single
     // primary-model attempt so the config error surfaces on the first call.
@@ -326,6 +392,8 @@ async fn run_stage(
             role_name: stage.role_name.clone(),
             model_id: model_override.clone(),
             budget_usd: stage.budget_usd,
+            // Carry isolation forward across model fallbacks.
+            config_override: stage.config_override.clone(),
         };
         let model_label = model_override
             .clone()
@@ -473,7 +541,7 @@ async fn run_stage_inner(
     abort_signal: AbortSignal,
 ) -> Result<(String, CallMetrics)> {
     let target = resolve_stage_entity(config, &stage.role_name, abort_signal.clone()).await?;
-    let role = match target {
+    let mut role = match target {
         StageTarget::Local(r) => r,
         StageTarget::Remote(resolved) => {
             // Phase 20D: federated stage — HTTP-invoke the remote and
@@ -506,6 +574,17 @@ async fn run_stage_inner(
             return Ok((output, result.metrics));
         }
     };
+
+    // Phase 36B: apply the role-scoped fields of the stage override (tools,
+    // sampling) directly to this stage's resolved role. The pipeline path
+    // selects tools and sampling off the role, not the global `Config`, so
+    // these must land here to take effect. The role is a local clone, so the
+    // mutation is naturally isolated to this stage. Config-scoped fields
+    // (`working_directory`, `mcp_servers`) were already merged into the cloned
+    // config by `run_stage`.
+    if let Some(p) = &stage.config_override {
+        p.apply_to_role(&mut role);
+    }
 
     if let Some(model_id) = &stage.model_id {
         config.write().set_model(model_id)?;
@@ -587,10 +666,20 @@ async fn run_stage_inner(
         && !config.read().dry_run
         && !has_tools;
     let cache_key = if cache_enabled {
+        // Phase 36B: fold the stage override's value fingerprint into the role
+        // component of the key so a sampling override (e.g. temperature 0.0 vs
+        // 1.0) correctly invalidates a previously cached stage output — those
+        // values change the output but not the model id or input text.
+        let cache_role_key = match &stage.config_override {
+            Some(p) if !p.is_empty() => {
+                format!("{}\u{1e}{}", stage.role_name, p.cache_fingerprint())
+            }
+            _ => stage.role_name.clone(),
+        };
         // Hash the post-injection text so a change in the knowledge context
         // (new bindings, recompiled KB) invalidates the cache entry.
         Some(StageCache::key(
-            &stage.role_name,
+            &cache_role_key,
             &client.model().id(),
             &input.text(),
         ))
@@ -778,6 +867,7 @@ fn parse_stages(stage_specs: &[String]) -> Result<Vec<PipelineStage>> {
                 role_name,
                 model_id,
                 budget_usd: None,
+                config_override: None,
             })
         })
         .collect()
@@ -832,6 +922,9 @@ fn load_pipeline_def_nodes(path: &str) -> Result<(Vec<PipelineNode>, Option<f64>
                     role: s.role,
                     model: s.model,
                     budget_weight: s.budget_weight,
+                    // Legacy `--pipe-def stages:` form has no override surface;
+                    // use `pipeline:` with `config_override:` for isolation.
+                    config_override: None,
                 })
             })
             .collect()
@@ -948,6 +1041,31 @@ fn check_pipeline(config: &GlobalConfig, entry: &str, nodes: &[PipelineNode], js
     }
     if let Err(e) = validate_pipeline_dag_cycles(&cfg, entry, nodes) {
         errors.push(e.to_string());
+    }
+
+    // Phase 36C: escalation guard, surfaced at `--check` time so config_override
+    // misuse is caught offline before any LLM call.
+    if let Ok(parent_role) = cfg.retrieve_role(entry) {
+        let stages = parent_role.pipeline_all_stages();
+        let overrides: Vec<(usize, String, PartialConfig)> = stages
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.config_override.clone().map(|ov| (i, s.role.clone(), ov)))
+            .collect();
+        if !overrides.is_empty() {
+            let parent_cwd = cfg
+                .working_directory
+                .clone()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            if let Err(e) = crate::config::preflight::validate_pipeline_overrides(
+                parent_role.name(),
+                parent_role.use_tools().as_deref(),
+                &parent_cwd,
+                &overrides,
+            ) {
+                errors.push(e.to_string());
+            }
+        }
     }
 
     // Containment is only well-defined for a purely sequential pipeline, and
@@ -1335,6 +1453,8 @@ pub async fn invoke_role(
         crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
         crate::config::preflight::validate_pipeline_dag_structure(&nodes)
             .context("Pipeline DAG validation failed")?;
+        // Phase 36C: reject any stage override that escalates beyond the parent role.
+        preflight_overrides(config, &role, &role.pipeline_all_stages())?;
 
         // Phase 11D: same top-level allocation as `run()` — only leaf Stage
         // nodes get a per-stage share; nested DAG nodes carry `None`.
@@ -1405,6 +1525,7 @@ pub async fn invoke_role(
                 role_name: s.role.clone(),
                 model_id: s.model.clone(),
                 budget_usd: per_stage_budgets.as_ref().map(|v| v[i]),
+                config_override: s.config_override.clone(),
             })
             .collect()
     } else {
@@ -1415,6 +1536,7 @@ pub async fn invoke_role(
             role_name: role_name.to_string(),
             model_id: None,
             budget_usd: pipeline_budget_usd.filter(|b| *b > 0.0),
+            config_override: None,
         }]
     };
 
@@ -1428,6 +1550,8 @@ pub async fn invoke_role(
         crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
         // Phase 33D: adjacent-stage shape check for the sequential pipeline.
         crate::config::preflight::validate_pipeline_shape(&config.read(), &stage_tuples)?;
+        // Phase 36C: reject any stage override that escalates beyond the parent role.
+        preflight_overrides(config, &role, &role.pipeline_sequential().unwrap_or_default())?;
     }
 
     let stage_count = pipeline_stages.len();
@@ -1457,6 +1581,11 @@ pub async fn invoke_role(
             branch: None,
             node_index: i,
             cached: m.cached,
+            config_overrides_applied: stage
+                .config_override
+                .as_ref()
+                .map(PartialConfig::applied_fields)
+                .unwrap_or_default(),
         });
         total.merge(&m);
         current = out;
@@ -1506,6 +1635,8 @@ pub async fn invoke_role_streaming(
         crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
         crate::config::preflight::validate_pipeline_dag_structure(&nodes)
             .context("Pipeline DAG validation failed")?;
+        // Phase 36C: reject any stage override that escalates beyond the parent role.
+        preflight_overrides(config, &role, &role.pipeline_all_stages())?;
 
         let per_node_budgets: Option<Vec<f64>> = pipeline_budget_usd
             .filter(|b| *b > 0.0)
@@ -1564,6 +1695,7 @@ pub async fn invoke_role_streaming(
                 branch: None,
                 node_index: i,
                 cached: false,
+                config_overrides_applied: Vec::new(),
             });
             let _ = tx.send(StageEvent::End {
                 index: i,
@@ -1605,6 +1737,7 @@ pub async fn invoke_role_streaming(
                 role_name: s.role.clone(),
                 model_id: s.model.clone(),
                 budget_usd: per_stage_budgets.as_ref().map(|v| v[i]),
+                config_override: s.config_override.clone(),
             })
             .collect()
     } else {
@@ -1612,6 +1745,7 @@ pub async fn invoke_role_streaming(
             role_name: role_name.to_string(),
             model_id: None,
             budget_usd: pipeline_budget_usd.filter(|b| *b > 0.0),
+            config_override: None,
         }]
     };
 
@@ -1625,6 +1759,8 @@ pub async fn invoke_role_streaming(
         crate::config::preflight::validate_pipeline_stages(&config.read(), &stage_tuples)?;
         // Phase 33D: adjacent-stage shape check for the sequential pipeline.
         crate::config::preflight::validate_pipeline_shape(&config.read(), &stage_tuples)?;
+        // Phase 36C: reject any stage override that escalates beyond the parent role.
+        preflight_overrides(config, &role, &role.pipeline_sequential().unwrap_or_default())?;
     }
 
     let stage_count = pipeline_stages.len();
@@ -1659,6 +1795,11 @@ pub async fn invoke_role_streaming(
             branch: None,
             node_index: i,
             cached: m.cached,
+            config_overrides_applied: stage
+                .config_override
+                .as_ref()
+                .map(PartialConfig::applied_fields)
+                .unwrap_or_default(),
         };
         let _ = tx.send(StageEvent::End {
             index: i,
@@ -1708,6 +1849,8 @@ pub async fn run_inline_pipeline(
             role_name: s.role.clone(),
             model_id: s.model.clone(),
             budget_usd: None,
+            // Server inline stages (`/v1/pipelines/run`) carry no override.
+            config_override: None,
         })
         .collect();
     {
@@ -1744,6 +1887,8 @@ pub async fn run_inline_pipeline(
             branch: None,
             node_index: i,
             cached: m.cached,
+            // Inline server stages carry no override.
+            config_overrides_applied: Vec::new(),
         });
         total.merge(&m);
         current = out;
@@ -1847,6 +1992,7 @@ fn run_node<'a>(
                     role_name: s.role.clone(),
                     model_id: s.model.clone(),
                     budget_usd: stage_budget_usd,
+                    config_override: s.config_override.clone(),
                 };
                 let (output, metrics) = run_stage(
                     config,
@@ -1868,6 +2014,11 @@ fn run_node<'a>(
                     branch: branch_label,
                     node_index,
                     cached: metrics.cached,
+                    config_overrides_applied: s
+                        .config_override
+                        .as_ref()
+                        .map(PartialConfig::applied_fields)
+                        .unwrap_or_default(),
                 };
                 Ok((output, vec![trace]))
             }
@@ -1972,6 +2123,8 @@ async fn run_parallel(
                 role_name: role_name.clone(),
                 model_id: None,
                 budget_usd: None,
+                // Fan-out merge stage runs un-isolated (no per-stage override).
+                config_override: None,
             };
             let concatenated = outputs.join("\n---\n");
             let (out, metrics) = run_stage(
@@ -1994,6 +2147,7 @@ async fn run_parallel(
                 branch: branch_label,
                 node_index,
                 cached: metrics.cached,
+                config_overrides_applied: Vec::new(),
             });
             return Ok((out, traces));
         }
@@ -2338,6 +2492,7 @@ mod tests {
             role: role.to_string(),
             model: model.map(|m| m.to_string()),
             budget_weight: None,
+            config_override: None,
         })
     }
 
@@ -2362,7 +2517,72 @@ mod tests {
             branch,
             node_index,
             cached: false,
+            config_overrides_applied: Vec::new(),
         }
+    }
+
+    // ---- Phase 36: config isolation ----
+
+    #[test]
+    fn clone_and_merge_produces_independent_config() {
+        let mut parent = Config::default();
+        parent.temperature = Some(0.7);
+        let p = PartialConfig {
+            working_directory: Some(std::path::PathBuf::from("/tmp/stage")),
+            ..Default::default()
+        };
+        let mut clone = parent.clone();
+        clone.apply_partial(&p).unwrap();
+        // The clone carries the override...
+        assert_eq!(
+            clone.working_directory,
+            Some(std::path::PathBuf::from("/tmp/stage"))
+        );
+        // ...and the parent is untouched.
+        assert_eq!(parent.working_directory, None);
+        assert_eq!(parent.temperature, Some(0.7));
+    }
+
+    #[test]
+    fn cache_key_changes_with_sampling_override() {
+        // Mirrors the fold in `run_stage_inner`: the override fingerprint is
+        // woven into the role component of the key, so two sampling values
+        // produce distinct cache keys for the same role/model/input.
+        let role = "summarize";
+        let model = "test-model";
+        let input = "hello";
+        let key_plain = StageCache::key(role, model, input);
+        let p0 = PartialConfig {
+            temperature: Some(0.0),
+            ..Default::default()
+        };
+        let p1 = PartialConfig {
+            temperature: Some(1.0),
+            ..Default::default()
+        };
+        let key0 = StageCache::key(
+            &format!("{role}\u{1e}{}", p0.cache_fingerprint()),
+            model,
+            input,
+        );
+        let key1 = StageCache::key(
+            &format!("{role}\u{1e}{}", p1.cache_fingerprint()),
+            model,
+            input,
+        );
+        assert_ne!(key0, key1);
+        assert_ne!(key0, key_plain);
+    }
+
+    #[test]
+    fn stage_with_override_threads_into_trace_fields() {
+        // `applied_fields` is the exact source the StageTrace population uses.
+        let p = PartialConfig {
+            use_tools: Some("fs_read".into()),
+            working_directory: Some(std::path::PathBuf::from("/x")),
+            ..Default::default()
+        };
+        assert_eq!(p.applied_fields(), vec!["use_tools", "working_directory"]);
     }
 
     // ---- Phase 22C: split_branch_budget ----

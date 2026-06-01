@@ -107,7 +107,10 @@ function capPreamble(raw: string): string {
     lines = lines.slice(0, MAX_PREAMBLE_LINES);
   }
   let joined = lines.join("\n");
-  while (Buffer.byteLength(joined, "utf8") > MAX_PREAMBLE_BYTES && lines.length > 1) {
+  while (
+    Buffer.byteLength(joined, "utf8") > MAX_PREAMBLE_BYTES &&
+    lines.length > 1
+  ) {
     lines.pop();
     joined = lines.join("\n");
   }
@@ -299,4 +302,13 @@ export default function aichatBridge(pi: ExtensionAPI): void {
       );
     },
   });
+
+  // register the subprocess with acp if invoking under zed
+  // generate a subprocess by invoking the bridge
+  if (process.env.ZED_BRIDGE_URL) {
+    const subprocess = await bridgeFetch("/v1/state/subprocess", {
+      method: "POST",
+      body: {},
+    });
+  }
 }

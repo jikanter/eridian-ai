@@ -6,6 +6,7 @@
 //! so long-running sessions don't serve stale results after role/prompt edits.
 //!
 //! Not cached: tool-using stages (non-deterministic side effects), dry-run
+//! Not cached (yet): Semantic caching with prefix matching
 //! invocations, and stages the caller explicitly opts out of via `--no-cache`.
 
 use anyhow::{Context, Result};
@@ -13,6 +14,13 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
+
+#[allow(dead_code)] // WIP scaffold for the caching sub-track (Phases 37/38); not yet wired.
+pub struct CacheManager {
+    dir: PathBuf,
+    known_prefixes: Vec<String>,
+    ttl: Duration,
+}
 
 pub struct StageCache {
     dir: PathBuf,
@@ -127,5 +135,40 @@ mod tests {
         let payload = "line 1\nline 2 — ñ café\n";
         cache.put("unicode", payload).unwrap();
         assert_eq!(cache.get("unicode").as_deref(), Some(payload));
+    }
+}
+
+impl CacheManager {
+    pub fn new(dir: PathBuf, ttl: Duration) -> Self {
+        Self {
+            dir,
+            known_prefixes: vec![
+                "stages".to_string(),
+                "transparent".to_string(),
+                "server".to_string(),
+                "semantic".to_string(),
+            ],
+            ttl,
+        }
+    }
+
+    pub fn put(&mut self, key: &str, value: &str) -> std::io::Result<()> {
+        // validate that the file name is one of the ok known prefixes
+        if !self
+            .known_prefixes
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid cache type",
+            ));
+        }
+
+        let mut file = std::fs::File::create(&self.dir.join(key))?;
+        use std::io::Write;
+
+        file.write_all(value.as_bytes())?;
+        Ok(())
     }
 }

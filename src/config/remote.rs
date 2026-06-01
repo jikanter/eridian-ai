@@ -215,6 +215,17 @@ pub async fn invoke(
                             .map(|n| n as usize)
                             .unwrap_or(i),
                         cached: v.get("cached").and_then(Value::as_bool).unwrap_or(false),
+                        // Phase 36D: surface the remote stage's applied overrides
+                        // when present; remote isolation is enforced remote-side.
+                        config_overrides_applied: v
+                            .get("config_overrides_applied")
+                            .and_then(Value::as_array)
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|s| s.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                     })
                 })
                 .collect()
@@ -249,6 +260,7 @@ fn single_trace(role: &str, m: &CallMetrics) -> StageTrace {
         branch: None,
         node_index: 0,
         cached: m.cached,
+        config_overrides_applied: Vec::new(),
     }
 }
 

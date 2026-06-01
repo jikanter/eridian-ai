@@ -314,6 +314,13 @@ pub struct RolePipelineStage {
     /// [`crate::context_budget::allocate_stage_budgets`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget_weight: Option<f64>,
+    /// Phase 36A: opt-in per-stage config isolation. When set, the stage runs
+    /// against a clone of the global `Config` with these fields overridden;
+    /// mutations never leak across stages. Overrides may only *narrow*
+    /// permissions (enforced at preflight, 36C). Absent ⇒ the stage shares the
+    /// parent `Config`, exactly as before this phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_override: Option<PartialConfig>,
 }
 
 // Phase 21: DAG primitives — a pipeline is a list of `PipelineNode`s. The
@@ -4938,6 +4945,7 @@ Body."#;
             role: " ".into(),
             model: None,
             budget_weight: None,
+            config_override: None,
         });
         let err = node.structural_check().unwrap_err();
         assert!(err.to_string().contains("empty role"));

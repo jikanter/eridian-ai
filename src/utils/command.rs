@@ -123,14 +123,19 @@ pub async fn run_command_with_stderr_timeout(
     args: &[String],
     envs: HashMap<String, String>,
     timeout_secs: u64,
+    working_directory: Option<&Path>,
 ) -> Result<(i32, String)> {
     use tokio::io::AsyncReadExt;
 
-    let mut child = tokio::process::Command::new(cmd)
-        .args(args)
-        .envs(envs)
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let mut command = tokio::process::Command::new(cmd);
+    command.args(args).envs(envs).stderr(Stdio::piped());
+    // Phase 36B: per-command working directory (pipeline stage `config_override.
+    // working_directory`). Per-command and per-clone, so concurrent fan-out
+    // branches with different cwds never race on process-global state.
+    if let Some(dir) = working_directory {
+        command.current_dir(dir);
+    }
+    let mut child = command.spawn()?;
 
     // Take stderr handle before waiting so we can read it concurrently
     let stderr_handle = child.stderr.take();

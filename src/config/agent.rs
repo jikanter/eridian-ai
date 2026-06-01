@@ -350,7 +350,8 @@ impl Agent {
         let envs = self.variable_envs();
         let value = tokio::task::block_in_place(move || {
             tokio::runtime::Handle::current().block_on(async {
-                run_llm_function(name, vec!["_instructions".into(), "{}".into()], envs, 0).await
+                run_llm_function(name, vec!["_instructions".into(), "{}".into()], envs, 0, None)
+                    .await
             })
         })?;
         match value {

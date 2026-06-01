@@ -1,11 +1,13 @@
 use crate::client::Model;
 use crate::config::{
-    pipeline_stage_admissible, Config, EntityRef, PipelineNode, Role, RoleLike,
+    is_path_descendant, pipeline_stage_admissible, Config, EntityRef, PartialConfig, PipelineNode,
+    Role, RoleLike,
 };
 use crate::function::FunctionDeclaration;
 
 use anyhow::{bail, Result};
 use std::collections::HashSet;
+use std::path::Path;
 
 /// Pre-flight validation of model capabilities against what the role/input requires.
 /// Runs before any API call; all checks are deterministic and zero-token.
@@ -119,6 +121,113 @@ pub fn validate_pipeline_stages(
         }
     }
 
+    Ok(())
+}
+
+/// Phase 36C: parse a `use_tools` string into `(is_all, set)`. `"all"` is the
+/// wildcard sentinel; otherwise it's a comma-separated, trimmed tool list.
+fn parse_tool_set(s: &str) -> (bool, HashSet<String>) {
+    let trimmed = s.trim();
+    if trimmed == "all" {
+        return (true, HashSet::new());
+    }
+    let set = trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(String::from)
+        .collect();
+    (false, set)
+}
+
+/// Phase 36C: permission-escalation guard for pipeline stage `config_override:`.
+/// An override may only *narrow* what a stage can do; it can never grant a
+/// permission the parent (pipeline-owning) role lacks. This closes the
+/// cross-stage privilege-contamination gap (divergence Theme 9).
+///
+/// Rules:
+/// - `use_tools` — the override's tool set must be a subset of the parent's.
+///   Parent `"all"` permits any narrowing; an override of `"all"` when the
+///   parent is not `"all"` is rejected.
+/// - `mcp_servers` — only `[]` (disable all) is supported; a non-empty list is
+///   rejected ("not supported; use `[]`").
+/// - `working_directory` — must resolve to a descendant of the parent's working
+///   directory tree; a `..`-escape is rejected. (Symlink resolution is out of
+///   scope — roles are trusted code; this guards accidents.)
+/// - `temperature` / `top_p` / `max_output_tokens` — tuning knobs, no check.
+///
+/// `parent_cwd` is the parent's effective working directory (its
+/// `config_override`-free cwd — normally aichat's process cwd). `stages` is the
+/// list of `(zero-based stage index, stage role name, override)` for every
+/// stage that declared a `config_override:`.
+pub fn validate_pipeline_overrides(
+    parent_role_name: &str,
+    parent_use_tools: Option<&str>,
+    parent_cwd: &Path,
+    stages: &[(usize, String, PartialConfig)],
+) -> Result<()> {
+    for (index, stage_role, ov) in stages {
+        let stage_no = index + 1;
+
+        if let Some(child_tools) = &ov.use_tools {
+            let (parent_all, parent_set) = match parent_use_tools {
+                Some(s) => parse_tool_set(s),
+                None => (false, HashSet::new()),
+            };
+            let (child_all, child_set) = parse_tool_set(child_tools);
+            if !parent_all {
+                if child_all {
+                    bail!(
+                        "Preflight: pipeline stage {stage_no} ('{stage_role}') config_override \
+                         grants use_tools 'all', but parent role '{parent_role_name}' does not \
+                         grant all tools. Overrides may only narrow tool permissions, never \
+                         escalate them.\n  hint: set the stage's use_tools to a subset of the \
+                         parent's, or grant 'all' on the parent role."
+                    );
+                }
+                let mut extra: Vec<String> =
+                    child_set.difference(&parent_set).cloned().collect();
+                if !extra.is_empty() {
+                    extra.sort();
+                    let mut parent_list: Vec<String> = parent_set.into_iter().collect();
+                    parent_list.sort();
+                    bail!(
+                        "Preflight: pipeline stage {stage_no} ('{stage_role}') config_override \
+                         grants use_tools [{}] not held by parent role '{parent_role_name}' \
+                         (parent grants: [{}]). Overrides may only narrow tool permissions, \
+                         never escalate them.\n  hint: add the tool(s) to the parent role's \
+                         use_tools, or remove them from the stage override.",
+                        extra.join(", "),
+                        parent_list.join(", "),
+                    );
+                }
+            }
+        }
+
+        if let Some(servers) = &ov.mcp_servers {
+            if !servers.is_empty() {
+                bail!(
+                    "Preflight: pipeline stage {stage_no} ('{stage_role}') config_override.\
+                     mcp_servers re-selection is not supported in this release; use `[]` to \
+                     disable all MCP servers for the stage."
+                );
+            }
+        }
+
+        if let Some(wd) = &ov.working_directory {
+            if !is_path_descendant(parent_cwd, wd) {
+                bail!(
+                    "Preflight: pipeline stage {stage_no} ('{stage_role}') config_override.\
+                     working_directory '{}' escapes the parent working directory tree '{}'. \
+                     A stage may only narrow into a descendant directory.\n  hint: use a path \
+                     within '{}'.",
+                    wd.display(),
+                    parent_cwd.display(),
+                    parent_cwd.display(),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -693,6 +802,93 @@ fn check_switch_branch_order(n: &PipelineNode) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    // ---- Phase 36C: validate_pipeline_overrides escalation guard ----
+
+    fn ov_tools(tools: &str) -> PartialConfig {
+        PartialConfig {
+            use_tools: Some(tools.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn run_guard(parent_tools: Option<&str>, stage_ov: PartialConfig) -> Result<()> {
+        validate_pipeline_overrides(
+            "parent",
+            parent_tools,
+            Path::new("/home/u/proj"),
+            &[(0, "stage".to_string(), stage_ov)],
+        )
+    }
+
+    #[test]
+    fn escalation_use_tools_rejected() {
+        let err = run_guard(Some("fs_read,grep"), ov_tools("run_command")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("run_command"), "got: {msg}");
+        assert!(msg.contains("narrow"), "got: {msg}");
+    }
+
+    #[test]
+    fn narrowing_use_tools_accepted() {
+        run_guard(Some("fs_read,fs_write,grep"), ov_tools("fs_read,grep")).unwrap();
+        // Narrowing to no tools is allowed.
+        run_guard(Some("fs_read"), ov_tools("")).unwrap();
+    }
+
+    #[test]
+    fn escalation_use_tools_all_rejected_when_parent_not_all() {
+        let err = run_guard(Some("fs_read"), ov_tools("all")).unwrap_err();
+        assert!(err.to_string().contains("'all'"), "got: {err}");
+    }
+
+    #[test]
+    fn parent_all_allows_any_override() {
+        run_guard(Some("all"), ov_tools("fs_read,run_command")).unwrap();
+        run_guard(Some("all"), ov_tools("all")).unwrap();
+    }
+
+    #[test]
+    fn parent_none_rejects_any_tool_grant() {
+        let err = run_guard(None, ov_tools("fs_read")).unwrap_err();
+        assert!(err.to_string().contains("fs_read"), "got: {err}");
+    }
+
+    #[test]
+    fn mcp_disable_allowed_nonempty_rejected() {
+        let disable = PartialConfig {
+            mcp_servers: Some(vec![]),
+            ..Default::default()
+        };
+        run_guard(Some("all"), disable).unwrap();
+        let reselect = PartialConfig {
+            mcp_servers: Some(vec!["srv".into()]),
+            ..Default::default()
+        };
+        let err = run_guard(Some("all"), reselect).unwrap_err();
+        assert!(err.to_string().contains("not supported"), "got: {err}");
+    }
+
+    #[test]
+    fn working_directory_descendant_accepted_escape_rejected() {
+        let ok = PartialConfig {
+            working_directory: Some(PathBuf::from("scratch/sub")),
+            ..Default::default()
+        };
+        run_guard(Some("all"), ok).unwrap();
+        let escape = PartialConfig {
+            working_directory: Some(PathBuf::from("../../etc")),
+            ..Default::default()
+        };
+        let err = run_guard(Some("all"), escape).unwrap_err();
+        assert!(err.to_string().contains("escapes"), "got: {err}");
+    }
+
+    #[test]
+    fn empty_overrides_list_is_noop() {
+        validate_pipeline_overrides("parent", Some("fs_read"), Path::new("/x"), &[]).unwrap();
+    }
 
     // ---- Phase 33D: enforce_pipeline_shape policy ----
 

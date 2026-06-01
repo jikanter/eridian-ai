@@ -17,5 +17,8 @@
     "@types/node": "^20",
     "esbuild": "^0.25.0",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "pi-acp": "^0.0.27"
   }
 }

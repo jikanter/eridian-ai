@@ -374,6 +374,154 @@ pub struct Config {
     /// token spend would violate cost-conscious-above-all.
     #[serde(skip)]
     pub memory_reflect_on_exit: bool,
+
+    /// Phase 36A: per-stage working directory override. `None` means tool
+    /// processes spawn in aichat's current working directory (the historical
+    /// behavior). When set — only ever via a pipeline stage's
+    /// `config_override.working_directory` clone — tool spawns in
+    /// `run_llm_function` apply it via `Command::current_dir`. Per-command and
+    /// per-clone, so concurrent fan-out branches with different cwds never race
+    /// on process-global state. Distinct from any cwd *cache*; this is the
+    /// authoritative override.
+    #[serde(default)]
+    pub working_directory: Option<PathBuf>,
+}
+
+/// Phase 36A: the narrow set of `Config` fields a pipeline stage may override
+/// via `config_override:` in role frontmatter. Each stage gets a *clone* of the
+/// global `Config` with the override applied (see `pipe.rs::run_stage`); the
+/// clone is dropped after the stage runs, so mutations never leak across
+/// stages. Permissions are downward-only — a stage may narrow what it can do,
+/// never escalate beyond the parent role (enforced at preflight, 36C).
+///
+/// `#[non_exhaustive]` so future fields are non-breaking; `deny_unknown_fields`
+/// so a typo'd override key fails loudly instead of being silently ignored.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct PartialConfig {
+    /// Comma-separated tool list (same shape as `Config.use_tools`). `""`
+    /// narrows to no tools. Must be a subset of the parent role's tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_tools: Option<String>,
+    /// Only the empty list (`[]`, disable all MCP for this stage) is supported
+    /// in this release; a non-empty list is rejected at preflight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_servers: Option<Vec<String>>,
+    /// Stage working directory. Must stay within the parent's tree (36C).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_tokens: Option<isize>,
+}
+
+impl PartialConfig {
+    /// 36D: ordered names of the fields set to `Some(_)`. Feeds `StageTrace.
+    /// config_overrides_applied` and the stage cache-key fold. Order is fixed
+    /// (declaration order) for deterministic output.
+    pub fn applied_fields(&self) -> Vec<String> {
+        let mut fields = Vec::new();
+        if self.use_tools.is_some() {
+            fields.push("use_tools".to_string());
+        }
+        if self.mcp_servers.is_some() {
+            fields.push("mcp_servers".to_string());
+        }
+        if self.working_directory.is_some() {
+            fields.push("working_directory".to_string());
+        }
+        if self.temperature.is_some() {
+            fields.push("temperature".to_string());
+        }
+        if self.top_p.is_some() {
+            fields.push("top_p".to_string());
+        }
+        if self.max_output_tokens.is_some() {
+            fields.push("max_output_tokens".to_string());
+        }
+        fields
+    }
+
+    /// True when no field is set — treated identically to no override at all
+    /// (the stage shares the parent `Config` handle, no clone).
+    pub fn is_empty(&self) -> bool {
+        self.applied_fields().is_empty()
+    }
+
+    /// A short, stable fingerprint of the *values* (not just field names), used
+    /// to fold the override into the stage cache key so a sampling change
+    /// invalidates a cached stage output. Field names alone would collide
+    /// between e.g. `temperature: 0.0` and `temperature: 1.0`.
+    pub fn cache_fingerprint(&self) -> String {
+        format!(
+            "ut={:?};mcp={:?};wd={:?};temp={:?};top_p={:?};max={:?}",
+            self.use_tools,
+            self.mcp_servers,
+            self.working_directory,
+            self.temperature,
+            self.top_p,
+            self.max_output_tokens,
+        )
+    }
+
+    /// Apply the role-scoped fields (tools, sampling) to a stage's resolved
+    /// `Role`. The pipeline path drives tool selection and sampling off the
+    /// *stage role*, not the global `Config`, so these must land on the role to
+    /// take effect. Config-scoped fields (`working_directory`, `mcp_servers`)
+    /// are handled by [`Config::apply_partial`] on the cloned config instead.
+    pub fn apply_to_role(&self, role: &mut Role) {
+        if let Some(use_tools) = self.use_tools.clone() {
+            role.set_use_tools(Some(use_tools));
+        }
+        if let Some(t) = self.temperature {
+            role.set_temperature(Some(t));
+        }
+        if let Some(t) = self.top_p {
+            role.set_top_p(Some(t));
+        }
+        if let Some(max) = self.max_output_tokens {
+            let mut model = role.model().clone();
+            model.set_max_tokens(Some(max), true);
+            role.set_model(model);
+        }
+    }
+}
+
+/// Phase 36C: lexical (filesystem-free) descendant check. Resolves `child`
+/// against `parent` when relative, collapses `.`/`..` components, and reports
+/// whether the result stays within `parent`'s tree. Equal paths count as
+/// descendants. Symlink resolution is deliberately out of scope — roles are
+/// trusted code; this guards accidents, not adversaries.
+pub fn is_path_descendant(parent: &Path, child: &Path) -> bool {
+    fn normalize(p: &Path) -> Vec<std::ffi::OsString> {
+        use std::path::Component;
+        let mut stack: Vec<std::ffi::OsString> = Vec::new();
+        for comp in p.components() {
+            match comp {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    stack.pop();
+                }
+                Component::Normal(s) => stack.push(s.to_os_string()),
+                Component::RootDir => stack.push(std::ffi::OsString::from("/")),
+                Component::Prefix(pfx) => stack.push(pfx.as_os_str().to_os_string()),
+            }
+        }
+        stack
+    }
+
+    let resolved_child = if child.is_absolute() {
+        child.to_path_buf()
+    } else {
+        parent.join(child)
+    };
+    let parent_norm = normalize(parent);
+    let child_norm = normalize(&resolved_child);
+    child_norm.len() >= parent_norm.len() && child_norm[..parent_norm.len()] == parent_norm[..]
 }
 
 /// State for deferred tool loading (Phase 1C).
@@ -506,6 +654,7 @@ impl Default for Config {
             last_knowledge_hits: Vec::new(),
             memory_preamble: None,
             memory_reflect_on_exit: false,
+            working_directory: None,
         }
     }
 }
@@ -1191,6 +1340,28 @@ impl Config {
             Some(role_like) => role_like.set_use_tools(value),
             None => self.use_tools = value,
         }
+    }
+
+    /// Phase 36B: apply the *config-scoped* fields of a stage `config_override:`
+    /// to a (cloned) `Config`. Role-scoped fields (tools, sampling) are applied
+    /// to the stage role via [`PartialConfig::apply_to_role`] instead — the
+    /// pipeline path drives those off the role, not this struct. Returns `Err`
+    /// for an unsupported override (a non-empty `mcp_servers` list).
+    pub fn apply_partial(&mut self, p: &PartialConfig) -> Result<()> {
+        if let Some(dir) = p.working_directory.clone() {
+            self.working_directory = Some(dir);
+        }
+        if let Some(servers) = &p.mcp_servers {
+            if servers.is_empty() {
+                self.mcp_servers.clear();
+            } else {
+                bail!(
+                    "config_override.mcp_servers: only [] (disable all) is supported \
+                     in this release"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn set_save_session(&mut self, value: Option<bool>) {
@@ -3656,6 +3827,154 @@ fn validate_pipe_to_command(cmd: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Phase 36: PartialConfig / apply_partial / is_path_descendant ----
+
+    #[test]
+    fn partial_config_deserializes_from_yaml() {
+        let yaml = "use_tools: \"fs_read,grep\"\nworking_directory: ./scratch\ntemperature: 0.0\n";
+        let p: PartialConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(p.use_tools.as_deref(), Some("fs_read,grep"));
+        assert_eq!(p.working_directory, Some(PathBuf::from("./scratch")));
+        assert_eq!(p.temperature, Some(0.0));
+        assert!(p.mcp_servers.is_none());
+    }
+
+    #[test]
+    fn partial_config_rejects_unknown_key() {
+        let yaml = "use_tools: \"a\"\nbogus_key: 1\n";
+        let err = serde_yaml::from_str::<PartialConfig>(yaml).unwrap_err();
+        assert!(err.to_string().contains("bogus_key"), "got: {err}");
+    }
+
+    #[test]
+    fn partial_applied_fields_lists_set_fields_in_order() {
+        let p = PartialConfig {
+            use_tools: Some("a".into()),
+            temperature: Some(0.2),
+            working_directory: Some(PathBuf::from("/x")),
+            ..Default::default()
+        };
+        assert_eq!(
+            p.applied_fields(),
+            vec![
+                "use_tools".to_string(),
+                "working_directory".to_string(),
+                "temperature".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn partial_is_empty_when_no_fields_set() {
+        assert!(PartialConfig::default().is_empty());
+        let p = PartialConfig {
+            top_p: Some(0.9),
+            ..Default::default()
+        };
+        assert!(!p.is_empty());
+    }
+
+    #[test]
+    fn partial_cache_fingerprint_varies_with_values() {
+        let a = PartialConfig {
+            temperature: Some(0.0),
+            ..Default::default()
+        };
+        let b = PartialConfig {
+            temperature: Some(1.0),
+            ..Default::default()
+        };
+        assert_ne!(a.cache_fingerprint(), b.cache_fingerprint());
+        // Same values → same fingerprint (deterministic).
+        assert_eq!(a.cache_fingerprint(), a.clone().cache_fingerprint());
+    }
+
+    #[test]
+    fn apply_partial_sets_working_directory() {
+        let mut cfg = Config::default();
+        let p = PartialConfig {
+            working_directory: Some(PathBuf::from("/tmp/stage")),
+            ..Default::default()
+        };
+        cfg.apply_partial(&p).unwrap();
+        assert_eq!(cfg.working_directory, Some(PathBuf::from("/tmp/stage")));
+    }
+
+    #[test]
+    fn apply_partial_empty_mcp_disables_all() {
+        let mut cfg = Config::default();
+        cfg.mcp_servers
+            .insert("srv".into(), Default::default());
+        let p = PartialConfig {
+            mcp_servers: Some(vec![]),
+            ..Default::default()
+        };
+        cfg.apply_partial(&p).unwrap();
+        assert!(cfg.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn apply_partial_nonempty_mcp_rejected() {
+        let mut cfg = Config::default();
+        let p = PartialConfig {
+            mcp_servers: Some(vec!["srv".into()]),
+            ..Default::default()
+        };
+        let err = cfg.apply_partial(&p).unwrap_err();
+        assert!(err.to_string().contains("only []"), "got: {err}");
+    }
+
+    #[test]
+    fn apply_partial_only_touches_some_fields() {
+        let mut cfg = Config::default();
+        cfg.temperature = Some(0.7);
+        // Override sets only working_directory; temperature must be untouched
+        // by apply_partial (sampling is role-scoped, applied via apply_to_role).
+        let p = PartialConfig {
+            working_directory: Some(PathBuf::from("/x")),
+            ..Default::default()
+        };
+        cfg.apply_partial(&p).unwrap();
+        assert_eq!(cfg.temperature, Some(0.7));
+        assert_eq!(cfg.working_directory, Some(PathBuf::from("/x")));
+    }
+
+    #[test]
+    fn apply_to_role_narrows_use_tools_and_sampling() {
+        let mut role = Role::new("t", "");
+        role.set_use_tools(Some("a,b,c".into()));
+        let p = PartialConfig {
+            use_tools: Some("a".into()),
+            temperature: Some(0.0),
+            top_p: Some(0.5),
+            ..Default::default()
+        };
+        p.apply_to_role(&mut role);
+        assert_eq!(role.use_tools().as_deref(), Some("a"));
+        assert_eq!(role.temperature(), Some(0.0));
+        assert_eq!(role.top_p(), Some(0.5));
+    }
+
+    #[test]
+    fn is_path_descendant_accepts_descendant_and_equal() {
+        let parent = Path::new("/home/u/proj");
+        assert!(is_path_descendant(parent, Path::new("/home/u/proj")));
+        assert!(is_path_descendant(parent, Path::new("/home/u/proj/sub/dir")));
+        // Relative child resolves against parent.
+        assert!(is_path_descendant(parent, Path::new("scratch")));
+        assert!(is_path_descendant(parent, Path::new("./scratch/x")));
+    }
+
+    #[test]
+    fn is_path_descendant_rejects_escape() {
+        let parent = Path::new("/home/u/proj");
+        assert!(!is_path_descendant(parent, Path::new("/etc/passwd")));
+        assert!(!is_path_descendant(parent, Path::new("../../etc")));
+        assert!(!is_path_descendant(parent, Path::new("/home/u/other")));
+        // `..` that climbs above parent then re-descends elsewhere is rejected.
+        assert!(!is_path_descendant(parent, Path::new("sub/../../sibling")));
+    }
 
     // ---- Phase 20C: RemoteConfig ----
 

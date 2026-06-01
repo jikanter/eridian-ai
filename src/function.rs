@@ -398,7 +398,20 @@ impl ToolCall {
         // Phase 8A: Resolve timeout — per-tool overrides global
         let timeout_secs = resolve_tool_timeout(config, &call_name);
 
-        let output = match run_llm_function(cmd_name, cmd_args, envs, timeout_secs).await? {
+        // Phase 36B: per-stage working directory (pipeline `config_override.
+        // working_directory`). `None` outside an isolated stage — tools spawn
+        // in aichat's cwd as before.
+        let working_directory = config.read().working_directory.clone();
+
+        let output = match run_llm_function(
+            cmd_name,
+            cmd_args,
+            envs,
+            timeout_secs,
+            working_directory,
+        )
+        .await?
+        {
             Some(contents) => serde_json::from_str(&contents)
                 .ok()
                 .unwrap_or_else(|| json!({"output": contents})),
@@ -658,6 +671,7 @@ pub async fn run_llm_function(
     cmd_args: Vec<String>,
     mut envs: HashMap<String, String>,
     timeout_secs: u64,
+    working_directory: Option<PathBuf>,
 ) -> Result<Option<String>> {
     let prompt = format!("Call {cmd_name} {}", cmd_args.join(" "));
 
@@ -692,8 +706,14 @@ pub async fn run_llm_function(
 
     // Phase 8A: Async execution with timeout support
     let (exit_code, stderr) =
-        run_command_with_stderr_timeout(&cmd_name, &cmd_args, envs, timeout_secs)
-            .await
+        run_command_with_stderr_timeout(
+            &cmd_name,
+            &cmd_args,
+            envs,
+            timeout_secs,
+            working_directory.as_deref(),
+        )
+        .await
             .map_err(|err| {
                 // Check if it's already a typed error (e.g., ToolTimeout)
                 if err.downcast_ref::<crate::utils::exit_code::AichatError>().is_some() {
