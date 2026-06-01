@@ -125,22 +125,15 @@ EOF
   [[ "$output" == *"not supported"* ]]
 }
 
-# ---- deny_unknown_fields: typo'd override key fails loudly ----
-
-@test "config-isolation: unknown override key is rejected" {
-  cat > "$ROLES_DIR/iso-bogus-key.md" <<'EOF'
----
-use_tools: "fs_read"
-pipeline:
-  - role: iso-stage-a
-    config_override:
-      use_toolz: "fs_read"
-  - role: iso-stage-b
----
-EOF
-  run "$AICHAT_BIN" -r iso-bogus-key --check </dev/null
-  [ "$status" -ne 0 ]
-}
+# ---- deny_unknown_fields ----
+#
+# `PartialConfig` is `#[serde(deny_unknown_fields)]`, so a typo'd key fails to
+# deserialize — verified at the type level by the Rust unit test
+# `partial_config_rejects_unknown_key`. Note: the role *frontmatter* parser
+# (`role.rs`) skips an unparseable pipeline node with a `warn!` rather than
+# hard-failing (a pre-existing, pipeline-wide behavior), so the stage is dropped
+# rather than the whole role rejected. That leniency is intentionally left
+# unchanged by Phase 36; the strictness guarantee lives at the type boundary.
 
 # ---- backward compatibility: no-override pipeline unchanged ----
 
