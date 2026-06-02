@@ -43,7 +43,7 @@ A multi-tool for integrated interactions with AI models.A useful set of extensio
 
 ## Integrated requirements
 
-Requirements that span more than one project (aichat ↔ llm-functions ↔ the future harness interface) live in `docs/integrated-architecture/`. Anything purely internal to aichat stays in `docs/roadmap/` or `docs/architecture/`. See `docs/roadmap/integrated-architecture/README.md` for what qualifies.
+Requirements that span more than one project (aichat ↔ llm-functions ↔ the future harness interface) live in `docs/architecture/integrated-architecture/`. Anything purely internal to aichat stays in `docs/roadmap/` or `docs/architecture/`. See `docs/architecture/integrated-architecture/README.md` for what qualifies.
 
 ## About
 

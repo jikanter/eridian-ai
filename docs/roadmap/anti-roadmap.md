@@ -5,7 +5,7 @@ Proposals considered and rejected, with reasoning. Linked from [`ROADMAP.md`](..
 | Proposal                                               | Reason                                                                                                | Source          | Rule Strength |
 |--------------------------------------------------------|-------------------------------------------------------------------------------------------------------|-----------------|---------------|
 | LiteLLM as dependency                                  | Python runtime conflicts with single-binary constraint. Already works via `openai-compatible` client. | Epic 2          | Weak          |
-| Semantic caching with vector DB                        | Being forked out to different, peer tooling                                                           | ML App Engineer | Strong        |
+| Semantic caching with vector DB                        | Forked out to the **astrophage** peer repo (record/replay/cache substrate); see [integrated-architecture/SPEC-astrophage.md](../architecture/integrated-architecture/SPEC-astrophage.md) | ML App Engineer | Strong        |
 | Multi-agent orchestration framework                    | Over-engineering. Agent-as-tool + pipelines + macros compose to cover every topology.                 | Epic 5          | Strong        |
 | Token-exact counting (tiktoken)                        | Only covers OpenAI tokenizers. Budget allocation needs order-of-magnitude, not exact precision.       | Epic 2          | Moderate      |
 | Knowledge graph with entity extraction                 | Requires LLM calls per chunk during indexing. Violates cost-conscious constraint.                     | Epic 4          | Strong        |
