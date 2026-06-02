@@ -1,4 +1,6 @@
 # Phase 40: Auxiliary-Call Caching (Embeddings & Rerank) : Overview - Epic 2
+**Note:** Much of this has been superseded by `docs/analysis/caching/SPEC-003-cache-substrate.md`. Make sure to review that document before implementing this phase.
+
 
 **Status (2026-05-29):** **Planned — design draft.** No items below are implemented. This
 phase ports LiteLLM's **embedding caching** ([`caching.py:735-806`](https://github.com/BerriAI/litellm/blob/main/litellm/caching/caching.py))

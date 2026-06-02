@@ -1,4 +1,6 @@
 # Phase 38: Cache Backend Abstraction & Control Protocol : Overview - Epic 2
+**Note:** Much of this has been superseded by `docs/analysis/caching/SPEC-003-cache-substrate.md`. Make sure to review that document before implementing this phase.
+
 
 **Status (2026-05-29):** **Planned — design draft.** No items below are implemented. This
 phase ports the *horizontal abstractions* of [LiteLLM's caching subsystem](https://github.com/BerriAI/litellm/tree/main/litellm/caching)

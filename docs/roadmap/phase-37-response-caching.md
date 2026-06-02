@@ -1,4 +1,5 @@
 # Phase 37: Transparent Response Caching — Deep Design
+**Note:** Much of this has been superseded by `docs/analysis/caching/SPEC-003-cache-substrate.md`. Make sure to review that document before implementing this phase.
 
 Detail companion to [`phase-37-overview.md`](phase-37-overview.md). The overview lists what 37A–F do; this doc explains *why* the 4-layer model is the right framing (the spec's 3-pattern table missed the cheapest one), *how* the pi integration falls out of the existing server topology, and *what* the trace + flag posture demand of the writer.
 
@@ -142,4 +143,5 @@ Already enumerated in detail in EVAL-0002 §6. Re-stated here in the order they 
 - [`docs/analysis/caching/CLAUDE.md`](../analysis/caching/CLAUDE.md) — the open-harness workstream that 37E coordinates with.
 - [`src/cache.rs`](../../src/cache.rs) — the existing primitive being broadened.
 - [`src/repl/pi.rs`](../../src/repl/pi.rs) — why 37D is the pi integration.
+- [`docs/analysis/caching/SPEC-003-cache-substrate.md`](../analysis/caching/SPEC-003-cache-substrate.md) — the spec for the cache substrate and astrophage tool.
 - Anthropic Prompt Caching: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching

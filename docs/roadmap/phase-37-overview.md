@@ -1,5 +1,5 @@
 # Phase 37: Transparent Response Caching : Overview - Epic 2
-
+**Note:** Much of this has been superseded by `docs/analysis/caching/SPEC-003-cache-substrate.md`. Make sure to review that document before implementing this phase.
 **Status (2026-05-27):** **Planned — design draft.** No items below are implemented. Closes the gap inventoried in [`docs/analysis/caching/EVAL-0002-full-caching.md`](../analysis/caching/EVAL-0002-full-caching.md) — aichat ships a partial L1 (`src/cache.rs`'s `StageCache`, scoped to pipeline stages and per-file knowledge extraction) and no L2/L3/L4. This phase wires response caching across the ordinary request path, the OpenAI-compatible server (which is the pi REPL substrate), and the trace, in the C→B→A→D ordering EVAL-0002 prescribes. Aligns with the three-pattern spec (exact / semantic / proxy) and adds the layer (L3 provider prompt caching) the spec omitted but the project's cost-conscious constraint mandates.
 
 | Item | Description | Status |

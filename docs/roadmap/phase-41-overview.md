@@ -1,4 +1,6 @@
 # Phase 41: Cache Observability & Admin Parity : Overview - Epic 2
+**Note:** Much of this has been superseded by `docs/analysis/caching/SPEC-003-cache-substrate.md`. Make sure to review that document before implementing this phase.
+
 
 **Status (2026-05-29):** **Planned — design draft.** No items below are implemented. This
 phase ports LiteLLM's cache **admin and observability surface** — `/cache/ping`,

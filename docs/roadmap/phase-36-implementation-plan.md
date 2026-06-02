@@ -4,7 +4,7 @@
 [`phase-36-overview.md`](phase-36-overview.md), with codebase reality corrections
 (§0) and the three scope decisions taken on 2026-05-30 (§0.0). Read §0 first.
 
----
+--- 
 
 ## §0.0 Scope decisions (resolved 2026-05-30)
 

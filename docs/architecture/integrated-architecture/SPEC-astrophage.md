@@ -42,19 +42,20 @@ is its own repo**, and the shared code is a **published-by-path crate** both rep
 on.
 
 ```text
-astrophage/                         # github.com/jikanter/astrophage (new repo)
-├── Cargo.toml                      # bin: astrophage; lib dep: replay-core
-└── src/{main.rs, gateway.rs, policy.rs, control.rs, trace.rs, cassette.rs}
+astrophage/                         # github.com/jikanter/astrophage (own repo + workspace)
+├── Cargo.toml                      # [workspace] members=["crates/replay-core"]; bin: astrophage
+├── src/main.rs                     # {gateway, policy, control, trace, cassette}
+└── crates/replay-core/             # shared crate — IN-REPO (decision A, §2.1)
+    └── src/{cas.rs, sse.rs, key.rs, lib.rs}
 
-replay-core/                        # shared crate (see §2.1 for where it lives)
-└── src/{cas.rs, sse.rs, key.rs, lib.rs}
-
-aichat/  (this repo)                # depends on replay-core for StageCache + serve path
+aichat/  (this repo)                # depends on replay-core by cross-repo git dep
 ```
 
 The split is exactly `SPEC-003` §1 — `astrophage` is the `eridian-replay` binary,
-`replay-core` is the shared CAS + SSE + canonical-key crate — with one change: the binary
-is **not** in aichat's workspace. That is the only thing extraction-into-a-repo alters.
+`replay-core` is the shared CAS + SSE + canonical-key crate — with one change: **neither**
+the binary **nor** `replay-core` is in aichat's workspace. Both live in the astrophage repo
+(`replay-core` as that repo's workspace member); aichat reaches `replay-core` across the
+repo boundary by git dep. That is the only thing extraction-into-a-repo alters.
 
 **Why a separate repo, not a workspace member.** A workspace member couples astrophage's
 release cadence, CI, and issue tracker to aichat's. The substrate's whole value
@@ -69,23 +70,28 @@ repo is a second CI, a second release, a second README/demo surface for one main
 commitment is ever withdrawn, this repo should be re-absorbed as a workspace member or
 dropped for a commodity gateway — the OpenAI-compat seam (§3) keeps that reversible.
 
-### 2.1 Where `replay-core` lives `STOP-AND-ASK`
+### 2.1 Where `replay-core` lives — **RESOLVED: decision A (2026-06-02)**
 
 `replay-core` is depended on by **both** repos (aichat's `StageCache`/serve path *and*
 astrophage). Three options, none free:
 
 | Option | aichat → replay-core | astrophage → replay-core | Cost |
 |---|---|---|---|
-| **A. crate in astrophage repo** | path/git dep across repo | in-repo | aichat now build-depends on the astrophage repo — the dependency arrow points the wrong way (`base_url` is supposed to be the only coupling). |
+| **A. crate in astrophage repo** ✅ | git dep across repo | in-repo | aichat now build-depends on the astrophage repo — the dependency arrow points aichat → astrophage (`base_url` stays the only *runtime* coupling). |
 | **B. crate in aichat repo** | in-repo | path/git dep across repo | astrophage build-depends on aichat — breaks the "vendor astrophage alone" goal. |
 | **C. third repo / published crate** | dep | dep | a third repo to maintain; cleanest arrows. |
 
-**Recommendation: C deferred, B for v0.1.** Ship `replay-core` inside aichat's workspace
-first (it already refactors `src/cache.rs` onto it per `SPEC-003` §1, acceptance #2), and
-have astrophage depend on it by **git tag**. Promote to a standalone published crate
-(Option C) only if a third consumer needs it. This is flagged `STOP-AND-ASK` rather than
-guessed because it sets the dependency topology of the whole integrated system —
-surface it, do not assume it.
+**Decision: A — realized on disk 2026-06-02.** `replay-core` is a workspace member of the
+**astrophage repo**; aichat depends on it as a **cross-repo git dependency** (pinned by
+`rev`/`branch = main` today; a `replay-core-vX` git tag is cut when the API stabilizes).
+This accepts the aichat → astrophage build-dependency arrow as the price of letting a
+consumer **vendor astrophage with its substrate crate without cloning aichat** — the whole
+runtime-agnostic value (`EVAL-0005` §3). The earlier recommendation (B for v0.1, C deferred)
+is **superseded by the shipped topology**. Re-absorbing `replay-core` into aichat (B) or
+promoting it to a third published crate (C) stays available if a third consumer appears; the
+`base_url` seam keeps that reversible. This was flagged `STOP-AND-ASK` because it sets the
+dependency topology of the whole integrated system — it was surfaced and decided, not
+guessed.
 
 ## 3. Seam: aichat ↔ astrophage
 
@@ -241,8 +247,9 @@ plus two that are specifically cross-repo:
 
 ## 9. Open questions (`STOP-AND-ASK`, do not guess)
 
-1. **`replay-core` home** (§2.1) — sets the dependency topology of the whole integrated
-   system. Decide before astrophage's first cross-repo build.
+1. **`replay-core` home** (§2.1) — **RESOLVED 2026-06-02: decision A.** `replay-core` is a
+   workspace member of the astrophage repo; aichat consumes it by cross-repo git dep. Was
+   the topology-setting open question; now closed.
 2. **Tool-replay key stability** (`SPEC-004` §llm-functions stop-and-ask) — is
    `(tool_name, args_hash)` a stable *lookup* key across runs? `SPEC-001` §3.4 stores the
    hashes but does not promise lookup stability. If not guaranteed, the tool-replay key
@@ -252,8 +259,10 @@ plus two that are specifically cross-repo:
 
 ## 10. Acceptance criteria (cross-repo, additive to `SPEC-003` §9)
 
-1. `astrophage` builds **outside aichat's workspace** and depends on `replay-core` by the
-   decided mechanism (§2.1); a consumer can vendor astrophage without cloning aichat.
+1. `astrophage` builds in its **own repo** (outside aichat's workspace) with `replay-core`
+   as an **in-repo workspace member** (§2.1 decision A); aichat depends on `replay-core` by
+   cross-repo git dep; a consumer can vendor astrophage (binary + `replay-core`) without
+   cloning aichat. ✅ realized 2026-06-02 (astrophage `origin/main`).
 2. aichat ↔ astrophage coupling is exactly `base_url` + `X-Eridian-Session-Id`; removing
    astrophage (pointing `base_url` back at the provider) leaves aichat fully functional.
 3. A cassette recorded against a live provider replays byte-identically offline with

@@ -2,6 +2,10 @@
 
 **Version:** 0.1
 **Status:** Draft, ready for implementation per [`PLAN-cache-substrate.md`](PLAN-cache-substrate.md)
+**Amended 2026-06-02:** repo topology updated to match shipped reality — substrate is its
+own repo (`astrophage`), `replay-core` is a member of *that* repo, aichat consumes it by
+cross-repo git dep (SPEC-astrophage §2.1 decision A). §1, §9 reflect this; binary renamed
+`eridian-replay` → `astrophage`.
 **Owners:** project lead
 **Inputs:** [`ADR-0005`](ADR-0005-cache-substrate-extraction.md), [`SPEC-001`](SPEC-001-trace-format.md),
 [`EVAL-0004`](EVAL-0004-litellm-cache-parity.md), `src/serve.rs` (37D), `src/cache.rs`,
@@ -32,27 +36,38 @@ The two stores **may share a storage mechanism** (the `replay-core` CAS + SSE cr
 runtime-awareness into the one component whose value is being runtime-agnostic — a category
 error and a migration to undo, not a refactor.
 
-## 1. Binary & workspace shape
+## 1. Binary & repo shape
+
+**Topology decided** — SPEC-astrophage §2/§2.1 **decision A**, realized on disk 2026-06-02.
+The substrate is **its own repo** ([`astrophage`](https://github.com/jikanter/astrophage)),
+**not** a member of aichat's workspace. `replay-core` is a workspace member **of the
+astrophage repo**. aichat consumes `replay-core` as a **cross-repo git dependency** — the
+only build coupling (the runtime coupling is `base_url` + the correlation header, §6). The
+binary's `ADR-0005` working name `eridian-replay` shipped as **`astrophage`**.
 
 ```text
-<workspace root>/
-├── Cargo.toml                 # workspace; aichat + new members
-├── src/                       # aichat (unchanged crate root)
-└── crates/
-    ├── replay-core/           # shared: CAS store + SSE synthesis + canonical key
-    │   └── src/{cas.rs, sse.rs, key.rs, lib.rs}
-    └── eridian-replay/        # the substrate binary
-        └── src/{main.rs, gateway.rs, policy.rs, control.rs, trace.rs, cassette.rs}
+astrophage/                     # github.com/jikanter/astrophage (own repo + workspace)
+├── Cargo.toml                  # [workspace] members=["crates/replay-core"]; bin: astrophage
+├── src/main.rs                 # substrate binary: {gateway, policy, control, trace, cassette}
+└── crates/replay-core/         # shared crate — IN-REPO (decision A)
+    └── src/{cas.rs, sse.rs, key.rs, lib.rs}
+
+aichat/  (this repo)
+└── Cargo.toml                  # replay-core = { git = ".../astrophage", rev|branch|tag = … }
 ```
 
-- **`eridian-replay`** — a new workspace member, a standalone reverse gateway binary. CLI
-  via `clap` (consistent with `aichat` and `brief`; **not** `argc` — see
-  [`SPEC-004`](SPEC-004-ecosystem-surfaces.md) §argc). No new programming languages.
-- **`replay-core`** — a shared library crate holding the **content-addressed store** and
-  **SSE-synthesis** used by *both* `eridian-replay` and `aichat`'s in-tree
-  `StageCache`/serve path. This is the "shared `cas` crate" of `ADR-0005`. `StageCache`
+- **`astrophage`** (working name `eridian-replay` in `ADR-0005`) — the standalone
+  reverse-gateway binary, in its own repo. CLI via `clap` (consistent with `aichat` and
+  `brief`; **not** `argc` — see [`SPEC-004`](SPEC-004-ecosystem-surfaces.md) §argc). No new
+  programming languages.
+- **`replay-core`** — the shared library crate holding the **content-addressed store** and
+  **SSE-synthesis**, a workspace member **of the astrophage repo**, depended on by *both*
+  the `astrophage` binary (in-repo path dep) and `aichat`'s in-tree `StageCache`/serve path
+  (cross-repo git dep). This is the "shared `cas` crate" of `ADR-0005`. `StageCache`
   (`src/cache.rs`) refactors to sit on `replay-core`'s CAS primitive so atomic-write and
-  content-addressing exist once.
+  content-addressing exist once. **Dependency-arrow cost** (SPEC-astrophage §2.1): aichat
+  now build-depends on the astrophage repo; `base_url` stays the only *runtime* coupling, so
+  the seam remains reversible.
 - **Dependencies.** Default build adds **zero** new default dependencies — reuse `sha2`,
   `parking_lot`, `serde_json`, and the existing HTTP stack (`axum`/`hyper`/`reqwest`)
   already in `aichat`. Anything beyond (Redis, object stores — Phase 39, deferred) is
@@ -248,7 +263,7 @@ consuming repo (e.g., `tests/regression/cassettes/`), not to `aichat`'s source t
 1. **Record**: run the eval/regression suite against a live provider in
    `--mode cassette` record sub-mode; entries accumulate.
 2. **Review**: a human (or `showboat extract` spot-check) inspects new entries — confirms
-   redaction, sanity-checks responses. `eridian-replay cassette diff` shows added/changed
+   redaction, sanity-checks responses. `astrophage cassette diff` shows added/changed
    entries.
 3. **Commit**: pin the set into the repo. CI runs `--mode cassette` replay (hard-fail on
    miss) — deterministic, offline, token-free.
@@ -257,7 +272,7 @@ consuming repo (e.g., `tests/regression/cassettes/`), not to `aichat`'s source t
 
 A **recorded request whose canonical key no longer matches** (a role edit, a prompt-
 template change, a model bump changed the request body) is **drift**. In replay mode this
-surfaces as a miss-as-error naming the absent key; `eridian-replay cassette check` reports,
+surfaces as a miss-as-error naming the absent key; `astrophage cassette check` reports,
 for a set + a live request stream, which pinned entries went unmatched (stale) and which
 requests had no pin (uncovered). Drift is the signal that a cassette set needs re-recording
 — it is a feature, not a failure: it catches "the prompt changed but the eval still passed
@@ -283,10 +298,11 @@ against a stale recording."
 
 ## 9. Acceptance criteria for SPEC-003 v0.1
 
-1. `eridian-replay` builds as a workspace member; default `cargo build` adds zero new
-   default dependencies.
+1. `astrophage` builds in its **own repo's** workspace (not aichat's); a default
+   `cargo build` of `replay-core` adds zero new default dependencies to aichat.
 2. `replay-core` holds the CAS + SSE + canonical-key code; `src/cache.rs` `StageCache`
-   sits on it with its two existing callers unchanged.
+   sits on it (consumed as a **cross-repo git dependency**) with its two existing callers
+   unchanged.
 3. The canonical key reuses 37C `transparent_key`'s in-key/normalized-out split; a test
    varies each in-key field one at a time and asserts a distinct key, and varies each
    normalized-out field and asserts an *identical* key.
@@ -300,4 +316,4 @@ against a stale recording."
 7. Drift: editing a role's prompt changes the canonical key; replay against the old
    cassette reports the stale/uncovered entries rather than silently passing.
 8. The substrate never reads `StageCache`'s `(role, model, input)` key or any `FactId`
-   (enforced by construction — those types are not in `eridian-replay`'s dependency set).
+   (enforced by construction — those types are not in `astrophage`'s dependency set).

@@ -6,6 +6,18 @@
 `EVAL-001-compare-to-mitmproxy.md`, `EVAL-0002-full-caching.md`,
 `EVAL-0004-litellm-cache-parity.md`, `src/cache.rs`, `src/serve.rs`, root `CLAUDE.md`
 
+> **Amendment (2026-06-02).** The "working name `eridian-replay`, **member of the existing
+> Cargo workspace**" shape decided below was superseded by the cross-repo projection
+> [`SPEC-astrophage.md`](../../architecture/integrated-architecture/SPEC-astrophage.md) §2.
+> The substrate shipped as its **own repo**
+> ([`astrophage`](https://github.com/jikanter/astrophage)) — binary renamed
+> `eridian-replay` → **`astrophage`**, with `replay-core` a workspace member **of that
+> repo** (SPEC-astrophage §2.1 **decision A**). aichat consumes `replay-core` as a
+> **cross-repo git dependency**. The decision *rationale* below is unchanged — only the repo
+> boundary moved (workspace member → sibling repo); "A workspace member is real surface" in
+> Consequences now reads as "a sibling repo is real surface" (a second CI/release, the cost
+> named in SPEC-astrophage §2 and `EVAL-0005` §5).
+
 ## Context
 
 The caching sub-track (Phases 37–41, per [`EVAL-0004`](EVAL-0004-litellm-cache-parity.md))

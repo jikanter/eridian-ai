@@ -32,9 +32,9 @@ graph TB
         manifest[("manifest.jsonl<br/>per parent session")]:::artifact
     end
 
-    subgraph substrate_layer["Cache/cassette/mock substrate (eridian-replay)"]
-        substrate["eridian-replay<br/>(wire-level reverse gateway,<br/>pointed at by base_url)"]:::phase2
-        cas[("replay-core CAS<br/>+ SSE synthesis")]:::artifact
+    subgraph substrate_layer["Cache/cassette/mock substrate (astrophage — own repo)"]
+        substrate["astrophage<br/>(wire-level reverse gateway,<br/>pointed at by base_url)"]:::phase2
+        cas[("replay-core CAS<br/>+ SSE synthesis<br/>(member of astrophage repo)")]:::artifact
         cassette_sets[("committed cassette sets<br/>(pinned, content-addressed)")]:::artifact
         provider["LLM provider<br/>(real upstream)"]:::external
     end
@@ -149,9 +149,12 @@ tools, green = data artifacts.
 
 ### Cache/cassette/mock substrate
 
-- **`eridian-replay`** — a separate workspace binary (decided in
+- **`astrophage`** (working name `eridian-replay`) — a **separate-repo** binary
+  ([github.com/jikanter/astrophage](https://github.com/jikanter/astrophage); decided in
   [`ADR-0005`](ADR-0005-cache-substrate-extraction.md), contracted in
-  [`SPEC-003`](SPEC-003-cache-substrate.md)). A **wire-level reverse gateway pointed at by
+  [`SPEC-003`](SPEC-003-cache-substrate.md), repo topology in
+  [`SPEC-astrophage`](../../architecture/integrated-architecture/SPEC-astrophage.md) §2.1
+  decision A). A **wire-level reverse gateway pointed at by
   `base_url`** — not a forward MITM, no TLS interception. It serves three policies off one
   mechanism: transparent **cache** (TTL/LRU), **cassette** (pinned, deterministic,
   token-free — the eval-replay payload), and **mock** (scripted provider faults,
@@ -162,7 +165,8 @@ tools, green = data artifacts.
   turn via an `X-Eridian-Session-Id` header Eridian injects — never a parallel telemetry
   surface (`SPEC-003` §6).
 - **`replay-core`** — the shared crate holding the content-addressed store + SSE synthesis,
-  used by both `eridian-replay` and `aichat`'s in-tree `StageCache`/serve path. Shared
+  a **workspace member of the astrophage repo**, used by both the `astrophage` binary
+  (in-repo) and `aichat`'s in-tree `StageCache`/serve path (cross-repo git dep). Shared
   *mechanism*, not shared keying.
 - **Committed cassette sets** — pinned, content-addressed recordings (`tests/.../cassettes/`)
   that promptfoo (and the deferred Inspect consumer) replay offline for deterministic,

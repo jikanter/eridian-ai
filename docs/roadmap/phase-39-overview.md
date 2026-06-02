@@ -1,4 +1,6 @@
 # Phase 39: Distributed & Remote Cache Backends : Overview - Epic 2
+**Note:** Much of this has been superseded by `docs/analysis/caching/SPEC-003-cache-substrate.md`. Make sure to review that document before implementing this phase.
+
 
 **Status (2026-05-29):** **Planned — design draft.** No items below are implemented. This
 phase ports LiteLLM's remote cache backends —
