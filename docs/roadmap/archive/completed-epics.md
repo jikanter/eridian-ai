@@ -16,7 +16,7 @@
 
 ## Epic 1: Core Platform
 
-### Phase 0: Prerequisites -- [detail](./roadmap/phase-0-prerequisites.md)
+### Phase 0: Prerequisites -- [detail](./phase-0-prerequisites.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
@@ -24,7 +24,7 @@
 | 0B | Pipeline tool-calling (`call_react` in `pipe.rs`) | Done | `dde1078` |
 | 0C | Pipeline config isolation | Done | `dde1078` |
 
-### Phase 1: Token Efficiency Foundations -- [detail](./roadmap/phase-1-token-efficiency.md)
+### Phase 1: Token Efficiency Foundations -- [detail](./phase-1-token-efficiency.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
@@ -33,14 +33,14 @@
 | 1C | Deferred tool loading (`tool_search`) | Done | `dde1078` |
 | 1D | Tool use examples in role frontmatter | Done | `dde1078` |
 
-### Phase 2: Pipeline & Output Maturity -- [detail](./roadmap/phase-2-pipeline-output.md)
+### Phase 2: Pipeline & Output Maturity -- [detail](./phase-2-pipeline-output.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
 | 2A | Pipeline-as-Role | Done | `dde1078` |
 | 2B | Compact output modifier (`-o compact`) | Done | `dde1078` |
 
-### Phase 3: MCP Consumption -- [detail](./roadmap/phase-3-mcp-consumption.md)
+### Phase 3: MCP Consumption -- [detail](./phase-3-mcp-consumption.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
@@ -49,7 +49,7 @@
 | 3C | Execution (`--call <TOOL> --json '{...}'`) | Done | `7b31472` |
 | 3D | Config-based servers (`mcp_servers:` in config.yaml) | Done | `7b31472` |
 
-### Phase 4: Error Handling & Schema Fidelity -- [detail](./roadmap/phase-4-error-handling.md)
+### Phase 4: Error Handling & Schema Fidelity -- [detail](./phase-4-error-handling.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
@@ -59,14 +59,14 @@
 | 4D | Fix `JsonSchema` lossiness | Done | `fec32e4` |
 | 4E | Pipeline stage tracebacks | Done | `fe60f03` |
 
-### Phase 5: Remote MCP & Token-Efficient Discovery -- [detail](./roadmap/phase-5-remote-mcp.md)
+### Phase 5: Remote MCP & Token-Efficient Discovery -- [detail](./phase-5-remote-mcp.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
 | 5A | Remote MCP servers (HTTP/SSE) | Done | `7f500b8` |
 | 5B | Lazy role discovery via MCP | Done | `7f500b8` |
 
-### Phase 6: Metadata Framework Enhancements -- [detail](./roadmap/phase-6-metadata-framework.md)
+### Phase 6: Metadata Framework Enhancements -- [detail](./phase-6-metadata-framework.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
@@ -74,7 +74,7 @@
 | 6B | Lifecycle hooks (`pipe_to`, `save_to`) | Done | `30669d7` |
 | 6C | Unified resource binding (`mcp_servers:` per-role) | Done | `30669d7` |
 
-### Phase 7: Error Messages & Tool Execution -- [detail](./roadmap/phase-7-error-messages.md)
+### Phase 7: Error Messages & Tool Execution -- [detail](./phase-7-error-messages.md)
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
@@ -85,7 +85,10 @@
 | 7D1 | Async tool execution | Done | `d125ee0` |
 | 7D2 | Concurrent tool execution | Done | `d125ee0` |
 
-### Phase 7.5: Macro & Agent Config Override -- [detail](./roadmap/phase-7.5-set-expansion.md)
+### Phase 7.5: Macro & Agent Config Override
+
+<!-- detail doc (phase-7.5-set-expansion.md) was never committed to the tree; summary below is canonical -->
+
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
@@ -94,7 +97,7 @@
 | 7.5C | Agent `.set` parity | Done | `fe60f03` |
 | 7.5D | Guard rails (schema meta-validation) | Done | `fe60f03` |
 
-### Phase 8: Data Processing & Observability -- [detail](./roadmap/phase-8-data-observability.md)
+### Phase 8: Data Processing & Observability -- [detail](../phase-8-data-observability.md) *(active — still in `docs/roadmap/`)*
 
 | Item | Description | Status | Commit |
 |---|---|---|---|
