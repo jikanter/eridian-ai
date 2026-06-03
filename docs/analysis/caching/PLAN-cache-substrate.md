@@ -45,9 +45,18 @@ harness is blind to is the failure `ADR-0001` was written to prevent (`EVAL-0002
 
 ---
 
-## Leg 0 — Foundation (`replay-core` + workspace)
+## Leg 0 — Foundation (`replay-core` + repos)
 
-### PR-0.1 — `replay-core` crate: CAS + canonical key
+> **Topology note (2026-06-02, SPEC-astrophage §2.1 decision A).** `replay-core` and the
+> substrate binary ship in their **own repo**
+> ([`astrophage`](https://github.com/jikanter/astrophage)), **not** in aichat's workspace.
+> So **PR-0.1** and **PR-0.3** are **astrophage-repo** work (`replay-core` + the `astrophage`
+> binary already landed on astrophage `origin/main`); **PR-0.2** is the **aichat** PR that
+> adds the cross-repo git dependency and refactors `StageCache` onto it. Binary renamed
+> `eridian-replay` → `astrophage`. `crates/...` paths below are **relative to the astrophage
+> repo** unless they start with `src/`.
+
+### PR-0.1 — `replay-core` crate: CAS + canonical key *(astrophage repo — landed)*
 - **Scope:** new `crates/replay-core/` with `cas.rs` (content-addressed store, atomic
   write-temp-then-rename, byte-budget LRU — lifted from 37C/`src/cache.rs`) and `key.rs`
   (`canonical_key`, reshaped from 37C `transparent_key`: in-key/normalized-out per
@@ -58,23 +67,25 @@ harness is blind to is the failure `ADR-0001` was written to prevent (`EVAL-0002
   round-trips; concurrent writers to one key do not corrupt. Demo:
   `demos/replay-core-cas.md`.
 
-### PR-0.2 — `StageCache` rides `replay-core::cas`
-- **Scope:** refactor `src/cache.rs` `StageCache` to sit on `replay-core`'s CAS primitive;
-  **keep its `(role, model, input)` key and its two callers (`src/pipe.rs`,
-  `src/knowledge/compile.rs`) unchanged.** This proves the shared *mechanism* without
-  sharing *keying* (`SPEC-003` §0).
+### PR-0.2 — `StageCache` rides `replay-core::cas` *(aichat repo — next)*
+- **Scope:** add the cross-repo dep `replay-core = { git = ".../astrophage", rev|branch|tag
+  = … }` to aichat's `Cargo.toml`, then refactor `src/cache.rs` `StageCache` to sit on
+  `replay-core`'s CAS primitive; **keep its `(role, model, input)` key and its two callers
+  (`src/pipe.rs`, `src/knowledge/compile.rs`) unchanged.** This proves the shared *mechanism*
+  without sharing *keying* (`SPEC-003` §0), and is the first build edge across the aichat →
+  astrophage seam.
 - **Leaves in-tree:** `StageCache` keying & callers.
 - **Acceptance:** existing `StageCache` unit tests pass unchanged; pipeline-stage and
   knowledge-compile caching behave identically. Demo: `demos/stagecache-on-replay-core.md`.
 
-### PR-0.3 — `eridian-replay` binary skeleton + `CacheBackend` trait reuse
-- **Scope:** new `crates/eridian-replay/` workspace member; `clap` CLI skeleton
-  (`--mode`, `--listen`, `--upstream`); reuse 38A `CacheBackend` trait + `ResponseCache`
+### PR-0.3 — `astrophage` binary skeleton + `CacheBackend` trait reuse *(astrophage repo)*
+- **Scope:** the `astrophage` binary (repo root package; `src/main.rs`); `clap` CLI skeleton
+  (`--mode`, `--listen`, `--upstream`); reuse the 38A `CacheBackend` trait + `ResponseCache`
   front (shared boundary). Reverse-gateway shell over `axum`/`reqwest` that forwards
   upstream with **no** cache yet (pass-through).
 - **Reuses:** 37D `serve.rs` plumbing patterns, 38A trait.
-- **Acceptance:** `eridian-replay --upstream <url>` forwards a chat request and returns the
-  response unmodified; `--help` lists modes. Demo: `demos/eridian-replay-skeleton.md`
+- **Acceptance:** `astrophage --upstream <url>` forwards a chat request and returns the
+  response unmodified; `--help` lists modes. Demo: `demos/astrophage-skeleton.md`
   (happy pass-through, missing-upstream error, `--help` flags).
 
 ---
