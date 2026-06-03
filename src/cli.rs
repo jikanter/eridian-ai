@@ -184,7 +184,7 @@ pub struct Cli {
     /// `-o json` for machine-readable output.
     #[clap(long = "validate-mcp-config", value_name = "PATH")]
     pub validate_mcp_config: Option<Option<String>>,
-    /// Phase 15C: validate a role or pipeline definition without executing it.
+    /// Validate a role or pipeline definition without executing it.
     /// Checks stage existence, model/tool capability, DAG structure, cycles,
     /// and (for sequential pipelines) cross-stage JSON Schema containment
     /// (output of stage N must satisfy input of stage N+1). Deterministic and
@@ -196,7 +196,7 @@ pub struct Cli {
     /// Run a multi-stage pipeline
     #[clap(long)]
     pub pipe: bool,
-    /// Phase 23B: run input through two roles and compare them side-by-side
+    /// Run input through two roles and compare them side-by-side
     #[clap(long, value_names = ["ROLE1", "ROLE2"], num_args = 2)]
     pub compare: Vec<String>,
     /// Pipeline stages (role or role@model)
@@ -205,7 +205,7 @@ pub struct Cli {
     /// Pipeline definition file
     #[clap(long = "pipe-def", value_name = "FILE", requires = "pipe")]
     pub pipe_def: Option<String>,
-    /// Bypass the pipeline stage output cache (Phase 10B)
+    /// Bypass the pipeline stage output cache
     #[clap(long = "no-cache", requires = "pipe")]
     pub no_cache: bool,
     /// Output format (json, jsonl, tsv, csv, text)
@@ -253,7 +253,7 @@ pub struct Cli {
     /// List all roles
     #[clap(long)]
     pub list_roles: bool,
-    /// Phase 13A: create a new role that `extends:` an existing one. Writes
+    /// Create a new role that `extends:` an existing one. Writes
     /// `<roles_dir>/<NEW_NAME>.md` with parent-override hints commented out
     /// and the parent prompt body inherited via the extends chain.
     #[clap(
@@ -262,29 +262,29 @@ pub struct Cli {
         num_args = 2,
     )]
     pub fork_role: Vec<String>,
-    /// Phase 13D: print a human-readable description of a role — what it
+    /// Print a human-readable description of a role — what it
     /// does, how it composes (extends/include/pipeline/ports/capabilities),
     /// and where the source file lives. Pair with `-o json` for machine
     /// consumption.
     #[clap(long = "explain-role", value_name = "NAME")]
     pub explain_role: Option<String>,
-    /// Phase 14D: search roles by capability tag and/or port type. Combine
+    /// Search roles by capability tag and/or port type. Combine
     /// with `--capability`, `--accepts`, and/or `--produces` to filter.
     #[clap(long = "find-role")]
     pub find_role: bool,
-    /// Phase 14D: filter for `--find-role` — capability tag substring match
+    /// Filter for `--find-role` — capability tag substring match
     /// (case-insensitive). Also allowed alongside `--list-roles`.
     #[clap(long, value_name = "TAG")]
     pub capability: Option<String>,
-    /// Phase 14D: filter for `--find-role` — input port type
+    /// Filter for `--find-role` — input port type
     /// (`text`, `json`, `array`, or a literal `json{...}` shape).
     #[clap(long, value_name = "TYPE")]
     pub accepts: Option<String>,
-    /// Phase 14D: filter for `--find-role` — output port type
+    /// Filter for `--find-role` — output port type
     /// (`text`, `json`, `array`, or a literal `json{...}` shape).
     #[clap(long, value_name = "TYPE")]
     pub produces: Option<String>,
-    /// Phase 12C: include port signatures, capabilities, and composition info
+    /// Include port signatures, capabilities, and composition info
     /// in `--list-roles` / `--find-role` output.
     #[clap(long)]
     pub verbose: bool,
@@ -303,63 +303,63 @@ pub struct Cli {
     /// List all macros
     #[clap(long)]
     pub list_macros: bool,
-    /// Phase 26D: attach a knowledge base to this invocation (repeatable)
+    /// Attach a knowledge base to this invocation (repeatable)
     #[clap(long = "knowledge", value_name = "KB_NAME")]
     pub knowledge: Vec<String>,
-    /// Phase 26E: bypass the LLM, search the named KB(s) for the given query
+    /// Bypass the LLM, search the named KB(s) for the given query
     #[clap(long = "knowledge-search", value_name = "QUERY")]
     pub knowledge_search: Option<String>,
-    /// Phase 25B: compile source files into a knowledge base (requires -f)
+    /// Compile source files into a knowledge base (requires -f)
     #[clap(long = "knowledge-compile", value_name = "KB_NAME")]
     pub knowledge_compile: Option<String>,
-    /// Phase 25E: list all compiled knowledge bases
+    /// List all compiled knowledge bases
     #[clap(long = "knowledge-list")]
     pub knowledge_list: bool,
-    /// Phase 25E: show stats (fact count, tag distribution, per-source coverage) for a KB
+    /// Show stats (fact count, tag distribution, per-source coverage) for a KB
     #[clap(long = "knowledge-stat", value_name = "KB_NAME")]
     pub knowledge_stat: Option<String>,
-    /// Phase 25E: show a single fact; format is `KB_NAME:FACT_ID` (e.g. `docs:fact-abc123`)
+    /// Show a single fact; format is `KB_NAME:FACT_ID` (e.g. `docs:fact-abc123`)
     #[clap(long = "knowledge-show", value_name = "KB:ID")]
     pub knowledge_show: Option<String>,
-    /// Phase 27B: run the Reflector role over a KB, emit candidate patches (JSON)
+    /// Run the Reflector role over a KB, emit candidate patches (JSON)
     #[clap(long = "knowledge-reflect", value_name = "KB_NAME")]
     pub knowledge_reflect: Option<String>,
-    /// Phase 27B: run the Curator role over candidates and apply accepted ones
+    /// Run the Curator role over candidates and apply accepted ones
     #[clap(long = "knowledge-curate", value_name = "KB_NAME")]
     pub knowledge_curate: Option<String>,
-    /// Phase 27B: path to a JSON candidate set (use with --knowledge-curate)
+    /// Path to a JSON candidate set (use with --knowledge-curate)
     #[clap(
         long = "knowledge-candidates",
         value_name = "FILE",
         requires = "knowledge_curate"
     )]
     pub knowledge_candidates: Option<String>,
-    /// Phase 27B: path to a JSONL trace file (use with --knowledge-reflect or --knowledge-curate)
+    /// Path to a JSONL trace file (use with --knowledge-reflect or --knowledge-curate)
     #[clap(long = "knowledge-trace", value_name = "FILE")]
     pub knowledge_trace: Option<String>,
-    /// Phase 34C: run the memory Reflector over a transcript, emit candidate topic files (JSON)
+    /// Run the memory Reflector over a transcript, emit candidate topic files (JSON)
     #[clap(long = "memory-reflect")]
     pub memory_reflect: bool,
-    /// Phase 34D: run the memory curator gate (reflect or --memory-candidates) and write accepted topic files
+    /// Run the memory curator gate (reflect or --memory-candidates) and write accepted topic files
     #[clap(long = "memory-curate")]
     pub memory_curate: bool,
-    /// Phase 34C/D: transcript file for --memory-reflect / --memory-curate (default: stdin)
+    /// Transcript file for --memory-reflect / --memory-curate (default: stdin)
     #[clap(long = "memory-transcript", value_name = "FILE")]
     pub memory_transcript: Option<String>,
-    /// Phase 34D: JSON candidate set; skips the Reflector (use with --memory-curate)
+    /// JSON candidate set; skips the Reflector (use with --memory-curate)
     #[clap(
         long = "memory-candidates",
         value_name = "FILE",
         requires = "memory_curate"
     )]
     pub memory_candidates: Option<String>,
-    /// Phase 34D: auto-accept every memory candidate without prompting (opt-in; hidden by design)
+    /// Auto-accept every memory candidate without prompting (opt-in; hidden by design)
     #[clap(long = "memory-auto-curate", hide = true, requires = "memory_curate")]
     pub memory_auto_curate: bool,
-    /// Phase 34B: resolve a topic reference against MEMORY.md and print its (capped) content
+    /// Resolve a topic reference against MEMORY.md and print its (capped) content
     #[clap(long = "memory-load", value_name = "REFERENCE")]
     pub memory_load: Option<String>,
-    /// Phase 34C: at REPL exit, reflect over the session and gate memory candidates (opt-in)
+    /// At REPL exit, reflect over the session and gate memory candidates (opt-in)
     #[clap(long = "memory-reflect-on-exit")]
     pub memory_reflect_on_exit: bool,
     /// Input text
