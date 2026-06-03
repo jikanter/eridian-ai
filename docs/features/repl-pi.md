@@ -75,7 +75,7 @@ Pi's own commands (`/model`, `/new`, `/fork`, `/clone`, `/compact`, `/copy`,
 | `.rebuild rag` | not yet bridged | |
 | `.sources rag` / `.sources knowledge` | not yet bridged | |
 | `.macro <name> [text]` | `/macro <name> [text]` | Runs the macro headlessly; result is shown in pi. |
-| `.model <name>` | pi-native `/model` | Pi handles model selection through its own provider config. |
+| `.model <name>` | pi-native `/model` (Ctrl+P) | Pi's model picker lists **only aichat's models** — the launcher pins pi to them (see [Model pinning](#model-pinning)). Selecting one routes the turn through aichat. |
 | `.continue` / `.regenerate` | pi-native `/fork` | Pi's session-tree navigation subsumes both. |
 | `.copy` | pi-native `/copy` | |
 | `.edit role` / `.edit session` / `.edit config` / `.edit rag-docs` / `.edit agent-config` | not yet bridged | Edit the underlying YAML files directly for now. |
@@ -185,6 +185,40 @@ The CLI `--serve` mode does **not** see these routes — when
 
 For how to export `AICHAT_BRIDGE_TOKEN` to share one long-lived server
 across REPL sessions, see [`server.md`](server.md).
+
+## Model pinning
+
+By default, pi resolves models from its own provider config
+(`~/.pi/agent/models.json` + `settings.json`: Google, Anthropic, Ollama, …).
+When aichat launches pi, it overrides that so **pi sees only aichat's
+models** — every turn flows through aichat's inference, caching, roles, and
+cost accounting rather than pi calling providers directly.
+
+How it works:
+
+1. After the bridge server is up, the launcher reads aichat's current model
+   set (`list_all_models`) and default model.
+2. It stages a throwaway pi agent dir (under the system temp dir) whose
+   `models.json` registers a **single** provider, `aichat`, with
+   `baseUrl: <bridge>/v1`, `api: openai-completions`, and a `models:` list of
+   aichat's chat models (`contextWindow`/`maxTokens` carried over from each
+   model's `max_input_tokens`/`max_output_tokens`). `settings.json` is copied
+   from the user's real one with `defaultProvider`/`defaultModel` overridden to
+   the aichat provider; all other prefs (theme, thinking level) are preserved.
+3. Every other entry of the real agent dir (`sessions/`, `auth.json`, themes,
+   prompts) is symlinked into the stage, so session history and pi config keep
+   working. `models.json`/`settings.json` are the only files replaced.
+4. Pi is exec'd with `PI_CODING_AGENT_DIR` pointed at the stage. The stage is
+   removed on exit (kept when `AICHAT_KEEP_PI_STAGE=1`).
+
+Pi's `/model` picker (Ctrl+P) then lists only aichat models; `--list-models`
+shows the `aichat` provider exclusively. Selecting `role:<name>` virtual models
+still routes through the corresponding aichat role.
+
+**Opt out** with `AICHAT_PI_NATIVE_MODELS=1` — pi then uses its own provider
+config untouched, and turns call providers directly (no aichat caching/roles).
+If staging fails for any reason the launcher logs a warning and falls back to
+pi's native config rather than aborting the launch.
 
 ## Troubleshooting
 

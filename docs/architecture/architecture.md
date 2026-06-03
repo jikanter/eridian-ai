@@ -24,7 +24,7 @@
 | `src/pipe.rs` | ~220 | Pipeline execution with tool-calling and config isolation |
 | `src/rag/mod.rs` | ~1,030 | RAG: hybrid HNSW+BM25 search, RRF, embedding, sync (Phases 15-17) |
 | `src/serve.rs` | ~960 | HTTP server: OpenAI-compatible API, playground, arena (Phases 12-14), bridge `/v1/state/*` for pi REPL |
-| `src/repl/pi.rs` | ~220 | Pi-coding-agent launcher: PATH probe, in-process server, bundled extension staging |
+| `src/repl/pi.rs` | ~220 | Pi-coding-agent launcher: PATH probe, in-process server, bundled extension staging, model pinning (`PI_CODING_AGENT_DIR` → aichat-only `models.json`) |
 | `pi-extensions/` | ~250 (TS) | Source for the `aichat-bridge.js` pi extension that surfaces aichat's role/agent/macro/rag commands as slash commands |
 | `src/utils/exit_code.rs` | ~710 | Semantic exit codes, error chain classification, typed tool errors, ToolTimeout |
 | `src/client/common.rs` | — | `call_react` agent loop, model data, provider abstraction |

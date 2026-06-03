@@ -16,8 +16,12 @@
 //!    `AICHAT_BRIDGE_TOKEN`),
 //! 4. stages the shipped TypeScript extension into `<cwd>/.pi/extensions/`
 //!    so pi auto-discovers the slash-command bridge,
-//! 5. execs `pi` with stdio inherited so the child owns the terminal,
-//! 6. on pi exit, removes the staged extension (unless
+//! 5. pins pi to aichat's models: stages a throwaway pi agent dir whose
+//!    `models.json` registers only the in-process aichat server as a provider
+//!    and points pi at it via `PI_CODING_AGENT_DIR`, so pi ignores its own
+//!    configured providers/models (opt out: `AICHAT_PI_NATIVE_MODELS=1`),
+//! 6. execs `pi` with stdio inherited so the child owns the terminal,
+//! 7. on pi exit, removes the staged extension + agent dir (unless
 //!    `AICHAT_KEEP_PI_STAGE=1`) and signals the server to shut down (a
 //!    reused external server is left running).
 //!
@@ -25,12 +29,27 @@
 
 use anyhow::{bail, Context, Result};
 use rust_embed::Embed;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 
+use crate::client::{list_all_models, Model, ModelType};
 use crate::config::GlobalConfig;
 use crate::serve;
+
+/// Provider name our staged pi `models.json` registers aichat under. Pi
+/// references models as `<provider>/<id>`; we expose a single provider so the
+/// model picker shows only aichat's models.
+const PI_AICHAT_PROVIDER: &str = "aichat";
+
+/// Env var pi reads to override its agent config dir (`models.json`,
+/// `settings.json`, `auth.json`, themes, …). Setting it to our staged dir is
+/// how we make pi ignore its own configured models.
+const PI_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
+
+/// Opt-out: when set, aichat leaves pi's own model config untouched.
+const PI_NATIVE_MODELS_ENV: &str = "AICHAT_PI_NATIVE_MODELS";
 
 /// Hint emitted when `pi` is not discoverable on `PATH`. Keep terse and
 /// actionable — the user lost their REPL, they don't want a tutorial.
@@ -108,12 +127,32 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
         }
     };
 
+    // Pin pi to aichat's models: stage a throwaway agent dir whose
+    // `models.json` registers only the in-process aichat server as a provider,
+    // and point pi at it via `PI_CODING_AGENT_DIR`. pi then ignores its own
+    // configured providers/models entirely. Opt out with
+    // `AICHAT_PI_NATIVE_MODELS=1` to keep pi's own model config.
+    let agent_stage = if std::env::var_os(PI_NATIVE_MODELS_ENV).is_some() {
+        None
+    } else {
+        match stage_pi_agent_dir(config, &bridge_url) {
+            Ok(staged) => Some(staged),
+            Err(e) => {
+                warn!("aichat bridge: could not pin pi to aichat models ({e}); pi will use its own model config");
+                None
+            }
+        }
+    };
+
     info!("launching pi from {}", pi_bin.display());
 
     let mut command = Command::new(&pi_bin);
     command.env("AICHAT_BRIDGE_URL", &bridge_url);
     if let Some(token) = &token {
         command.env("AICHAT_BRIDGE_TOKEN", token);
+    }
+    if let Some(staged) = &agent_stage {
+        command.env(PI_AGENT_DIR_ENV, &staged.path);
     }
     let spawn_result = command.status().await;
 
@@ -128,10 +167,14 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
     if we_started_server {
         std::env::remove_var("AICHAT_BRIDGE_TOKEN");
     }
-    // Clean up the staged extension unless the user asked us not to. The
-    // escape hatch is handy when debugging extension load failures.
+    // Clean up the staged extension + agent dir unless the user asked us not
+    // to. The escape hatch is handy when debugging extension/model load
+    // failures.
     if std::env::var_os("AICHAT_KEEP_PI_STAGE").is_none() {
         staging.cleanup();
+        if let Some(staged) = agent_stage {
+            staged.cleanup();
+        }
     }
 
     let status = spawn_result
@@ -298,9 +341,323 @@ impl StagedExtension {
     }
 }
 
+/// Build the contents of the staged pi `models.json`. Registers a single
+/// provider — [`PI_AICHAT_PROVIDER`] — pointing at the in-process
+/// OpenAI-compatible aichat server, whose model list is aichat's chat models.
+/// Pi resolves providers solely from this file, so its own configured
+/// providers/models are ignored for the launch.
+fn build_pi_models_json(models: &[Model], base_url: &str, api_key: &str) -> Value {
+    let entries: Vec<Value> = models
+        .iter()
+        .filter(|m| m.model_type() == ModelType::Chat)
+        .map(|m| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("id".into(), json!(m.id()));
+            if let Some(ctx) = m.max_input_tokens() {
+                obj.insert("contextWindow".into(), json!(ctx));
+            }
+            if let Some(out) = m.max_output_tokens() {
+                if out > 0 {
+                    obj.insert("maxTokens".into(), json!(out));
+                }
+            }
+            Value::Object(obj)
+        })
+        .collect();
+    let mut provider = serde_json::Map::new();
+    provider.insert("baseUrl".into(), json!(base_url));
+    provider.insert("api".into(), json!("openai-completions"));
+    provider.insert("apiKey".into(), json!(api_key));
+    provider.insert("models".into(), Value::Array(entries));
+    let mut providers = serde_json::Map::new();
+    providers.insert(PI_AICHAT_PROVIDER.to_string(), Value::Object(provider));
+    let mut root = serde_json::Map::new();
+    root.insert("providers".into(), Value::Object(providers));
+    Value::Object(root)
+}
+
+/// Choose pi's default model id. Prefer aichat's configured default when it is
+/// a usable chat model; otherwise fall back to the first chat model. Returns
+/// `None` only when aichat exposes no chat models at all.
+fn pi_default_model(models: &[Model], configured_id: &str) -> Option<String> {
+    let chat: Vec<String> = models
+        .iter()
+        .filter(|m| m.model_type() == ModelType::Chat)
+        .map(|m| m.id())
+        .collect();
+    if chat.iter().any(|id| id == configured_id) {
+        Some(configured_id.to_string())
+    } else {
+        chat.into_iter().next()
+    }
+}
+
+/// Build the staged pi `settings.json`, preserving the user's existing prefs
+/// (theme, thinking level, …) while overriding only the default provider and
+/// model to point at the staged aichat provider.
+fn build_pi_settings(existing: Option<&str>, default_model: &str) -> Value {
+    let mut obj = existing
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| match v {
+            Value::Object(m) => Some(m),
+            _ => None,
+        })
+        .unwrap_or_default();
+    obj.insert("defaultProvider".into(), json!(PI_AICHAT_PROVIDER));
+    obj.insert("defaultModel".into(), json!(default_model));
+    Value::Object(obj)
+}
+
+/// Resolve the pi agent config dir the same way pi does: honor
+/// `PI_CODING_AGENT_DIR` if exported, else `~/.pi/agent`. Used as the symlink
+/// source so the staged dir inherits the user's sessions/auth/themes.
+fn pi_real_agent_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os(PI_AGENT_DIR_ENV) {
+        return PathBuf::from(dir);
+    }
+    dirs::home_dir()
+        .unwrap_or_default()
+        .join(".pi")
+        .join("agent")
+}
+
+/// A throwaway pi agent config dir holding our `models.json` + `settings.json`
+/// (real files) with every other entry symlinked back to the user's real agent
+/// dir, so pi sessions/auth/themes keep working. Pointing pi at this via
+/// `PI_CODING_AGENT_DIR` makes pi read models from our file only.
+struct StagedAgentDir {
+    path: PathBuf,
+}
+
+impl StagedAgentDir {
+    fn stage(real_dir: &Path, models: &Value, settings: &Value) -> Result<Self> {
+        let path = std::env::temp_dir()
+            .join(format!("aichat-pi-agent-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&path)
+            .with_context(|| format!("failed to create pi agent stage {}", path.display()))?;
+
+        // Symlink every entry of the real agent dir except the two files we
+        // override, so sessions/auth/themes/prompts stay live. Best-effort:
+        // a broken or unreadable entry just won't be available to pi.
+        #[cfg(unix)]
+        if real_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(real_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    if name == "models.json" || name == "settings.json" {
+                        continue;
+                    }
+                    let _ = std::os::unix::fs::symlink(entry.path(), path.join(&name));
+                }
+            }
+        }
+
+        std::fs::write(path.join("models.json"), serde_json::to_vec_pretty(models)?)
+            .context("failed to write staged pi models.json")?;
+        std::fs::write(
+            path.join("settings.json"),
+            serde_json::to_vec_pretty(settings)?,
+        )
+        .context("failed to write staged pi settings.json")?;
+        Ok(Self { path })
+    }
+
+    /// Remove the stage. `remove_dir_all` unlinks symlinks rather than
+    /// recursing through them, so the real agent dir behind them is untouched.
+    fn cleanup(self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Stage a pi agent dir that pins pi to aichat's models. Reads the current
+/// model set + default from `config`, writes a `models.json`/`settings.json`
+/// exposing only the in-process aichat server, and returns the stage handle.
+fn stage_pi_agent_dir(
+    config: &GlobalConfig,
+    bridge_url: &str,
+) -> Result<StagedAgentDir> {
+    let snapshot = config.read().clone();
+    let models: Vec<Model> = list_all_models(&snapshot).into_iter().cloned().collect();
+    let base_url = format!("{}/v1", bridge_url.trim_end_matches('/'));
+    // `/v1/chat/completions` is open on the in-process server unless
+    // `serve_api_key:` is configured; pi still requires a non-empty apiKey for
+    // an openai-completions provider, so fall back to a dummy when unset.
+    let api_key = snapshot
+        .serve_api_key
+        .clone()
+        .unwrap_or_else(|| "aichat".to_string());
+
+    let default_model = pi_default_model(&models, &snapshot.model.id())
+        .context("aichat exposes no chat models to pin pi to")?;
+    let models_json = build_pi_models_json(&models, &base_url, &api_key);
+
+    let real_dir = pi_real_agent_dir();
+    let existing_settings = std::fs::read_to_string(real_dir.join("settings.json")).ok();
+    let settings_json = build_pi_settings(existing_settings.as_deref(), &default_model);
+
+    let staged = StagedAgentDir::stage(&real_dir, &models_json, &settings_json)?;
+    let chat_count = models
+        .iter()
+        .filter(|m| m.model_type() == ModelType::Chat)
+        .count();
+    info!("aichat bridge: pinned pi to {chat_count} aichat model(s); default '{default_model}'");
+    Ok(staged)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::Model;
+    use serde_json::json;
+
+    /// Build a chat `Model` with the given id parts and optional token limits.
+    fn chat_model(client: &str, name: &str, ctx: Option<usize>, out: Option<isize>) -> Model {
+        let mut m = Model::new(client, name);
+        m.data_mut().max_input_tokens = ctx;
+        m.data_mut().max_output_tokens = out;
+        m
+    }
+
+    /// Build a non-chat model (embedding) to prove it is filtered out.
+    fn embed_model(client: &str, name: &str) -> Model {
+        let mut m = Model::new(client, name);
+        m.data_mut().model_type = "embedding".into();
+        m
+    }
+
+    #[test]
+    fn models_json_registers_only_aichat_provider_with_chat_models() {
+        let models = vec![
+            chat_model("openai", "gpt-4o", Some(128000), Some(16384)),
+            chat_model("ollama", "llama3", Some(8192), None),
+            embed_model("openai", "text-embedding-3-small"),
+        ];
+        let v = build_pi_models_json(&models, "http://127.0.0.1:9999/v1", "aichat");
+        let providers = v["providers"].as_object().expect("providers object");
+        // Exactly one provider — pi's own google/anthropic/ollama config is ignored.
+        assert_eq!(providers.len(), 1);
+        let p = &providers["aichat"];
+        assert_eq!(p["baseUrl"], "http://127.0.0.1:9999/v1");
+        assert_eq!(p["api"], "openai-completions");
+        assert_eq!(p["apiKey"], "aichat");
+        let list = p["models"].as_array().expect("models array");
+        // Embedding model filtered out; two chat models remain.
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["id"], "openai:gpt-4o");
+        assert_eq!(list[0]["contextWindow"], 128000);
+        assert_eq!(list[0]["maxTokens"], 16384);
+        // No maxTokens key when the model has no output limit.
+        assert_eq!(list[1]["id"], "ollama:llama3");
+        assert_eq!(list[1]["contextWindow"], 8192);
+        assert!(list[1].get("maxTokens").is_none());
+    }
+
+    #[test]
+    fn default_model_prefers_configured_when_present() {
+        let models = vec![
+            chat_model("openai", "gpt-4o", None, None),
+            chat_model("ollama", "llama3", None, None),
+        ];
+        assert_eq!(
+            pi_default_model(&models, "ollama:llama3").as_deref(),
+            Some("ollama:llama3")
+        );
+    }
+
+    #[test]
+    fn default_model_falls_back_to_first_chat_when_configured_absent() {
+        let models = vec![
+            embed_model("openai", "text-embedding-3-small"),
+            chat_model("openai", "gpt-4o", None, None),
+        ];
+        // Configured id is an embedding (not a usable chat model) → first chat model.
+        assert_eq!(
+            pi_default_model(&models, "openai:text-embedding-3-small").as_deref(),
+            Some("openai:gpt-4o")
+        );
+    }
+
+    #[test]
+    fn default_model_none_when_no_chat_models() {
+        let models = vec![embed_model("openai", "text-embedding-3-small")];
+        assert_eq!(pi_default_model(&models, "whatever"), None);
+    }
+
+    #[test]
+    fn settings_override_defaults_preserving_other_keys() {
+        let existing = r#"{"defaultProvider":"ollama","defaultModel":"gemma4:26b","theme":"dark","defaultThinkingLevel":"high"}"#;
+        let v = build_pi_settings(Some(existing), "openai:gpt-4o");
+        assert_eq!(v["defaultProvider"], "aichat");
+        assert_eq!(v["defaultModel"], "openai:gpt-4o");
+        // Unrelated user prefs survive.
+        assert_eq!(v["theme"], "dark");
+        assert_eq!(v["defaultThinkingLevel"], "high");
+    }
+
+    #[test]
+    fn settings_minimal_when_no_existing_file() {
+        let v = build_pi_settings(None, "openai:gpt-4o");
+        assert_eq!(v["defaultProvider"], "aichat");
+        assert_eq!(v["defaultModel"], "openai:gpt-4o");
+    }
+
+    #[test]
+    fn settings_ignores_malformed_existing() {
+        let v = build_pi_settings(Some("not json {{{"), "m");
+        assert_eq!(v["defaultProvider"], "aichat");
+        assert_eq!(v["defaultModel"], "m");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_agent_dir_writes_our_files_and_symlinks_the_rest() {
+        let real = tempfile::tempdir().unwrap();
+        // Pre-existing user agent dir: sessions/, auth.json, and a stale
+        // models.json that must NOT leak through.
+        std::fs::create_dir_all(real.path().join("sessions")).unwrap();
+        std::fs::write(real.path().join("sessions/s1.json"), b"session").unwrap();
+        std::fs::write(real.path().join("auth.json"), b"auth").unwrap();
+        std::fs::write(real.path().join("models.json"), b"USER-MODELS").unwrap();
+
+        let models = json!({"providers":{"aichat":{}}});
+        let settings = json!({"defaultProvider":"aichat"});
+        let staged = StagedAgentDir::stage(real.path(), &models, &settings).unwrap();
+        let dir = staged.path.clone();
+
+        // Our models.json is a real file with our content — not the user's.
+        let got = std::fs::read_to_string(dir.join("models.json")).unwrap();
+        assert!(got.contains("aichat"));
+        assert!(!got.contains("USER-MODELS"));
+        assert!(!dir.join("models.json").symlink_metadata().unwrap().file_type().is_symlink());
+        // settings.json is ours too.
+        assert!(std::fs::read_to_string(dir.join("settings.json")).unwrap().contains("aichat"));
+        // Everything else is symlinked back to the real dir so sessions/auth survive.
+        assert!(dir.join("sessions").symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("sessions/s1.json")).unwrap(),
+            "session"
+        );
+        assert!(dir.join("auth.json").symlink_metadata().unwrap().file_type().is_symlink());
+
+        staged.cleanup();
+        assert!(!dir.exists());
+        // Cleanup must not touch the real dir behind the symlinks.
+        assert!(real.path().join("sessions/s1.json").exists());
+        assert!(real.path().join("auth.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn staged_agent_dir_handles_missing_real_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("does-not-exist");
+        let models = json!({"providers":{}});
+        let settings = json!({});
+        let staged = StagedAgentDir::stage(&real, &models, &settings).unwrap();
+        assert!(staged.path.join("models.json").exists());
+        assert!(staged.path.join("settings.json").exists());
+        staged.cleanup();
+    }
 
     #[test]
     fn token_is_32_hex_chars() {
