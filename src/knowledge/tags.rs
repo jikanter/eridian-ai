@@ -78,7 +78,7 @@ pub struct TagSchema {
 
 impl TagSchema {
     pub fn from_yaml_str(s: &str) -> Result<Self> {
-        let schema: Self = serde_yaml::from_str(s)?;
+        let schema: Self = serde_norway::from_str(s)?;
         Ok(schema)
     }
 

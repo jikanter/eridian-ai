@@ -16,9 +16,9 @@ pub use self::role::{
     build_role_explanation, format_pipeline_input_schema_error, format_role_explanation,
     read_role_raw_metadata, render_forked_role, run_lifecycle_hooks, validate_schema,
     validate_schema_detailed, validate_schema_traced, KnowledgeBinding, MergeStrategy,
-    ParallelNode, PipelineNode, Predicate, Role, RoleExample, RoleExplanation, RoleLike,
+    ParallelNode, PipelineNode, Role, RoleExample, RoleLike,
     evaluate_metrics, sanitize_role_name,
-    RolePipelineStage, RolePublicView, SwitchBranch, SwitchNode, CODE_ROLE, CREATE_TITLE_ROLE,
+    RolePipelineStage, RolePublicView, SwitchNode, CODE_ROLE, CREATE_TITLE_ROLE,
     EXPLAIN_SHELL_ROLE, SHELL_ROLE,
 };
 pub use self::prompt::Prompt;
@@ -2392,7 +2392,7 @@ impl Config {
         let path = Self::macro_file(name);
         let err = || format!("Failed to load macro '{name}' at '{}'", path.display());
         let content = read_to_string(&path).with_context(err)?;
-        let value: Macro = serde_yaml::from_str(&content).with_context(err)?;
+        let value: Macro = serde_norway::from_str(&content).with_context(err)?;
         Ok(value)
     }
 
@@ -2869,14 +2869,14 @@ impl Config {
             .await
             .with_context(|| format!("Failed to fetch '{url}'"))?;
         println!("✓ Fetched '{url}'");
-        let list = serde_yaml::from_str::<Vec<ProviderModels>>(&content)
+        let list = serde_norway::from_str::<Vec<ProviderModels>>(&content)
             .with_context(|| "Failed to parse models.yaml")?;
         let models_override = ModelsOverride {
             version: env!("CARGO_PKG_VERSION").to_string(),
             list,
         };
         let models_override_data =
-            serde_yaml::to_string(&models_override).with_context(|| "Failed to serde {}")?;
+            serde_norway::to_string(&models_override).with_context(|| "Failed to serde {}")?;
 
         let model_override_path = Self::models_override_file();
         ensure_parent_exists(&model_override_path)?;
@@ -2895,7 +2895,7 @@ impl Config {
             )
         };
         let content = read_to_string(&model_override_path).with_context(err)?;
-        let models_override: ModelsOverride = serde_yaml::from_str(&content).with_context(err)?;
+        let models_override: ModelsOverride = serde_norway::from_str(&content).with_context(err)?;
         if models_override.version != env!("CARGO_PKG_VERSION") {
             bail!("Incompatible version")
         }
@@ -3202,7 +3202,7 @@ impl Config {
     fn load_from_file(config_path: &Path) -> Result<Self> {
         let err = || format!("Failed to load config at '{}'", config_path.display());
         let content = read_to_string(config_path).with_context(err)?;
-        let config: Self = serde_yaml::from_str(&content)
+        let config: Self = serde_norway::from_str(&content)
             .map_err(|err| {
                 let err_msg = err.to_string();
                 let err_msg = if err_msg.starts_with(&format!("{CLIENTS_FIELD}: ")) {
@@ -3687,7 +3687,7 @@ async fn create_config_file(config_path: &Path) -> Result<()> {
     config["model"] = model.into();
     config[CLIENTS_FIELD] = clients_config;
 
-    let config_data = serde_yaml::to_string(&config).with_context(|| "Failed to create config")?;
+    let config_data = serde_norway::to_string(&config).with_context(|| "Failed to create config")?;
     let config_data = format!(
         "# see https://github.com/sigoden/aichat/blob/main/config.example.yaml\n\n{config_data}"
     );
@@ -3833,7 +3833,7 @@ mod tests {
     #[test]
     fn partial_config_deserializes_from_yaml() {
         let yaml = "use_tools: \"fs_read,grep\"\nworking_directory: ./scratch\ntemperature: 0.0\n";
-        let p: PartialConfig = serde_yaml::from_str(yaml).unwrap();
+        let p: PartialConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(p.use_tools.as_deref(), Some("fs_read,grep"));
         assert_eq!(p.working_directory, Some(PathBuf::from("./scratch")));
         assert_eq!(p.temperature, Some(0.0));
@@ -3843,7 +3843,7 @@ mod tests {
     #[test]
     fn partial_config_rejects_unknown_key() {
         let yaml = "use_tools: \"a\"\nbogus_key: 1\n";
-        let err = serde_yaml::from_str::<PartialConfig>(yaml).unwrap_err();
+        let err = serde_norway::from_str::<PartialConfig>(yaml).unwrap_err();
         assert!(err.to_string().contains("bogus_key"), "got: {err}");
     }
 
@@ -3981,7 +3981,7 @@ mod tests {
     #[test]
     fn remote_config_parses_endpoint_and_api_key() {
         let yaml = "endpoint: http://example.internal:8080\napi_key: secret\n";
-        let cfg: RemoteConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: RemoteConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cfg.endpoint, "http://example.internal:8080");
         assert_eq!(cfg.api_key.as_deref(), Some("secret"));
     }
@@ -3989,7 +3989,7 @@ mod tests {
     #[test]
     fn remote_config_api_key_is_optional() {
         let yaml = "endpoint: http://example.internal:8080\n";
-        let cfg: RemoteConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: RemoteConfig = serde_norway::from_str(yaml).unwrap();
         assert!(cfg.api_key.is_none());
         assert!(cfg.resolved_api_key().is_none());
     }
@@ -3999,7 +3999,7 @@ mod tests {
         // Use a fresh var name so we don't fight with other tests.
         std::env::set_var("AICHAT_TEST_REMOTE_TOKEN_20C", "from-env-789");
         let yaml = "endpoint: http://x\napi_key: ${AICHAT_TEST_REMOTE_TOKEN_20C}\n";
-        let cfg: RemoteConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: RemoteConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cfg.resolved_api_key().as_deref(), Some("from-env-789"));
         std::env::remove_var("AICHAT_TEST_REMOTE_TOKEN_20C");
     }
@@ -4039,7 +4039,7 @@ remotes:
   security:
     endpoint: http://sec.internal:8080
 "#;
-        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        let cfg: Config = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cfg.remotes.len(), 2);
         let staging = cfg.remotes.get("staging").unwrap();
         assert_eq!(staging.endpoint, "http://staging.internal:8080");

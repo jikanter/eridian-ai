@@ -1004,7 +1004,7 @@ mod tests {
     // ----- Phase 21D: DAG structural validation -----
 
     fn yaml_node(yaml: &str) -> PipelineNode {
-        let v: serde_json::Value = serde_yaml::from_str(yaml).unwrap();
+        let v: serde_json::Value = serde_norway::from_str(yaml).unwrap();
         crate::config::role::parse_pipeline_node(&v).unwrap()
     }
 

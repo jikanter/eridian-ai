@@ -117,7 +117,7 @@ impl Rag {
     pub fn load(config: &GlobalConfig, name: &str, path: &Path) -> Result<Self> {
         let err = || format!("Failed to load rag '{name}' at '{}'", path.display());
         let content = fs::read_to_string(path).with_context(err)?;
-        let data: RagData = serde_yaml::from_str(&content).with_context(err)?;
+        let data: RagData = serde_norway::from_str(&content).with_context(err)?;
         Self::create(config, name, path, data)
     }
 
@@ -262,7 +262,7 @@ impl Rag {
         let path = Path::new(&self.path);
         ensure_parent_exists(path)?;
 
-        let content = serde_yaml::to_string(&self.data)
+        let content = serde_norway::to_string(&self.data)
             .with_context(|| format!("Failed to serde rag '{}'", self.name))?;
         fs::write(path, content).with_context(|| {
             format!("Failed to save rag '{}' to '{}'", self.name, path.display())
@@ -294,7 +294,7 @@ impl Rag {
             "document_paths": self.data.document_paths,
             "files": files,
         });
-        let output = serde_yaml::to_string(&data)
+        let output = serde_norway::to_string(&data)
             .with_context(|| format!("Unable to show info about rag '{}'", self.name))?;
         Ok(output)
     }

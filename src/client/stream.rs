@@ -263,11 +263,11 @@ impl JsonStreamParser {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rand::RngExt;
+use super::*;
 
     use bytes::Bytes;
     use futures_util::stream;
-    use rand::Rng;
 
     fn split_chunks(text: &str) -> Vec<Vec<u8>> {
         let mut rng = rand::rng();

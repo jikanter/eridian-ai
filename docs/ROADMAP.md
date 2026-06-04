@@ -8,8 +8,8 @@
 
 AIChat is **"make for AI workflows"**: a token-efficient, Unix-native CLI that lets agents and
 humans compose multi-model pipelines, consume external tools via MCP, and expose roles as
-callable infrastructure. The REPL is provided by [pi](https://github.com/earendil-works/pi)
-(Epic 13); aichat owns inference, roles, agents, RAG, MCP, and macros.
+callable infrastructure. The REPL is provided by [pi](https://github.com/earendil-works/pi); aichat owns all batch interfaces and the underlying implementation 
+of almost all functionality.
 
 The **Entity** is the fundamental unit of composition — a named, addressable, invocable,
 traceable configuration that produces LLM calls. **Prompt, Role, Agent, and Macro are presets

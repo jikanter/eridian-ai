@@ -898,7 +898,7 @@ fn load_pipeline_def_nodes(path: &str) -> Result<(Vec<PipelineNode>, Option<f64>
     };
 
     let def: PipelineDef =
-        serde_yaml::from_str(&content).context("Failed to parse pipeline definition YAML")?;
+        serde_norway::from_str(&content).context("Failed to parse pipeline definition YAML")?;
 
     if def.pipeline.is_some() && !def.stages.is_empty() {
         bail!(
@@ -1917,7 +1917,7 @@ pub fn load_pipeline_stages(name: &str) -> Result<Vec<InlineStage>> {
         #[serde(default)]
         stages: Vec<InlineStage>,
     }
-    let file: File = serde_yaml::from_str(&content)
+    let file: File = serde_norway::from_str(&content)
         .with_context(|| format!("Failed to parse pipeline '{name}' YAML"))?;
     if file.stages.is_empty() {
         bail!("Pipeline '{name}' has no stages");

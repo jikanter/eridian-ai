@@ -999,7 +999,7 @@ Check the weather."#;
             if let (Some(meta_val), Some(prompt_val)) = (caps.get(1), caps.get(2)) {
                 let meta_str = meta_val.as_str().trim();
                 prompt = prompt_val.as_str().trim().to_string();
-                if let Ok(value) = serde_yaml::from_str::<Value>(meta_str) {
+                if let Ok(value) = serde_norway::from_str::<Value>(meta_str) {
                     if let Some(map) = value.as_object() {
                         for (key, val) in map {
                             match key.as_str() {
@@ -1336,7 +1336,7 @@ stages:
   - role: format
     model: claude-3-haiku
 "#;
-        let def: PipelineDef = serde_yaml::from_str(yaml).unwrap();
+        let def: PipelineDef = serde_norway::from_str(yaml).unwrap();
         assert_eq!(def.stages.len(), 3);
         assert_eq!(def.stages[0].role, "summarize");
         assert_eq!(def.stages[0].model.as_deref(), Some("gpt-4"));
@@ -1348,7 +1348,7 @@ stages:
     #[test]
     fn test_pipeline_yaml_empty_stages() {
         let yaml = "stages: []";
-        let def: PipelineDef = serde_yaml::from_str(yaml).unwrap();
+        let def: PipelineDef = serde_norway::from_str(yaml).unwrap();
         assert!(def.stages.is_empty());
     }
 
@@ -1361,7 +1361,7 @@ pipeline:
   - role: step2
 ---
 "#;
-        let parsed: Value = serde_yaml::from_str(
+        let parsed: Value = serde_norway::from_str(
             content.trim().strip_prefix("---").unwrap().strip_suffix("---").unwrap().trim()
         ).unwrap();
         let stages = parsed["pipeline"].as_array().unwrap();
@@ -1400,7 +1400,7 @@ mod mcp_config {
         let yaml = r#"
 command: "npx -y @modelcontextprotocol/server-github"
 "#;
-        let config: McpServerConfigCompat = serde_yaml::from_str(yaml).unwrap();
+        let config: McpServerConfigCompat = serde_norway::from_str(yaml).unwrap();
         assert_eq!(config.command, "npx -y @modelcontextprotocol/server-github");
         assert!(config.args.is_empty());
         assert!(config.env.is_empty());
@@ -1417,7 +1417,7 @@ env:
   GITHUB_TOKEN: "${GITHUB_TOKEN}"
   API_KEY: "literal-key"
 "#;
-        let config: McpServerConfigCompat = serde_yaml::from_str(yaml).unwrap();
+        let config: McpServerConfigCompat = serde_norway::from_str(yaml).unwrap();
         assert_eq!(config.command, "node server.js");
         assert_eq!(config.args, vec!["--port", "3000"]);
         assert_eq!(config.env["GITHUB_TOKEN"], "${GITHUB_TOKEN}");
@@ -1437,7 +1437,7 @@ filesystem:
     - "/tmp"
 "#;
         let configs: indexmap::IndexMap<String, McpServerConfigCompat> =
-            serde_yaml::from_str(yaml).unwrap();
+            serde_norway::from_str(yaml).unwrap();
         assert_eq!(configs.len(), 2);
         assert!(configs.contains_key("github"));
         assert!(configs.contains_key("filesystem"));
@@ -1772,7 +1772,7 @@ mod builtin_roles {
                     // Should be valid YAML
                     if let Ok(Some(caps)) = re.captures(&content) {
                         if let Some(meta) = caps.get(1) {
-                            let result = serde_yaml::from_str::<Value>(meta.as_str().trim());
+                            let result = serde_norway::from_str::<Value>(meta.as_str().trim());
                             assert!(
                                 result.is_ok(),
                                 "Invalid YAML in {}: {:?}",
@@ -1846,7 +1846,7 @@ mod config_paths {
     fn test_config_example_parseable() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.example.yaml");
         let content = std::fs::read_to_string(path).unwrap();
-        let result = serde_yaml::from_str::<Value>(&content);
+        let result = serde_norway::from_str::<Value>(&content);
         assert!(result.is_ok(), "config.example.yaml must be valid YAML");
     }
 

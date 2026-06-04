@@ -44,7 +44,7 @@ impl StageCache {
         hasher.update(model.as_bytes());
         hasher.update(b"\0");
         hasher.update(input.as_bytes());
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     }
 
     pub fn get(&self, key: &str) -> Option<String> {

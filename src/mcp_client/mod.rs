@@ -145,13 +145,10 @@ impl McpConnection {
         tool_name: &str,
         arguments: Option<Map<String, Value>>,
     ) -> Result<CallToolResult> {
-        let name_owned: std::borrow::Cow<'static, str> = tool_name.to_string().into();
-        let params = CallToolRequestParams {
-            meta: None,
-            name: name_owned,
-            arguments,
-            task: None,
-        };
+        let mut params = CallToolRequestParams::new(tool_name.to_string());
+        if let Some(arguments) = arguments {
+            params = params.with_arguments(arguments);
+        }
         self.client
             .call_tool(params)
             .await
@@ -408,7 +405,7 @@ fn cache_dir() -> PathBuf {
 fn cache_key(command: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(command.as_bytes());
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 #[derive(Serialize, Deserialize)]

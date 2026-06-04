@@ -1207,7 +1207,7 @@ fn parse_raw_frontmatter(content: &str) -> RawRoleParts {
             let meta_str = metadata_value.as_str().trim();
             prompt = prompt_value.as_str().trim().to_string();
 
-            match serde_yaml::from_str::<Value>(meta_str) {
+            match serde_norway::from_str::<Value>(meta_str) {
                 Ok(value) => {
                     if let Some(map) = value.as_object() {
                         for (key, value) in map {
@@ -1374,7 +1374,7 @@ fn compose_role_content(parts: &RawRoleParts) -> String {
     if metadata.is_empty() {
         parts.prompt.clone()
     } else {
-        let yaml = serde_yaml::to_string(&Value::Object(metadata)).unwrap_or_default();
+        let yaml = serde_norway::to_string(&Value::Object(metadata)).unwrap_or_default();
         if parts.prompt.is_empty() {
             format!("---\n{yaml}---")
         } else {
@@ -1498,7 +1498,7 @@ impl Role {
             ..Default::default()
         };
         if !metadata.is_empty() {
-            match serde_yaml::from_str::<Value>(metadata) {
+            match serde_norway::from_str::<Value>(metadata) {
                 Ok(value) => {
                     if let Some(value) = value.as_object() {
                         for (key, value) in value {
@@ -1772,7 +1772,7 @@ impl Role {
         if meta.is_empty() {
             format!("{}\n", self.prompt)
         } else {
-            let yaml = serde_yaml::to_string(&Value::Object(meta)).unwrap_or_default();
+            let yaml = serde_norway::to_string(&Value::Object(meta)).unwrap_or_default();
             if self.prompt.is_empty() {
                 format!("---\n{yaml}---\n")
             } else {
@@ -2343,8 +2343,8 @@ pub fn validate_schema_detailed(
         .iter_errors(&data)
         .map(|e| SchemaViolation {
             message: e.to_string(),
-            instance_path: e.instance_path.to_string(),
-            schema_path: e.schema_path.to_string(),
+            instance_path: e.instance_path().to_string(),
+            schema_path: e.schema_path().to_string(),
         })
         .collect();
     Ok(SchemaValidationResult {
@@ -2509,7 +2509,7 @@ fn push_commented_yaml_field(out: &mut String, key: &str, value: &Value) {
         _ => {
             // Object/array — emit on multiple lines so the YAML stays valid
             // when the user uncomments.
-            let yaml = serde_yaml::to_string(value).unwrap_or_else(|_| "{}".to_string());
+            let yaml = serde_norway::to_string(value).unwrap_or_else(|_| "{}".to_string());
             let _ = writeln!(out, "# {key}:");
             for line in yaml.lines() {
                 if line.is_empty() {
@@ -4649,7 +4649,7 @@ Prompt."#;
     // ----- Phase 21: DAG primitives -----
 
     fn yaml_to_node(yaml: &str) -> Result<PipelineNode> {
-        let v: serde_json::Value = serde_yaml::from_str(yaml)?;
+        let v: serde_json::Value = serde_norway::from_str(yaml)?;
         parse_pipeline_node(&v)
     }
 

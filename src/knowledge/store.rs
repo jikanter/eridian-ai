@@ -188,7 +188,7 @@ impl KnowledgeStore {
         let manifest_yaml = fs::read_to_string(dir.join(MANIFEST_FILE)).with_context(|| {
             format!("Failed to read manifest at {}", dir.join(MANIFEST_FILE).display())
         })?;
-        let manifest: Manifest = serde_yaml::from_str(&manifest_yaml)
+        let manifest: Manifest = serde_norway::from_str(&manifest_yaml)
             .context("Failed to parse manifest.yaml")?;
         if manifest.version != CURRENT_VERSION {
             bail!(
@@ -219,7 +219,7 @@ impl KnowledgeStore {
             .with_context(|| format!("Failed to create KB dir {}", self.dir.display()))?;
 
         atomic_write(&self.dir.join(MANIFEST_FILE), |w| {
-            w.write_all(serde_yaml::to_string(&self.manifest)?.as_bytes())?;
+            w.write_all(serde_norway::to_string(&self.manifest)?.as_bytes())?;
             Ok(())
         })?;
 
@@ -250,7 +250,7 @@ impl KnowledgeStore {
 
         if !self.schema.is_empty() {
             atomic_write(&self.dir.join(SCHEMA_FILE), |w| {
-                w.write_all(serde_yaml::to_string(&self.schema)?.as_bytes())?;
+                w.write_all(serde_norway::to_string(&self.schema)?.as_bytes())?;
                 Ok(())
             })?;
         }
@@ -804,7 +804,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("kb");
         fs::create_dir_all(&path).unwrap();
-        let bad_manifest = serde_yaml::to_string(&Manifest {
+        let bad_manifest = serde_norway::to_string(&Manifest {
             name: "x".into(),
             version: 99, // future version
             sources: IndexMap::new(),

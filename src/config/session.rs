@@ -89,7 +89,7 @@ impl Session {
         let content = read_to_string(path)
             .with_context(|| format!("Failed to load session {} at {}", name, path.display()))?;
         let mut session: Self =
-            serde_yaml::from_str(&content).with_context(|| format!("Invalid session {name}"))?;
+            serde_norway::from_str(&content).with_context(|| format!("Invalid session {name}"))?;
 
         session.model = Model::retrieve_model(config, &session.model_id, ModelType::Chat)?;
 
@@ -200,7 +200,7 @@ impl Session {
         }
         data["messages"] = json!(self.messages);
 
-        let output = serde_yaml::to_string(&data)
+        let output = serde_norway::to_string(&data)
             .with_context(|| format!("Unable to show info about session '{}'", &self.name))?;
         Ok(output)
     }
@@ -713,7 +713,7 @@ impl Session {
 
         self.path = Some(session_path.display().to_string());
 
-        let content = serde_yaml::to_string(&self)
+        let content = serde_norway::to_string(&self)
             .with_context(|| format!("Failed to serde session '{}'", self.name))?;
         write(session_path, content).with_context(|| {
             format!(
@@ -796,7 +796,7 @@ impl Session {
 
     pub fn echo_messages(&self, input: &Input) -> String {
         let messages = self.build_messages(input);
-        serde_yaml::to_string(&messages).unwrap_or_else(|_| "Unable to echo message".into())
+        serde_norway::to_string(&messages).unwrap_or_else(|_| "Unable to echo message".into())
     }
 
     pub fn build_messages(&self, input: &Input) -> Vec<Message> {

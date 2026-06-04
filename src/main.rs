@@ -669,7 +669,7 @@ fn run_convert_session(src: &str, target: &str, out_path: Option<&str>) -> i32 {
             return 1;
         }
     };
-    let session: crate::config::Session = match serde_yaml::from_str(&yaml) {
+    let session: crate::config::Session = match serde_norway::from_str(&yaml) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to parse session YAML '{}': {e}", path.display());

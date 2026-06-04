@@ -6,6 +6,8 @@ mod prompt;
 use self::completer::ReplCompleter;
 use self::highlighter::ReplHighlighter;
 use self::prompt::ReplPrompt;
+use crossterm::cursor::SetCursorStyle;
+
 
 use crate::client::call_react;
 use crate::config::{
@@ -19,7 +21,7 @@ use crate::utils::{
 };
 
 use anyhow::{bail, Context, Result};
-use crossterm::cursor::SetCursorStyle;
+
 use fancy_regex::Regex;
 use reedline::CursorConfig;
 use reedline::{
@@ -406,7 +408,7 @@ pub async fn run_repl_command(
                 Some(("set", Some(args))) => {
                     if let Some((key, value)) = args.split_once([' ', '=']) {
                         let value = value.trim();
-                        let value: Value = serde_yaml::from_str(value).unwrap_or(Value::String(value.to_string()));
+                        let value: Value = serde_norway::from_str(value).unwrap_or(Value::String(value.to_string()));
                         config.write().update_extension(key.trim(), value)?;
                     } else {
                         println!("Usage: .extensions set <key> <value>");
@@ -414,7 +416,7 @@ pub async fn run_repl_command(
                 }
                 Some(("list", _)) => {
                     if let Some(extensions) = config.read().model.extensions() {
-                        let output = serde_yaml::to_string(extensions)?;
+                        let output = serde_norway::to_string(extensions)?;
                         println!("{output}");
                     }
                 }

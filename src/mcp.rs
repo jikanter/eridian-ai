@@ -132,20 +132,17 @@ impl ServerHandler for AichatMcpServer {
             ServerCapabilities::builder().enable_tools().build()
         };
 
-        ServerInfo {
-            protocol_version: Default::default(),
-            capabilities,
-            server_info: Implementation {
-                name: "aichat".into(),
-                version: env!("CARGO_PKG_VERSION").into(),
-                ..Default::default()
-            },
-            instructions: Some(
-                "aichat MCP server — exposes llm-functions tools via the Model Context Protocol. \
-                 Call discover_roles to see available tools."
-                    .into(),
-            ),
-        }
+        // ServerInfo (= InitializeResult) and Implementation are #[non_exhaustive],
+        // so build from Default/constructor and mutate fields instead of a literal.
+        let mut info = ServerInfo::default();
+        info.capabilities = capabilities;
+        info.server_info = Implementation::new("aichat", env!("CARGO_PKG_VERSION"));
+        info.instructions = Some(
+            "aichat MCP server — exposes llm-functions tools via the Model Context Protocol. \
+             Call discover_roles to see available tools."
+                .into(),
+        );
+        info
     }
 
     fn list_tools(

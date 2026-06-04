@@ -83,9 +83,7 @@ impl rmcp::transport::streamable_http_client::StreamableHttpClient for ReqwestCl
                         })?
                         .to_string();
                     return Err(StreamableHttpError::AuthRequired(
-                        rmcp::transport::streamable_http_client::AuthRequiredError {
-                            www_authenticate_header: header,
-                        },
+                        rmcp::transport::streamable_http_client::AuthRequiredError::new(header),
                     ));
                 }
             }

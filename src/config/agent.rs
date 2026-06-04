@@ -220,7 +220,7 @@ impl Agent {
             .display()
             .to_string()
             .into();
-        let data = serde_yaml::to_string(&value)?;
+        let data = serde_norway::to_string(&value)?;
         Ok(data)
     }
 
@@ -457,7 +457,7 @@ impl AgentConfig {
     pub fn load(path: &Path) -> Result<Self> {
         let contents = read_to_string(path)
             .with_context(|| format!("Failed to read agent config file at '{}'", path.display()))?;
-        let config: Self = serde_yaml::from_str(&contents)
+        let config: Self = serde_norway::from_str(&contents)
             .with_context(|| format!("Failed to load agent config at '{}'", path.display()))?;
         Ok(config)
     }
@@ -514,7 +514,7 @@ impl AgentDefinition {
     pub fn load(path: &Path) -> Result<Self> {
         let contents = read_to_string(path)
             .with_context(|| format!("Failed to read agent index file at '{}'", path.display()))?;
-        let definition: Self = serde_yaml::from_str(&contents)
+        let definition: Self = serde_norway::from_str(&contents)
             .with_context(|| format!("Failed to load agent index at '{}'", path.display()))?;
         Ok(definition)
     }
@@ -636,14 +636,14 @@ mcp_servers:
   - github
   - filesystem
 "#;
-        let cfg: AgentConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: AgentConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cfg.mcp_servers, vec!["github".to_string(), "filesystem".to_string()]);
     }
 
     #[test]
     fn agent_config_omits_empty_mcp_servers_on_serialize() {
         let cfg = AgentConfig::default();
-        let out = serde_yaml::to_string(&cfg).unwrap();
+        let out = serde_norway::to_string(&cfg).unwrap();
         assert!(
             !out.contains("mcp_servers"),
             "empty mcp_servers should not be serialized: {out}"
@@ -656,8 +656,8 @@ mcp_servers:
             mcp_servers: vec!["github".into(), "fs".into()],
             ..Default::default()
         };
-        let yaml = serde_yaml::to_string(&cfg).unwrap();
-        let parsed: AgentConfig = serde_yaml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&cfg).unwrap();
+        let parsed: AgentConfig = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(parsed.mcp_servers, cfg.mcp_servers);
     }
 
@@ -678,7 +678,7 @@ output_schema:
 pipe_to: jq .
 save_to: out.txt
 "#;
-        let cfg: AgentConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: AgentConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cfg.model_id.as_deref(), Some("claude:claude-sonnet-4-6"));
         assert_eq!(cfg.temperature, Some(0.2));
         assert_eq!(cfg.use_tools.as_deref(), Some("local_lookup"));

@@ -225,7 +225,7 @@ mod tests {
     fn retry_config_deserializes_partial() {
         // serde(default) should let callers override just one field
         let yaml = "max_retries: 5";
-        let cfg: RetryConfig = serde_yaml::from_str(yaml).unwrap();
+        let cfg: RetryConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cfg.max_retries, 5);
         assert_eq!(cfg.initial_backoff_ms, 1000); // default preserved
         assert!((cfg.backoff_multiplier - 2.0).abs() < f64::EPSILON);
