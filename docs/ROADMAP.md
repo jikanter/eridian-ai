@@ -2,6 +2,7 @@
 
 **Last updated:** 2026-06-04 · **Horizon model:** Now / Next / Later · **Coverage:** the coming year (2026-06 → 2027-06)
 **Repos:** aichat · llm-functions · brief · astrophage · harness (pi)
+**Next Step Implementation Note (2026-06-04) **:  For the implementation thread: the load-bearing decision is §9.4 (the off-diagonal (backing × facet) presets). Phases 28/29 will harden the RoleLike → Entity trait shape by accident if built before 52 — so 52A (the trait rename + facets() introspection) is the natural first concrete step, and it's pure clarification with no behavior change.
 
 ## Vision
 
