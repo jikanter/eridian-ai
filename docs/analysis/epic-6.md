@@ -12,6 +12,8 @@
 
 A pipeline stage that says `role: "review"` should resolve identically whether `review` is a local YAML file, an agent directory, a role exposed by a remote aichat server, or an MCP tool. The user's accidental discovery — two aichat instances composing roles across machines — is the seed of this epic.
 
+Note: Role, Agent, and Macro are presets over the unified [Entity model](../architecture/entity-model.md), not separate types; the resolver unifies their addressability at the Entity level.
+
 ---
 
 ## Phases

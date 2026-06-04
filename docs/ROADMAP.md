@@ -10,10 +10,12 @@ humans compose multi-model pipelines, consume external tools via MCP, and expose
 callable infrastructure. The REPL is provided by [pi](https://github.com/earendil-works/pi)
 (Epic 13); aichat owns inference, roles, agents, RAG, MCP, and macros.
 
-Roles are the fundamental unit of composition. The roadmap evolves roles from static prompt
-templates into **typed, addressable, evaluable building blocks** that compose across machines,
-execution models, and cost budgets — and, in the coming year, into a four-repo ecosystem that
-can **record, replay, and evaluate itself**.
+The **Entity** is the fundamental unit of composition — a named, addressable, invocable,
+traceable configuration that produces LLM calls. **Prompt, Role, Agent, and Macro are presets
+over it**, not four unrelated types (see [`architecture/entity-model.md`](architecture/entity-model.md)).
+The roadmap evolves entities from static prompt templates into **typed, addressable, evaluable
+building blocks** that compose across machines, execution models, and cost budgets — and, in the
+coming year, into a four-repo ecosystem that can **record, replay, and evaluate itself**.
 
 ### Strategy pillars
 
@@ -23,6 +25,8 @@ can **record, replay, and evaluate itself**.
 - **Runs as well on local models as on frontier models.**
 - **The trace is the keystone.** Testing, evaluation, training extraction, and observability all
   read one structured artifact — never a per-tool data model.
+- **The Entity is the authoring counterpart.** Prompt / Role / Agent / Macro are *presets* over one
+  `Entity` substrate; the runtime speaks one trait. `resolve Entity → execute → emit Trace`.
 
 ---
 
@@ -68,7 +72,7 @@ What is in flight, what is committed next, what is parked — independent of epi
 | Runtime Intelligence | **Phases 39 → 40 → 41** caching tail: cargo-gated remote backends (39), embedding/rerank caching (40), admin & observability parity (41). | aichat |
 | Observability Keystone | **Phases 43 → 44** — test harness ([`SPEC-002`](analysis/caching/SPEC-002-test-harness.md)) then trace projections + training extraction. | aichat |
 | Astrophage Substrate | **Phases 45 → 46 → 47 → 48** — cache-policy gateway + `replay-core` (45), cassette/eval-replay loop (46), mock/fault injection (47), brief companion (48). | cross-repo |
-| Entity Evolution | **Phases 28 → 29 → 49** — agent composability, dynamism, then memory federation. | cross-repo (aichat ↔ llm-functions) |
+| Entity Evolution | **Phase 52 → 28 → 29 → 49** — formalize the Entity model (the foundation), then agent composability, dynamism, memory federation. | cross-repo (aichat ↔ llm-functions) |
 
 ### Later — parked / deferred
 
@@ -137,6 +141,7 @@ design doc; planned/new phases link the live doc.
 | 9 Knowledge Evolution | 25 | aichat | Knowledge compilation | **Done · archived** | [archive/phase-25-knowledge-compilation.md](roadmap/archive/phase-25-knowledge-compilation.md) |
 | 9 Knowledge Evolution | 26 | aichat | Knowledge query | **Done · archived** | [archive/phase-26-knowledge-query.md](roadmap/archive/phase-26-knowledge-query.md) |
 | 9 Knowledge Evolution | 27 | aichat | Evolution, attribution & trace | **Done · archived** | [archive/phase-27-knowledge-evolution.md](roadmap/archive/phase-27-knowledge-evolution.md) |
+| 10 Entity Evolution | 52 | aichat | Entity model formalization (Epic 10 foundation) | 52A–D **Planned** (Next) | [phase-52-overview.md](roadmap/phase-52-overview.md) |
 | 10 Entity Evolution | 28 | aichat ↔ llm-functions | Agent composability | 28A–C **Planned** (Next) | [phase-28-overview.md](roadmap/phase-28-overview.md) |
 | 10 Entity Evolution | 29 | aichat ↔ llm-functions | Agent dynamism | 29A/B **Planned** (Next) | [phase-29-overview.md](roadmap/phase-29-overview.md) |
 | 10 Entity Evolution | 49 | aichat ↔ llm-functions ↔ harness | Agent memory federation | 49A–C **Planned** (Next) | [phase-49-overview.md](roadmap/phase-49-overview.md) |
@@ -183,9 +188,12 @@ tracks; the one new hard gate is the **trace keystone**.
   key-stability stop-and-ask. 47 (mock) needs 45. 48 (brief companion) is built **in the brief
   repo**, documented here, and optional (the direct-promptfoo path works without it).
 
-- **Entity Evolution (Epic 10, Phases 28 → 29 → 49).** Agent composability → dynamism → memory
+- **Entity Evolution (Epic 10, Phases 52 → 28 → 29 → 49).** **Phase 52 formalizes the Entity
+  model** (the `RoleLike → Entity` trait + facet taxonomy; see
+  [`architecture/entity-model.md`](architecture/entity-model.md)) as the conceptual foundation —
+  28/29's new capabilities are *facets* on it. Then agent composability → dynamism → memory
   federation; cross-repo with llm-functions. 49 needs 29B (agent memory) + 35 (knowledge-MCP) +
-  42 (trace attribution).
+  42 (trace attribution); 52D needs 42.
 
 - **Memory Surface (Epic 14, 35) & Feedback Loop (Epic 8, 24)** proceed independently in **Now**.
 
@@ -198,6 +206,7 @@ tracks; the one new hard gate is the **trace keystone**.
 - **Roadmap directory index:** [roadmap/README.md](roadmap/README.md)
 - **Comprehensive archive (all shipped phases):** [roadmap/archive/completed-epics.md](roadmap/archive/completed-epics.md)
 - **Architecture:** [architecture.md](architecture/architecture.md) &#183; **Future-state diagram:** [architecture.svg](architecture.svg)
+- **The Entity model (foundational building block):** [architecture/entity-model.md](architecture/entity-model.md)
 - **Caching / substrate analysis:** [analysis/caching/](analysis/caching/) (SPEC-001…004, ADR-0001…0005, EVAL/PLAN docs)
 - **Integrated (cross-repo) requirements:** [architecture/integrated-architecture/](architecture/integrated-architecture/) (incl. [SPEC-astrophage.md](architecture/integrated-architecture/SPEC-astrophage.md))
 - **Dependency graph:** [roadmap/dependencies.md](roadmap/dependencies.md)

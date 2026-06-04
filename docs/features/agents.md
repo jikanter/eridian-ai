@@ -2,6 +2,8 @@
 
 Agents are specialized personas with their own configuration, instructions, and tools. They are more powerful than simple roles because they can maintain their own variables, reference documents, and use specific models or settings.
 
+For the foundational model of Agents, Roles, Prompts, and Macros, see [the Entity model](../architecture/entity-model.md) — these are presets over one Entity substrate, distinguished by their backing and the facet families they own.
+
 ## File Location
 
 Each agent has its own directory in:

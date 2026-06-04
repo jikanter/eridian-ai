@@ -48,7 +48,25 @@ Fallback order: Session > Agent > Role > Global defaults.
 
 ### Entity Types
 
-aichat has four entity types. Three form a capability hierarchy (**Prompt < Role < Agent**); the fourth (**Macro**) is orthogonal.
+The foundational building block is the **Entity** — a named, addressable, invocable, traceable
+configuration that produces LLM calls. The runtime speaks **one trait** (`RoleLike`, becoming
+`Entity` in [Phase 52](../roadmap/phase-52-overview.md)); everything resolves to a `Role` and runs
+through `call_react`. The four "types" below are therefore **presets over one substrate**, not four
+unrelated things. Full model: [`entity-model.md`](entity-model.md).
+
+The capabilities beyond the irreducible *core* (reference · instructions · model + params) are
+**facets**, grouped into six coarse families — **Know** (RAG, memory) · **Act** (tools, MCP) ·
+**Shape** (schemas, hooks) · **Govern** (policies, retries, dynamic instructions) · **Compose**
+(extends/include, pipeline, macro steps) · **Judge** (metrics). Which facets a preset can *own* is
+**determined by its backing**: facets needing executable code or mutable state (owned tools,
+memory, RAG, dynamic instructions) require a **directory** (agent); declarative stateless facets
+(pipeline, inheritance, schemas, metrics) fit a **file** (role). Backing gates *ownership*, not
+*reference* — a file-role can `use_tools`/`knowledge_bindings`/`role_mcp_servers` (references) but
+cannot *own* them. This rule *derives* the historical **Prompt < Role < Agent** ladder; **Macro**
+is the orthogonal *orchestration* preset (Compose only). See [`entity-model.md §5–6`](entity-model.md).
+
+The matrix below reads as **presets (columns) × capabilities (rows)**; each row maps to a facet
+family in the Entity model.
 
 **Prompt** — Anonymous, ephemeral. Raw text used as a system prompt. Under the hood, creates a temporary Role named `%%` (`TEMP_ROLE_NAME`). No file, no metadata, no persistence. Invoked via `aichat "text"` or `aichat --prompt "text"`.
 

@@ -18,6 +18,7 @@ live in [`../architecture/integrated-architecture/`](../architecture/integrated-
 | [`success-metrics.md`](success-metrics.md) | Per-epic targets the roadmap commits to. |
 | [`anti-roadmap.md`](anti-roadmap.md) | Proposals considered and rejected, with reasons. |
 | [`REFRESH-NOTES.md`](REFRESH-NOTES.md) | Notes from the 2026-06-04 next-year refresh. |
+| [`../architecture/entity-model.md`](../architecture/entity-model.md) | The **Entity** model — the foundational building block (Prompt/Role/Agent/Macro as presets); realized by Phase 52. |
 
 ## Live phase docs
 
@@ -47,6 +48,7 @@ Status is in the [ledger](../ROADMAP.md#status-ledger).
 
 | Phase | Epic | Overview |
 |---|---|---|
+| 52 Entity model formalization | 10 Entity Evolution | [phase-52-overview.md](phase-52-overview.md) |
 | 42 Trace emission (SPEC-001) | 15 Observability Keystone | [phase-42-overview.md](phase-42-overview.md) |
 | 43 Test harness (SPEC-002) | 15 Observability Keystone | [phase-43-overview.md](phase-43-overview.md) |
 | 44 Trace projections & training extraction | 15 Observability Keystone | [phase-44-overview.md](phase-44-overview.md) |

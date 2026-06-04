@@ -8,6 +8,18 @@ comprehensive ledger, and (3) condenses/refactors the remaining unimplemented it
 Now/Next/Later forward view. It supersedes the 2026-06-02 tri-repo refresh (which framed the
 horizons and tagged repos but did not add forward phases).
 
+**Addendum (same day) — the Entity model.** A foundational design pass formalized the
+**Entity** as aichat's fundamental building block: Prompt / Role / Agent / Macro are now framed as
+*presets* over one `Entity` substrate, governed by a coarse six-family **facet taxonomy**
+(Know · Act · Shape · Govern · Compose · Judge) and the **backing-gates-ownership** rule that
+*derives* the historical Prompt < Role < Agent ladder. Captured in the new
+[`../architecture/entity-model.md`](../architecture/entity-model.md) and realized by the new
+**Phase 52** under Epic 10. This is a trait rename + introspection (`RoleLike → Entity`), **not** a
+struct merge; the off-diagonal "(backing × facet) presets" question is recorded as *deliberately
+reopenable* (entity-model.md §9.4). The ROADMAP vision line ("Roles are the fundamental unit") was
+updated to name the Entity; anti-roadmap, dependencies, success-metrics, README, and
+`analysis/epic-10.md` were threaded accordingly.
+
 ---
 
 ## 1. What was added — the next year (Epics 15–17, Phases 42–51)

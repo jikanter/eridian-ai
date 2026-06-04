@@ -9,7 +9,17 @@
 
 ## Motivation
 
-AIChat has four entity types: Prompt, Role, Agent, and Macro. Roles are the most powerful declarative unit (20+ metadata fields, pipelines, schemas, inheritance). Agents add runtime capabilities (own tools, RAG, dynamic instructions, sessions) but lack Role features (schemas, pipelines, lifecycle hooks, MCP binding). Macros orchestrate imperatively but can't flow data between steps.
+AIChat has four "entity types": Prompt, Role, Agent, and Macro. As of the 2026-06-04 refresh these
+are understood as **presets over one `Entity` substrate**, not four unrelated things — see the
+foundational [`architecture/entity-model.md`](../architecture/entity-model.md) and its realization
+in [Phase 52](../roadmap/phase-52-overview.md). Roles are the most powerful *declarative* preset
+(20+ metadata fields, pipelines, schemas, inheritance — the Compose/Shape/Judge facets). Agents are
+the *directory-backed* preset that adds owned runtime capabilities (tools, RAG, dynamic
+instructions, sessions — the Know/Act/Govern facets) but lack Role's declarative facets. Macros are
+the *orchestration* preset (Compose only). The reason the facet sets are disjoint is not accident
+but **backing**: facets needing executable code or mutable state require a directory; declarative
+stateless facets fit a file (entity-model.md §5.2). This epic adds *facets* on that substrate; it
+does **not** merge the Role and Agent structs.
 
 The critical gap is **agent composability**: agents cannot call other agents, cannot be used as pipeline stages, and cannot be invoked as tools. Complex tasks must be solved by a single monolithic agent with all tools loaded, violating the "one tool per job" principle.
 
@@ -375,7 +385,8 @@ F8 (macro output chaining) ──────── Independent
 |---|---|
 | Multi-agent orchestration framework (CrewAI-style) | Over-engineering. Agent-as-tool (F1) + pipelines + macros compose to cover every topology. |
 | LLM-driven planning step | Costs tokens upfront. Compose via pipeline: plan-role → execute-role. |
-| Merge Role and Agent into one struct | Premature. `to_role()` bridge works. llm-functions agent format is a separate authoring contract. |
+| Merge Role and Agent into one **struct** | Formalize the shared `Entity` **trait** instead (Phase 52) — rename + facet introspection, no struct merge. `to_role()` works; llm-functions agent format is a separate, cross-repo authoring contract. See [`entity-model.md §8/§10`](../architecture/entity-model.md). |
+| Open the full (backing × facet) product of presets | Keep Role/Agent as the two facet-owning presets; bless a new combination only on concrete demand, one at a time ([`entity-model.md §9.4`](../architecture/entity-model.md)). |
 | Give agents `extends`/`include`/`pipeline` | Agent identity is directory-based. Role inheritance doesn't map. Pipelines create two orchestration models. |
 | Shared mutable state between agents | Concurrency hazard. Agents communicate through tool call/result (text in, text out). |
 | Custom ReAct loop per agent | One `call_react` with pluggable ReactPolicy is strictly better than N custom loops. |

@@ -17,7 +17,9 @@ Proposals considered and rejected, with reasoning. Linked from [`../ROADMAP.md`]
 | Real-time file watching daemon                         | CLI tools are invocation-based. Use git hooks, cron, or shell loops.                                   | AI Architect    | Strong        |
 | Confidence scoring on LLM output                       | Research problem, not engineering. No reliable way without another LLM call.                          | Epic 2          | Strong        |
 | `model_policy` cost-aware routing (Phase 10 follow-on) | Routing belongs in pipelines via `switch:`/`when:` (Phase 21), not as a separate runtime knob.        | Epic 2          | Strong        |
-| Merging Role and Agent into one struct                 | The `to_role()` bridge works; llm-functions is a separate authoring contract. Agent identity is directory-based. | Epic 10  | Strong        |
+| Merging Role and Agent into one **struct**             | Formalize the shared **`Entity` trait** (Phase 52) instead — a rename + facet introspection, not a merge. `to_role()` works; the file-vs-directory authoring contracts are deliberately independent and cross-repo. See [`entity-model.md §8/§10`](../architecture/entity-model.md). | Epic 10  | Strong        |
+| Opening the full **(backing × facet)** product as presets | Keep Role/Agent as the two facet-owning presets; bless a new combination (e.g. a role with memory) only on concrete repeated demand, one row at a time ([`entity-model.md §9.4`](../architecture/entity-model.md)). A flag-day of orthogonal capability toggles is the framework-bloat we reject. | [entity-model.md](../architecture/entity-model.md) | Moderate (reopenable) |
+| A **seventh facet family** for guardrails             | Guardrails are the union of Shape (schema validation) + Judge (metrics) + Govern (policy halts); naming them separately double-counts. | [entity-model.md §4](../architecture/entity-model.md) | Moderate |
 
 ## Cross-repo boundaries (the four-repo split)
 

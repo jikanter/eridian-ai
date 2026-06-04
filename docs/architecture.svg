@@ -69,10 +69,10 @@
     <rect x="1086" y="506" width="312" height="104" rx="7"/>
   </g>
   <g text-anchor="middle">
-    <text x="216"  y="414" font-size="12.5" font-weight="700" fill="#9a6700">Entity types</text>
-    <text x="216"  y="436" font-size="10.5" fill="#3c4043">Prompt &#183; Role &#183; Agent</text>
-    <text x="216"  y="453" font-size="10.5" fill="#3c4043">Macro (isolated clone)</text>
-    <text x="216"  y="475" font-size="9.5"  fill="#80868b">RoleLike &#183; extends / include</text>
+    <text x="216"  y="414" font-size="12.5" font-weight="700" fill="#9a6700">Entity (foundational)</text>
+    <text x="216"  y="436" font-size="10" fill="#3c4043">presets: Prompt &#183; Role &#183; Agent &#183; Macro</text>
+    <text x="216"  y="453" font-size="9.5" fill="#3c4043">facets: Know&#183;Act&#183;Shape&#183;Govern&#183;Compose&#183;Judge</text>
+    <text x="216"  y="475" font-size="9.5"  fill="#80868b">Entity trait (52) &#183; backing gates ownership</text>
 
     <text x="558"  y="414" font-size="12.5" font-weight="700" fill="#9a6700">Config hierarchy</text>
     <text x="558"  y="436" font-size="10.5" fill="#3c4043">Session &#9656; Agent &#9656;</text>

@@ -5,7 +5,7 @@
 > **Goal.** Close the loop between **agent memory** (Phase 29B JSONL fact store), the typed
 > **knowledge store**, and the cross-machine **knowledge-MCP** surface (Phase 35) so an agent's
 > accumulated memory becomes **queryable, attributable, and federatable** across machines —
-> rather than a per-agent local file.
+> rather than a per-agent local file. (Memory is the Know facet; see [the Entity model](../architecture/entity-model.md).)
 
 ## Sub-phases
 

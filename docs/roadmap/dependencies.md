@@ -22,7 +22,7 @@ Epic 1 (Core Platform, aichat)  ──── DONE (Phases 0–8; 8 active) ─�
   │
   ├── Epic 17 (Federation & Scale, aichat/cross-repo) ─ 50, 51 ─ PLANNED ★ new
   │
-  ├── Epic 10 (Entity Evolution, aichat ↔ llm-functions) ─ 28 → 29 → 49 ─ PLANNED
+  ├── Epic 10 (Entity Evolution, aichat ↔ llm-functions) ─ 52 → 28 → 29 → 49 ─ PLANNED ★ 52 = Entity foundation
   ├── Epic 11 (Bridge Retirement, cross-repo) ─ Phase 31 ─ DONE
   ├── Epic 12 (Developer Experience, aichat) ─── Phase 30 ──── DONE
   ├── Epic 13 (Pi as REPL Surface, aichat ↔ harness) ─── Phase 32 ──── DONE
@@ -76,6 +76,8 @@ fully functional.
 ## Federation (Epics 10 → 14 → 17)
 
 ```
+Phase 52 (Entity model formalization: RoleLike→Entity trait + facet taxonomy)
+   └─ foundation for ─→ 28 (composability) · 29 (dynamism) · 49 (federation)   ← 52D needs 42
 Phase 29B (agent memory, JSONL) ─→ Phase 49 (agent memory federation)   ← needs 35 + 42
 Phase 35 (knowledge-MCP) ─┬─→ Phase 49 (federated agent memory over MCP)
                           └─→ Phase 50 (knowledge-as-cassette / federated KB)   ← needs 46 drift pattern
@@ -87,7 +89,7 @@ Phase 51 (vendor model extensions) ── independent (no upstream)
 - **Observability Keystone** (Epic 15): 42 **Now** → 43, 44 **Next**. The new gate.
 - **Caching** (Epic 2): 37→38 **Now**; 39, 40, 41 **Next**; 37F deferred.
 - **Astrophage Substrate** (Epic 16): 45→46→47→48 **Next**; cross-repo, blocked by 38A + 42.
-- **Entity Evolution** (Epic 10): 28→29→49 **Next**; cross-repo with llm-functions.
+- **Entity Evolution** (Epic 10): 52 (Entity formalization, foundation) → 28→29→49 **Next**; cross-repo with llm-functions.
 - **Memory Surface** (Epic 14): 35 **Now**. **Feedback Loop** (Epic 8): 24 **Now**.
 - **Federation & Scale** (Epic 17): 50, 51 **Later**.
 

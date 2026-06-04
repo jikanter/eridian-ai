@@ -27,6 +27,7 @@ Per-epic targets the roadmap is committing to. Linked from [`../ROADMAP.md`](../
 | Eval-replay determinism | None | A committed cassette replays **byte-identically offline**, token-free; drift fails CI | 16 / 46 |
 | Astrophage cache-hit savings | In-aichat `StageCache` only | Wire-level hits over `base_url` with `cache_hit:true` + correlated `cache.lookup` | 16 / 45 |
 | Tool-replay key stability | Open (`SPEC-astrophage §9.2`) | `(tool_name, args_hash)` proven a stable lookup key; deterministic tool+wire eval end-to-end | 16 / 46C |
+| Entity model coherence | Four "entity types" documented separately; `RoleLike` latent | Runtime dispatches via one `Entity` trait; `facets()` reports owned-vs-referenced capabilities; `--dry-run` lists them; no struct merge | 10 / 52 |
 | Agent memory federation | Per-agent local file (planned 29B) | Agent facts queryable over knowledge-MCP from another machine, AEVS-gated, turn-attributed | 10 / 49 |
 | Knowledge portability | Compiled KB is a local directory | KB as a portable committed artifact, queried remotely, drift-detected | 17 / 50 |
 | Local-model parameter reach | Fixed OpenAI-compatible body | Vendor knobs (`num_ctx`, guided decoding) pass through via `extensions:` merge | 17 / 51 |
