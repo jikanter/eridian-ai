@@ -2,7 +2,7 @@
 
 **Status:** Analysis, 2026-05-18
 **Inputs:** `src/function.rs`, `src/client/common.rs`, `src/client/{claude,openai,gemini}.rs`,
-`src/config/mod.rs`, `src/cache.rs`, `src/pipe.rs`, `CLAUDE_GENERATED.md`,
+`src/config/mod.rs`, `src/cache.rs`, `src/pipe.rs`, `CLAUDE.md`,
 `EVAL-0002-full-caching.md` (open-harness workstream)
 **Question:** Does aichat — or the L4 layer of `EVAL-0002` — contain anything resembling
 an *intelligent tool-call compiler*? Is the hypothesis correct that **tool calls are not
@@ -262,14 +262,14 @@ needs sandbox/state snapshotting aichat does not have. They are **deferred**, ex
 `EVAL-0002` deferred its L2. But note T6's special relevance to the open-harness workstream:
 a trajectory cache and the trace format are the *same data structure viewed twice* — the
 trace already records tool-call sequences; a trajectory cache is that recording made
-executable. If the trace schema is being designed now (`CLAUDE_GENERATED.md`), it is cheap
+executable. If the trace schema is being designed now (`CLAUDE.md`), it is cheap
 to keep it trajectory-cache-shaped and expensive to retrofit later.
 
 ---
 
 ## 6. Interaction with the open-harness workstream
 
-`CLAUDE_GENERATED.md` makes the trace the keystone for testing and training-data
+`CLAUDE.md` makes the trace the keystone for testing and training-data
 extraction. Two consequences for the tool layer:
 
 - **Extend `EVAL-0002` Gap E with a tool-cache outcome.** A `tool.executed` event needs a

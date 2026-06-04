@@ -2,7 +2,7 @@
 
 **Status:** Analysis, 2026-05-18
 **Inputs:** `src/cache.rs`, `src/pipe.rs`, `src/client/{claude,openai,gemini,common,model}.rs`,
-`src/config/{mod,session}.rs`, `src/serve.rs`, `src/cli.rs`, `CLAUDE_GENERATED.md`,
+`src/config/{mod,session}.rs`, `src/serve.rs`, `src/cli.rs`, `CLAUDE.md`,
 `SPEC-001-trace-format.md` (open-harness workstream)
 **Question:** What stands between aichat as it exists today and *end-to-end caching of
 model responses* — caching that both **removes turns** (the model is never called) and
@@ -217,7 +217,7 @@ Streaming responses need either a no-cache carve-out or replay-from-buffer.
 
 ### Gap E — no cache events in the trace schema *(blocks the harness story)*
 
-`CLAUDE_GENERATED.md` makes the trace the keystone of testing and training-data
+`CLAUDE.md` makes the trace the keystone of testing and training-data
 extraction. SPEC-001's 13 event types have **no cache event**. A cache hit that
 removes a turn currently emits only a `debug!` log (`pipe.rs:425`) — invisible to the
 harness, so a regression that silently disables caching cannot be caught by a
