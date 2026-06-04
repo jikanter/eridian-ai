@@ -12,7 +12,7 @@
 
 ## Background
 
-[architecture.md](../architecture/architecture.md) and [`src/config/role.rs`](../../src/config/role.rs) currently expose five distinct dialects that all feed a role at invocation time:
+[architecture.md](../../architecture/architecture.md) and [`src/config/role.rs`](../../../src/config/role.rs) currently expose five distinct dialects that all feed a role at invocation time:
 
 | Channel | Declaration | Type system | Surface |
 |---|---|---|---|
@@ -22,7 +22,7 @@
 | `{{__sys__}}` / `{{$AICHAT_*}}` | hard-coded | string | runtime facts, env |
 | `{{.field}}` | record-aware (`--each`) | JSON | batch templating only |
 
-The author declares the contract twice (`variables:` plus `input_schema:`), keeps the names in sync by convention, and the CLI caller has to know which channel each value flows through. Non-string `default:` values are silently dropped at parse with a `warn!` ([`src/config/role.rs:1229-1237`](../../src/config/role.rs)), so a malformed role looks healthy until invocation.
+The author declares the contract twice (`variables:` plus `input_schema:`), keeps the names in sync by convention, and the CLI caller has to know which channel each value flows through. Non-string `default:` values are silently dropped at parse with a `warn!` ([`src/config/role.rs:1229-1237`](../../../src/config/role.rs)), so a malformed role looks healthy until invocation.
 
 Phase 33 collapses the first two channels into one. The reserved namespaces (`__sys__`, `$AICHAT_*`, `.field`) are kept as-is — they're orthogonal, well-understood, and never collide with user-declared slots.
 
@@ -76,7 +76,7 @@ What this collapses, channel-by-channel:
 
 ## 33A Design — Defaults inside `input_schema`
 
-Extend the `input_schema:` parse path to recognize `default:` per property. Two forms, mirroring the existing `VariableDefault` enum at [`src/config/role.rs:800-805`](../../src/config/role.rs):
+Extend the `input_schema:` parse path to recognize `default:` per property. Two forms, mirroring the existing `VariableDefault` enum at [`src/config/role.rs:800-805`](../../../src/config/role.rs):
 
 ```yaml
 properties:
@@ -97,11 +97,11 @@ Resolution precedence (highest first), matching today's `variables:` semantics s
 
 Schema validation runs **after** defaults are filled. A property with both `default:` and `required:` is allowed — the default satisfies the requirement.
 
-**Files:** [`src/config/role.rs`](../../src/config/role.rs) (parse defaults out of properties; reuse `VariableDefault::resolve`), [`src/config/mod.rs`](../../src/config/mod.rs) (new `resolve_input_schema_defaults` analogous to `resolve_role_variables`).
+**Files:** [`src/config/role.rs`](../../../src/config/role.rs) (parse defaults out of properties; reuse `VariableDefault::resolve`), [`src/config/mod.rs`](../../../src/config/mod.rs) (new `resolve_input_schema_defaults` analogous to `resolve_role_variables`).
 
 ## 33B Design — Type-aware rendering
 
-Today's [`apply_variables`](../../src/config/role.rs) does `prompt.replace("{{name}}", value)` with `value: String`. Phase 33B routes substitution through a renderer that consults the schema:
+Today's [`apply_variables`](../../../src/config/role.rs) does `prompt.replace("{{name}}", value)` with `value: String`. Phase 33B routes substitution through a renderer that consults the schema:
 
 ```rust
 fn render_slot(value: &serde_json::Value, schema_type: &str) -> String {
@@ -117,7 +117,7 @@ fn render_slot(value: &serde_json::Value, schema_type: &str) -> String {
 
 Compact JSON is the default for arrays and objects; pretty-print is opt-in via `x-aichat: { render: pretty }` on the property. This keeps tokens cheap by default while leaving an escape hatch for human-readable injection.
 
-**Files:** [`src/utils/variables.rs`](../../src/utils/variables.rs) (extend `RE_VARIABLE` resolver to consult a typed value map), [`src/config/role.rs`](../../src/config/role.rs) (`apply_variables` takes `IndexMap<String, Value>` instead of `IndexMap<String, String>`).
+**Files:** [`src/utils/variables.rs`](../../../src/utils/variables.rs) (extend `RE_VARIABLE` resolver to consult a typed value map), [`src/config/role.rs`](../../../src/config/role.rs) (`apply_variables` takes `IndexMap<String, Value>` instead of `IndexMap<String, String>`).
 
 ## 33C Design — CLI / stdin coercion
 
@@ -138,7 +138,7 @@ Stdin routing: exactly one property may carry `x-aichat: { source: stdin }`. Whe
 
 `--file path` and positional args also flow through this layer, all converging on the same schema-coerced value map.
 
-**Files:** [`src/cli.rs`](../../src/cli.rs) (extend `-v` parsing with schema awareness), [`src/config/input.rs`](../../src/config/input.rs) (stdin routing).
+**Files:** [`src/cli.rs`](../../../src/cli.rs) (extend `-v` parsing with schema awareness), [`src/config/input.rs`](../../../src/config/input.rs) (stdin routing).
 
 ## 33D Design — Pipeline shape-check
 
@@ -149,7 +149,7 @@ Extends Phase 15B's containment check from "is output N a subset of input N+1" t
 
 When both stages declare schemas *and* explicit field mappings are supplied (future work, out of scope here), the mapping shape is checked instead of the bare subset.
 
-**Files:** [`src/config/preflight.rs`](../../src/config/preflight.rs) (extend `validate_pipeline_stages`), [`src/pipe.rs`](../../src/pipe.rs) (route prior stage output into next stage's typed value map).
+**Files:** [`src/config/preflight.rs`](../../../src/config/preflight.rs) (extend `validate_pipeline_stages`), [`src/pipe.rs`](../../../src/pipe.rs) (route prior stage output into next stage's typed value map).
 
 ## 33E Design — `variables:` deprecation
 
@@ -178,12 +178,12 @@ warn: role 'foo' declares both `variables:` and `input_schema:`. The
 
 No removal is planned. The block is documented as legacy and `--fork-role` ([Phase 13A](phase-13-overview.md)) emits the new shape.
 
-**Files:** [`src/config/role.rs`](../../src/config/role.rs) (fold `variables` into `input_schema` after parse), `docs/features/typed-input.md` (new user-facing doc).
+**Files:** [`src/config/role.rs`](../../../src/config/role.rs) (fold `variables` into `input_schema` after parse), `docs/features/typed-input.md` (new user-facing doc).
 
 ## Shipped — unification core (2026-05-30)
 
 33A + 33B + 33E landed together as the design's first PR. Demo:
-[`docs/demos/phase-33-typed-input.md`](../demos/phase-33-typed-input.md).
+[`docs/demos/phase-33-typed-input.md`](../../demos/phase-33-typed-input.md).
 
 **33A — schema defaults.** `schema_slots()` (`src/config/role.rs`) flattens an
 `input_schema`'s `properties` into `SchemaSlot`s carrying an optional
@@ -265,7 +265,7 @@ and a `pipeline_strict:` opt-in remain future work (see Open questions #4).
 
 **Question:** Compact JSON, YAML-ish, or invoke a per-slot formatter?
 
-**Recommendation: compact JSON by default; opt-in pretty-print via `x-aichat.render: pretty`.** Compact JSON is the only universally-parseable form across every LLM in the project's matrix, costs the fewest tokens (a critical project tenet — see CLAUDE.md "token cost conscious"), and is what `serde_json::to_string` produces with zero extra config. Pretty-print exists because a 50-item array dumped into a prompt is unreadable to humans debugging the role; the annotation is the escape hatch. YAML-ish is rejected because no model is trained on it as a structured-input convention (same reasoning as the TOON rejection in [architecture.md](../architecture/architecture.md) "What Was Killed").
+**Recommendation: compact JSON by default; opt-in pretty-print via `x-aichat.render: pretty`.** Compact JSON is the only universally-parseable form across every LLM in the project's matrix, costs the fewest tokens (a critical project tenet — see CLAUDE.md "token cost conscious"), and is what `serde_json::to_string` produces with zero extra config. Pretty-print exists because a 50-item array dumped into a prompt is unreadable to humans debugging the role; the annotation is the escape hatch. YAML-ish is rejected because no model is trained on it as a structured-input convention (same reasoning as the TOON rejection in [architecture.md](../../architecture/architecture.md) "What Was Killed").
 
 ### 4. Pipeline shape-checking — strict or soft-warn?
 
@@ -279,7 +279,7 @@ A future opt-in could promote soft-warn to strict via `pipeline_strict: true` at
 
 - **A Jinja-class templating engine.** Keep `{{name}}` substitution; the addition is type-awareness, not control flow beyond what `{{#if}}` / `{{#unless}}` already cover.
 - **Per-slot formatter functions.** `{{name | json}}` style filters create a templating sub-DSL. The schema-driven default + the `x-aichat.render: pretty` escape hatch covers the legitimate use cases without a parser.
-- **A new schema language.** JSON Schema is the contract. `x-aichat` extensions are namespaced per [SPEC-mcp-json-artifact.md](../architecture/integrated-architecture/SPEC-mcp-json-artifact.md) conventions.
+- **A new schema language.** JSON Schema is the contract. `x-aichat` extensions are namespaced per [SPEC-mcp-json-artifact.md](../../architecture/integrated-architecture/SPEC-mcp-json-artifact.md) conventions.
 - **Magic type inference for undeclared slots.** If the schema doesn't declare `foo`, then `{{foo}}` resolves exactly the way it does today — via `variables:` if present, else stays literal. No silent upgrades, no surprises.
 - **Renaming `input_schema:` to `input:`.** Pure churn. The current name is descriptive and every existing role uses it.
 
@@ -294,11 +294,11 @@ Suggested PR shape: one PR for 33A+33B+33E (the unification core), one for 33C (
 
 ## Files (consolidated)
 
-- [`src/config/role.rs`](../../src/config/role.rs) — schema-level defaults, `apply_variables` signature change, `variables:` folding
-- [`src/utils/variables.rs`](../../src/utils/variables.rs) — type-aware `{{name}}` resolver
-- [`src/config/mod.rs`](../../src/config/mod.rs) — `resolve_input_schema_defaults`
-- [`src/config/input.rs`](../../src/config/input.rs) — stdin slot routing
-- [`src/cli.rs`](../../src/cli.rs) — `-v` schema coercion, `@file.json` syntax
-- [`src/config/preflight.rs`](../../src/config/preflight.rs) — adjacent-stage shape check
-- [`src/pipe.rs`](../../src/pipe.rs) — prior-stage output → next-stage typed value map
-- `docs/features/typed-input.md` — new user-facing doc, sibling to [docs/features/repl-pi.md](../features/repl-pi.md)
+- [`src/config/role.rs`](../../../src/config/role.rs) — schema-level defaults, `apply_variables` signature change, `variables:` folding
+- [`src/utils/variables.rs`](../../../src/utils/variables.rs) — type-aware `{{name}}` resolver
+- [`src/config/mod.rs`](../../../src/config/mod.rs) — `resolve_input_schema_defaults`
+- [`src/config/input.rs`](../../../src/config/input.rs) — stdin slot routing
+- [`src/cli.rs`](../../../src/cli.rs) — `-v` schema coercion, `@file.json` syntax
+- [`src/config/preflight.rs`](../../../src/config/preflight.rs) — adjacent-stage shape check
+- [`src/pipe.rs`](../../../src/pipe.rs) — prior-stage output → next-stage typed value map
+- `docs/features/typed-input.md` — new user-facing doc, sibling to [docs/features/repl-pi.md](../../features/repl-pi.md)

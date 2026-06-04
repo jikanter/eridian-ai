@@ -4,7 +4,7 @@
 
 A pipeline chains roles. Each role declares an `input_schema` (what it accepts) and an `output_schema` (what it produces). Stage N's output becomes stage N+1's input, so the two schemas have to line up. `--check` proves they do — or shows you exactly where they don't.
 
-See also: [Phase 15 design](../roadmap/phase-15-overview.md), [architecture.md](../architecture/architecture.md), [Typed Input](./typed-input.md), [demo](../demos/phase-15-contract-testing.md).
+See also: [Phase 15 design](../roadmap/archive/phase-15-overview.md), [architecture.md](../architecture/architecture.md), [Typed Input](./typed-input.md), [demo](../demos/phase-15-contract-testing.md).
 
 ## What it checks
 
@@ -75,7 +75,7 @@ Two non-fatal verdicts:
 
 ## Limitations (by design)
 
-- **Sequential pipelines only.** Cross-stage containment runs on a purely sequential stage list. For `parallel:`/`switch:` DAGs the check validates structure and stage existence and prints a `non-sequential` note; adjacent-stage shape validation across branches is [Phase 33D](../roadmap/phase-33-overview.md).
+- **Sequential pipelines only.** Cross-stage containment runs on a purely sequential stage list. For `parallel:`/`switch:` DAGs the check validates structure and stage existence and prints a `non-sequential` note; adjacent-stage shape validation across branches is [Phase 33D](../roadmap/archive/phase-33-overview.md).
 - **Top-level shapes.** Containment compares top-level object properties, scalar `type`s, and arrays. It is intentionally conservative: it only reports a `FAIL` for a *provable* violation, returning `Unknown` for shapes it cannot reason about statically.
 - **Roles only.** Agent and remote stages can't be introspected statically; those boundaries are reported as `SKIP`.
 

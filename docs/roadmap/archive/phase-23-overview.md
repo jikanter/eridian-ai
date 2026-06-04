@@ -70,8 +70,8 @@ This enables downstream aggregation: `duckdb "SELECT role, SUM(cost_usd) FROM re
 
 ## Shipped (2026-05-30)
 
-Demo: [`docs/demos/phase-23-role-evaluation.md`](../demos/phase-23-role-evaluation.md).
-User docs: [`docs/features/role-evaluation.md`](../features/role-evaluation.md).
+Demo: [`docs/demos/phase-23-role-evaluation.md`](../../demos/phase-23-role-evaluation.md).
+User docs: [`docs/features/role-evaluation.md`](../../features/role-evaluation.md).
 
 **23A — `metrics:` field.** A role's frontmatter carries a `metrics:` list of
 `{name, shell}` pairs (serde `RoleMetric`, parsed in `Role::new`, accessor

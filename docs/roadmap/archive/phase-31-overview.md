@@ -10,11 +10,11 @@
 |---|---|---|
 | 31A | `ToolCall::eval` MCP-pool routing (shared helper with `eval_tool_calls`, unskips probe-a) | **Done** |
 | 31B | Multi-server pool init regression at N≥5 (diagnose runtime/IO race, unskips probe-b large-N) | **Done** |
-| 31C | `mcp_servers_file:` portable loader (per [`SPEC-mcp-json-artifact.md`](../architecture/integrated-architecture/SPEC-mcp-json-artifact.md)) | **Done** |
+| 31C | `mcp_servers_file:` portable loader (per [`SPEC-mcp-json-artifact.md`](../../architecture/integrated-architecture/SPEC-mcp-json-artifact.md)) | **Done** |
 | 31D | Unskip gated bats tests; refresh `docs/demos/demo-mcp-server.md` known-limitation sections | **Done** |
 | 31E | `aichat --validate-mcp-config [PATH]` CLI subcommand (per SPEC § Validation) | **Done** |
 
-**Cross-cutting docs:** [`bridge-retirement.md`](../architecture/integrated-architecture/bridge-retirement.md), [`SPEC-mcp-json-artifact.md`](../architecture/integrated-architecture/SPEC-mcp-json-artifact.md).
+**Cross-cutting docs:** [`bridge-retirement.md`](../../architecture/integrated-architecture/bridge-retirement.md), [`SPEC-mcp-json-artifact.md`](../../architecture/integrated-architecture/SPEC-mcp-json-artifact.md).
 
 **Validation gates** (must hold before retirement diff lands in `llm-functions`):
 

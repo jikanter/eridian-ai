@@ -1,7 +1,7 @@
 # Initial Phased Roadmap: Token-Efficient Tool Orchestration
 
 **Date:** 2026-03-10
-**Source analysis:** [tool-analysis.md](../analysis/2026-03-10-tool-analysis.md)
+**Source analysis:** [tool-analysis.md](../../analysis/2026-03-10-tool-analysis.md)
 **Reviewed by:** ML Integration Engineer, ML Architect, UX Engineer (parallel critique)
 
 ---

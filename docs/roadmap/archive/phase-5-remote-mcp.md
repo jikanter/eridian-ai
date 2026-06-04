@@ -21,7 +21,7 @@
 - On `discover_roles` call: returns compact one-line-per-tool index (~30 tokens/tool vs ~121 tokens/schema).
 - On first call to any tool: schema added to advertised set, `tools/list_changed` notification sent. Non-fatal if client ignores it.
 
-**Token budget comparison** (from [tool analysis](../analysis/2026-03-10-tool-analysis.md)):
+**Token budget comparison** (from [tool analysis](../../analysis/2026-03-10-tool-analysis.md)):
 
 | Method | Per-turn cost | 20-turn session (30 roles) |
 |---|---|---|

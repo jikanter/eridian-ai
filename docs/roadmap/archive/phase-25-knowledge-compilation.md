@@ -2,7 +2,7 @@
 
 **Status:** Done
 **Epic:** 9 — Knowledge Evolution (was: RAG Evolution)
-**Design:** [epic-9.md](../analysis/epic-9.md)
+**Design:** [epic-9.md](../../analysis/epic-9.md)
 
 ---
 
@@ -12,7 +12,7 @@
 > atomic Entity-Description Pairs (EDPs) tagged with deterministic provenance. Retrieval at
 > runtime is tag-filter + BM25 + graph walk — no embeddings in the primary path.
 > Research basis: FADER (EDPs + BM25), AEVS (extract-then-restore grounding), Karpathy's
-> compiled-KB pattern. Full design: [`docs/analysis/epic-9.md`](../analysis/epic-9.md).
+> compiled-KB pattern. Full design: [`docs/analysis/epic-9.md`](../../analysis/epic-9.md).
 
 | Item | Status | Notes |
 |---|---|---|

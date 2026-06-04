@@ -1,5 +1,13 @@
 # Phase 37: Transparent Response Caching : Overview - Epic 2
 **Note:** Much of this has been superseded by `docs/analysis/caching/SPEC-003-cache-substrate.md`. Make sure to review that document before implementing this phase.
+
+> **Boundary — in-aichat caching vs astrophage (Epic 16).** Phases 37–41 are the **structure-aware,
+> in-process** cache: keyed on `(role, model, input)` plus provider `cache_control` (L3), living
+> inside aichat. The wire-level, **runtime-agnostic** cache keyed on the canonicalized request body
+> is **astrophage** (Phases 45–47), reached over `base_url`. The two never share a key — see
+> [`SPEC-astrophage §0/§3`](../architecture/integrated-architecture/SPEC-astrophage.md). Phase 38A's
+> `CacheBackend` trait is what lets an astrophage `Remote` backend present the same interface (45C).
+
 **Status (2026-05-27):** **Planned — design draft.** No items below are implemented. Closes the gap inventoried in [`docs/analysis/caching/EVAL-0002-full-caching.md`](../analysis/caching/EVAL-0002-full-caching.md) — aichat ships a partial L1 (`src/cache.rs`'s `StageCache`, scoped to pipeline stages and per-file knowledge extraction) and no L2/L3/L4. This phase wires response caching across the ordinary request path, the OpenAI-compatible server (which is the pi REPL substrate), and the trace, in the C→B→A→D ordering EVAL-0002 prescribes. Aligns with the three-pattern spec (exact / semantic / proxy) and adds the layer (L3 provider prompt caching) the spec omitted but the project's cost-conscious constraint mandates.
 
 | Item | Description | Status |
@@ -347,8 +355,8 @@ Per project guideline ("*Always* add integration tests via bats in addition to u
 - [`src/cache.rs`](../../src/cache.rs) — existing `StageCache` primitive being broadened
 - [`src/repl/pi.rs`](../../src/repl/pi.rs) — pi launcher; explains why 37D is the pi integration
 - [`docs/features/repl-pi.md`](../features/repl-pi.md) — pi REPL surface; user-facing impact of 37D
-- [Phase 22 overview](phase-22-overview.md) — sibling phase that consumes 37's substrate via 22D
-- [Phase 36 overview](phase-36-overview.md) — sibling pipeline-isolation phase; shares the config-clone pattern documented at [`src/config/resolver.rs:170-185`](../../src/config/resolver.rs)
+- [Phase 22 overview](archive/phase-22-overview.md) — sibling phase that consumes 37's substrate via 22D
+- [Phase 36 overview](archive/phase-36-overview.md) — sibling pipeline-isolation phase; shares the config-clone pattern documented at [`src/config/resolver.rs:170-185`](../../src/config/resolver.rs)
 - Anthropic Prompt Caching: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
 - OpenAI Prompt Caching: https://platform.openai.com/docs/guides/prompt-caching
 - Gemini Context Caching: https://ai.google.dev/gemini-api/docs/caching

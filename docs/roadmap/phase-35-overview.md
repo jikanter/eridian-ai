@@ -1,6 +1,6 @@
 # Phase 35: Knowledge-MCP Protocol : Overview - Epic 14
 
-**Status (2026-05-25):** **Planned — design draft.** No items below are implemented. This phase ships an `aichat knowledge-mcp serve <kb>` subcommand that translates Anthropic's `memory_20250818` operation set onto the existing typed `KnowledgeStore` API. Implements Theme 1 of [`260524_anthropic_memory_divergence.md`](https://github.com/jikanter/aichat-private/) (Posture C "compose"). Sibling to [Phase 34](phase-34-overview.md) (Auto-Memory) under Epic 14.
+**Status (2026-05-25):** **Planned — design draft.** No items below are implemented. This phase ships an `aichat knowledge-mcp serve <kb>` subcommand that translates Anthropic's `memory_20250818` operation set onto the existing typed `KnowledgeStore` API. Implements Theme 1 of [`260524_anthropic_memory_divergence.md`](https://github.com/jikanter/aichat-private/) (Posture C "compose"). Sibling to [Phase 34](archive/phase-34-overview.md) (Auto-Memory) under Epic 14.
 
 | Item | Description | Status |
 |---|---|---|
@@ -175,6 +175,6 @@ Per project guideline, the implementation PR(s) must add:
 
 - Theme 1 (`[dom-ai-00020]`), Posture C (`[prj-ai-00025]`, `[prj-ai-00026]`) of the divergence playbook
 - [Anthropic memory-tool docs](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool) — protocol spec for `memory_20250818`
-- [Phase 34 overview](phase-34-overview.md) — sibling phase under Epic 14 (Auto-Memory, the freeform side of the dual-store)
-- [Phase 25 knowledge compilation](phase-25-knowledge-compilation.md), [Phase 27 knowledge evolution](phase-27-knowledge-evolution.md) — the typed-store substrate this phase exposes
+- [Phase 34 overview](archive/phase-34-overview.md) — sibling phase under Epic 14 (Auto-Memory, the freeform side of the dual-store)
+- [Phase 25 knowledge compilation](archive/phase-25-knowledge-compilation.md), [Phase 27 knowledge evolution](archive/phase-27-knowledge-evolution.md) — the typed-store substrate this phase exposes
 - [`src/mcp.rs:31`](../../src/mcp.rs) — `AichatMcpServer`, the existing MCP server (disambiguated above)

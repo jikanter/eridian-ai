@@ -2,7 +2,7 @@
 
 **Status:** 34A–34D shipped — read-on-startup, lazy topic-load, and the
 session-exit Reflector/Curator write loop. See
-[`docs/roadmap/phase-34-overview.md`](../roadmap/phase-34-overview.md).
+[`docs/roadmap/archive/phase-34-overview.md`](../roadmap/archive/phase-34-overview.md).
 
 Auto-memory is aichat's freeform, read-on-startup notes layer. It is the
 session-level counterpart to the typed [`knowledge/`](knowledge.md) store:

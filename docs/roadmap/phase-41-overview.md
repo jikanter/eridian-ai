@@ -1,6 +1,14 @@
 # Phase 41: Cache Observability & Admin Parity : Overview - Epic 2
 **Note:** Much of this has been superseded by `docs/analysis/caching/SPEC-003-cache-substrate.md`. Make sure to review that document before implementing this phase.
 
+> **Boundary — in-aichat caching vs astrophage (Epic 16).** Phases 37–41 are the **structure-aware,
+> in-process** cache: keyed on `(role, model, input)` plus provider `cache_control` (L3), living
+> inside aichat. The wire-level, **runtime-agnostic** cache keyed on the canonicalized request body
+> is **astrophage** (Phases 45–47), reached over `base_url`. The two never share a key — see
+> [`SPEC-astrophage §0/§3`](../architecture/integrated-architecture/SPEC-astrophage.md). Phase 38A's
+> `CacheBackend` trait is what lets an astrophage `Remote` backend present the same interface (45C).
+
+
 
 **Status (2026-05-29):** **Planned — design draft.** No items below are implemented. This
 phase ports LiteLLM's cache **admin and observability surface** — `/cache/ping`,

@@ -305,5 +305,5 @@ A representative happy-path test:
 - Theme 1 (`[dom-ai-00020]`), Theme 8 (`[dom-ai-00023]`, "MCP exposure of aichat-unique surfaces"), Posture C of the divergence playbook
 - [Anthropic memory-tool protocol](https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool) — the spec this phase targets
 - [Phase 35 overview](phase-35-overview.md) — status table and sub-item summary
-- [Phase 34 overview](phase-34-overview.md) — freeform side of the dual-store
-- [Phase 27 knowledge evolution](phase-27-knowledge-evolution.md) — the existing Reflect/Curate surface that complements this MCP server
+- [Phase 34 overview](archive/phase-34-overview.md) — freeform side of the dual-store
+- [Phase 27 knowledge evolution](archive/phase-27-knowledge-evolution.md) — the existing Reflect/Curate surface that complements this MCP server

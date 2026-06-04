@@ -2,7 +2,7 @@
 
 **Status:** 11A/11B Done; 11C Superseded; 11D Done (2026-05-28)
 **Epic:** 2 — Runtime Intelligence
-**Design:** [epic-2.md](../analysis/epic-2.md)
+**Design:** [epic-2.md](../../analysis/epic-2.md)
 
 ---
 

@@ -98,5 +98,5 @@ both roles it runs.
 
 ## See also
 
-- Roadmap: [`docs/roadmap/phase-23-overview.md`](../roadmap/phase-23-overview.md)
+- Roadmap: [`docs/roadmap/archive/phase-23-overview.md`](../roadmap/archive/phase-23-overview.md)
 - Offline demo: [`docs/demos/phase-23-role-evaluation.md`](../demos/phase-23-role-evaluation.md)

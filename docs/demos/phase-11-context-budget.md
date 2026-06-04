@@ -8,7 +8,7 @@ Phase 11 ships two pieces together in `src/context_budget.rs`:
 - **11A (ContextBudget)** — tracks `max_input_tokens - output_reserve - fixed_allocations`, saturating so nothing underflows. Consumed by 11B and, later, by Phase 26A.
 - **11B (BM25 file ranking)** — when `-f` loads multiple files alongside a query, rank files by BM25 relevance, then greedily pack highest-ranked files into the remaining budget. Skipped files are logged to stderr. Cuts at file boundaries — no mid-file slicing.
 
-**11C (budget-aware RAG) was superseded.** Phase 25 deprecates `src/rag/`; Phase 26A consumes this budget directly. See `docs/roadmap/phase-11-context-budget.md`.
+**11C (budget-aware RAG) was superseded.** Phase 25 deprecates `src/rag/`; Phase 26A consumes this budget directly. See `docs/roadmap/archive/phase-11-context-budget.md`.
 
 ## Module API
 

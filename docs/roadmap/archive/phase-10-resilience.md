@@ -2,7 +2,7 @@
 
 **Status:** Done
 **Epic:** 2 — Runtime Intelligence
-**Design:** [epic-2.md](../analysis/epic-2.md)
+**Design:** [epic-2.md](../../analysis/epic-2.md)
 
 ---
 

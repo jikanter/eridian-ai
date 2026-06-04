@@ -4,7 +4,7 @@ A role's `input_schema:` is the single declaration of what the role takes. CLI a
 
 > **Status (2026-05-30):** **Shipped — Phase 33 complete (33A–E).** Schema defaults fill `{{name}}` slots (literal or `{ shell: … }`); `-v depth=5` is coerced to the integer `5` (bad values error, naming the property and type; `@file.json` loads from disk); arrays/objects render as compact JSON (pretty opt-in); `variables:` folds into the schema slot space (one warning if both declared); a `source: stdin` slot receives the free-text message (its raw message is then not validated against the object schema); and adjacent pipeline stages that both declare schemas are shape-checked at preflight (strict fail with a teaching diff, soft-warn when a side is undeclared). One nuance remains future work: a `required:` slot supplied via `-v`/default is not yet hard-enforced at resolve time (the schema's message validation covers the non-stdin case), and explicit cross-stage field mappings / a `pipeline_strict:` opt-in are out of scope. The reserved namespaces (`{{__sys__}}`, `{{$AICHAT_*}}`, `{{.field}}`) work identically everywhere.
 
-See also: [Phase 33 design](../roadmap/phase-33-overview.md), [architecture.md](../architecture/architecture.md), [Macros](./macros.md), [Knowledge](./knowledge.md).
+See also: [Phase 33 design](../roadmap/archive/phase-33-overview.md), [architecture.md](../architecture/architecture.md), [Macros](./macros.md), [Knowledge](./knowledge.md).
 
 ## At a glance
 
@@ -168,7 +168,7 @@ Inspect any images in the input.
 
 ## Pipeline composition
 
-When a role appears as a stage in another role's `pipeline:`, the prior stage's output flows into this stage's typed value map. If both stages declare schemas, the shape is checked at preflight (see [Phase 15B](../roadmap/phase-15-overview.md) for the containment-check logic and [Phase 33D](../roadmap/phase-33-overview.md) for the adjacent-stage extension): every required property of the downstream `input_schema:` must be satisfied by something in the upstream `output_schema:`.
+When a role appears as a stage in another role's `pipeline:`, the prior stage's output flows into this stage's typed value map. If both stages declare schemas, the shape is checked at preflight (see [Phase 15B](../roadmap/archive/phase-15-overview.md) for the containment-check logic and [Phase 33D](../roadmap/archive/phase-33-overview.md) for the adjacent-stage extension): every required property of the downstream `input_schema:` must be satisfied by something in the upstream `output_schema:`.
 
 If either side doesn't declare a schema, the pipeline emits a warning and falls back to today's behavior of treating the prior stage's text output as the next stage's message body.
 
@@ -200,7 +200,7 @@ input_schema:
 
 There is no removal date for `variables:`. If a role declares both `variables:` and `input_schema:`, aichat emits a single warning per role load and proceeds — the schema takes precedence, and any `variables:` entries with names not already in the schema are merged in as string-typed properties.
 
-If you want to migrate manually, [`--fork-role`](../roadmap/phase-13-overview.md) ([Phase 13A](../roadmap/phase-13-overview.md)) emits the modern form. A `variables:` block stays string-only forever; the upgrade is purely a question of whether you want types, validation, and pipeline shape-checking on those slots.
+If you want to migrate manually, [`--fork-role`](../roadmap/archive/phase-13-overview.md) ([Phase 13A](../roadmap/archive/phase-13-overview.md)) emits the modern form. A `variables:` block stays string-only forever; the upgrade is purely a question of whether you want types, validation, and pipeline shape-checking on those slots.
 
 ## Why types matter here
 
