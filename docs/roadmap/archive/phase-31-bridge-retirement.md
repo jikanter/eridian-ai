@@ -1,7 +1,7 @@
 # Phase 31: Bridge Retirement & MCP Pool Hardening
 
 **Epic:** 11 — Bridge Retirement
-**Cross-cutting:** [`bridge-retirement.md`](../architecture/integrated-architecture/bridge-retirement.md), [`SPEC-mcp-json-artifact.md`](../architecture/integrated-architecture/SPEC-mcp-json-artifact.md)
+**Cross-cutting:** [`bridge-retirement.md`](../../architecture/integrated-architecture/bridge-retirement.md), [`SPEC-mcp-json-artifact.md`](../../architecture/integrated-architecture/SPEC-mcp-json-artifact.md)
 **Validation:** `tests/integration/mcp-server.sh`, `docs/demos/demo-mcp-server.md`
 
 ---

@@ -1,25 +1,25 @@
 # Phase 36: Pipeline Stage Config Isolation : Overview - Epic 7
 
-**Status (2026-06-01):** **Done (36A–D).** Shipped. This phase closes the incidental divergence identified in Theme 9 of [`260524_anthropic_memory_divergence.md`](https://github.com/jikanter/aichat-private/): pipeline stages share the global `Config` (tools, env, working directory) where Anthropic's sub-agent pattern isolates each. Extends the model-state-restore pattern already in [`src/pipe.rs`](../../src/pipe.rs) (`run_stage` → `run_stage_inner`) to also clone-and-restore *config* state across stages, mirroring how [`src/config/resolver.rs`](../../src/config/resolver.rs) describes macros running in isolated config clones. User docs: [`docs/features/pipeline-isolation.md`](../features/pipeline-isolation.md).
+**Status (2026-06-01):** **Done (36A–D).** Shipped. This phase closes the incidental divergence identified in Theme 9 of [`260524_anthropic_memory_divergence.md`](https://github.com/jikanter/aichat-private/): pipeline stages share the global `Config` (tools, env, working directory) where Anthropic's sub-agent pattern isolates each. Extends the model-state-restore pattern already in [`src/pipe.rs`](../../../src/pipe.rs) (`run_stage` → `run_stage_inner`) to also clone-and-restore *config* state across stages, mirroring how [`src/config/resolver.rs`](../../../src/config/resolver.rs) describes macros running in isolated config clones. User docs: [`docs/features/pipeline-isolation.md`](../../features/pipeline-isolation.md).
 
 **Implementation note (delta from design draft):** override fields split by scope rather than all landing on the cloned `Config`. The pipeline path reads tool selection and sampling from the *stage's resolved role*, not the global config, so `use_tools`/`temperature`/`top_p`/`max_output_tokens` are applied via `PartialConfig::apply_to_role(&mut Role)` in `run_stage_inner`; only `working_directory`/`mcp_servers` go through `Config::apply_partial` on the cloned config in `run_stage`. `mcp_servers` is disable-only (`[]`) this release — non-empty re-selection is rejected at preflight. The escalation guard runs at execution preflight *and* under `--check` (the offline-deterministic surface; `--dry-run` short-circuits before the execution preflight, so the guard was added to `check_pipeline` too).
 
 | Item | Description | Status |
 |---|---|---|
-| 36A | Add `config_override: Option<PartialConfig>` field to `PipelineStage` ([`src/pipe.rs`](../../src/pipe.rs)) and to the YAML stage declaration in `RolePipelineStage` ([`src/config/role.rs`](../../src/config/role.rs)); `PartialConfig` + `working_directory` on `Config` ([`src/config/mod.rs`](../../src/config/mod.rs)). | **Done** |
+| 36A | Add `config_override: Option<PartialConfig>` field to `PipelineStage` ([`src/pipe.rs`](../../../src/pipe.rs)) and to the YAML stage declaration in `RolePipelineStage` ([`src/config/role.rs`](../../../src/config/role.rs)); `PartialConfig` + `working_directory` on `Config` ([`src/config/mod.rs`](../../../src/config/mod.rs)). | **Done** |
 | 36B | Clone-and-merge at the stage boundary — config-scoped fields (`working_directory`, `mcp_servers`) on the cloned `Config` via `Config::apply_partial`; role-scoped fields (`use_tools`, sampling) on the stage's resolved role via `PartialConfig::apply_to_role`; per-command `cmd.current_dir` at spawn; cache-key fold. | **Done** |
-| 36C | Preflight escalation guard — `use_tools` subset, `mcp_servers` disable-only, `working_directory` descendant. Runs at execution preflight and under `--check`. Extends [`src/config/preflight.rs`](../../src/config/preflight.rs). | **Done** |
-| 36D | Telemetry — `config_overrides_applied: Vec<String>` on [`StageTrace`](../../src/pipe.rs), surfaced in `-o json` per stage. | **Done** |
+| 36C | Preflight escalation guard — `use_tools` subset, `mcp_servers` disable-only, `working_directory` descendant. Runs at execution preflight and under `--check`. Extends [`src/config/preflight.rs`](../../../src/config/preflight.rs). | **Done** |
+| 36D | Telemetry — `config_overrides_applied: Vec<String>` on [`StageTrace`](../../../src/pipe.rs), surfaced in `-o json` per stage. | **Done** |
 
 ## Background
 
 The convergence-doc claim that aichat's Pipeline-as-Role is "isolating each stage's config" overstates what `src/pipe.rs` does today. A closer pass on the actual code (per divergence Theme 9, `[ts-ai-00014]`):
 
-- `PipelineStage` ([`src/pipe.rs:18`](../../src/pipe.rs)) carries `role_name` and `model_id` per stage.
-- `run_stage` ([`src/pipe.rs:164`](../../src/pipe.rs)) restores `model` after each stage runs (the existing model-state restore around `run_stage_inner` at line 210) — so the *LLM context* is isolated stage-to-stage.
+- `PipelineStage` ([`src/pipe.rs:18`](../../../src/pipe.rs)) carries `role_name` and `model_id` per stage.
+- `run_stage` ([`src/pipe.rs:164`](../../../src/pipe.rs)) restores `model` after each stage runs (the existing model-state restore around `run_stage_inner` at line 210) — so the *LLM context* is isolated stage-to-stage.
 - The global `Config` is *not* cloned between stages. Tool permissions, environment variables, working directory, and MCP-pool state all share one `GlobalConfig` instance across the whole pipeline.
 
-[`src/config/resolver.rs:170-185`](../../src/config/resolver.rs) explicitly documents the contrast: "Macros run REPL commands in an isolated config clone — they have no role shape and cannot participate in stage chaining." The macro pattern is the right model; pipeline stages need to adopt it.
+[`src/config/resolver.rs:170-185`](../../../src/config/resolver.rs) explicitly documents the contrast: "Macros run REPL commands in an isolated config clone — they have no role shape and cannot participate in stage chaining." The macro pattern is the right model; pipeline stages need to adopt it.
 
 This matters because Anthropic's sub-agent isolation is *both* — separate context window *and* separate config, including separate tool permissions. A research sub-agent and an implementation sub-agent should not be able to read each other's MCP credentials or modify each other's working directory. aichat's pipeline cannot enforce this today.
 
@@ -78,11 +78,11 @@ pub struct PartialConfig {
 }
 ```
 
-**Files:** [`src/pipe.rs`](../../src/pipe.rs) (add `config_override` to `PipelineStage` and `PipelineStageDef`), [`src/config/role.rs`](../../src/config/role.rs) (parse `config_override:` from YAML), [`src/config/mod.rs`](../../src/config/mod.rs) (define `PartialConfig`).
+**Files:** [`src/pipe.rs`](../../../src/pipe.rs) (add `config_override` to `PipelineStage` and `PipelineStageDef`), [`src/config/role.rs`](../../../src/config/role.rs) (parse `config_override:` from YAML), [`src/config/mod.rs`](../../../src/config/mod.rs) (define `PartialConfig`).
 
 ## 36B Design — Clone-and-merge at stage boundary
 
-The existing `run_stage` at [`src/pipe.rs:164`](../../src/pipe.rs) already restores the `model` field after each `run_stage_inner` call (the restore happens between lines 210 and 222 — `run_stage_inner` is called with a model override; the parent loop restores the original model afterward). 36B extends this with a config clone:
+The existing `run_stage` at [`src/pipe.rs:164`](../../../src/pipe.rs) already restores the `model` field after each `run_stage_inner` call (the restore happens between lines 210 and 222 — `run_stage_inner` is called with a model override; the parent loop restores the original model afterward). 36B extends this with a config clone:
 
 ```rust
 // Sketch — actual change lives in src/pipe.rs::run_stage
@@ -117,7 +117,7 @@ async fn run_stage(
 
 The model-state restore at line 220-222 stays in place for the no-override path (backward compatibility for stages that don't declare `config_override:`). For overridden stages, the entire `stage_config` is dropped after `run_stage_inner` returns — there's nothing to restore because the parent `config` was never mutated.
 
-**Files:** [`src/pipe.rs`](../../src/pipe.rs) (`run_stage`), [`src/config/mod.rs`](../../src/config/mod.rs) (new `Config::apply_partial(&self, PartialConfig)` method).
+**Files:** [`src/pipe.rs`](../../../src/pipe.rs) (`run_stage`), [`src/config/mod.rs`](../../../src/config/mod.rs) (new `Config::apply_partial(&self, PartialConfig)` method).
 
 ## 36C Design — Permission escalation guard
 
@@ -134,7 +134,7 @@ error: pipeline stage 2 ('research-agent') declares config_override with
              it from the stage override.
 ```
 
-The check runs in [`src/config/preflight.rs`](../../src/config/preflight.rs) alongside the existing pipeline-stage validation. It applies to:
+The check runs in [`src/config/preflight.rs`](../../../src/config/preflight.rs) alongside the existing pipeline-stage validation. It applies to:
 
 | Override field | Escalation rule |
 |---|---|
@@ -145,11 +145,11 @@ The check runs in [`src/config/preflight.rs`](../../src/config/preflight.rs) alo
 
 The `working_directory` rule is the trickiest. The implementation canonicalises both paths (parent and override) and asserts the override is a prefix or descendant. Symlink resolution is deliberately *out of scope* for this phase — a malicious role author could symlink their way around the check, but that's the existing trust model (roles are trusted code; we are protecting against accidents, not adversaries).
 
-**Files:** [`src/config/preflight.rs`](../../src/config/preflight.rs) (extend `validate_pipeline_stages`), [`src/config/mod.rs`](../../src/config/mod.rs) (helper for `is_path_descendant`).
+**Files:** [`src/config/preflight.rs`](../../../src/config/preflight.rs) (extend `validate_pipeline_stages`), [`src/config/mod.rs`](../../../src/config/mod.rs) (helper for `is_path_descendant`).
 
 ## 36D Design — Telemetry in `StageTrace`
 
-The existing `StageTrace` at [`src/pipe.rs:30`](../../src/pipe.rs) carries per-stage execution metadata. 36D adds:
+The existing `StageTrace` at [`src/pipe.rs:30`](../../../src/pipe.rs) carries per-stage execution metadata. 36D adds:
 
 ```rust
 pub struct StageTrace {
@@ -162,7 +162,7 @@ The field is populated by `run_stage` after the clone-and-merge in 36B, listing 
 
 This aligns with Theme 6 (`[dom-ai-00022]`) of the divergence playbook: "audit-by-default not yet enforced at session.compress / strip_thinking" — and now, "not yet enforced at pipeline stage config overrides." Closing this telemetry gap brings pipeline isolation in line with aichat's stated posture.
 
-**Files:** [`src/pipe.rs`](../../src/pipe.rs) (extend `StageTrace`, populate in `run_stage`), [`src/serve.rs`](../../src/serve.rs) (no changes — `StageTrace` serialization is already structural).
+**Files:** [`src/pipe.rs`](../../../src/pipe.rs) (extend `StageTrace`, populate in `run_stage`), [`src/serve.rs`](../../../src/serve.rs) (no changes — `StageTrace` serialization is already structural).
 
 ## Open questions
 
@@ -174,9 +174,9 @@ This aligns with Theme 6 (`[dom-ai-00022]`) of the divergence playbook: "audit-b
 
 ### 2. Composability with macro isolation
 
-**Question:** A macro stage already runs in an isolated config clone ([`src/config/resolver.rs:170-185`](../../src/config/resolver.rs)). Does this phase change macro behaviour?
+**Question:** A macro stage already runs in an isolated config clone ([`src/config/resolver.rs:170-185`](../../../src/config/resolver.rs)). Does this phase change macro behaviour?
 
-**Recommendation: no. Macro isolation is orthogonal.** Macros are not LLM stages — they are REPL-command sequences. The `pipeline_stage_admissible` check at [`src/config/resolver.rs:178-185`](../../src/config/resolver.rs) explicitly rejects macros from pipelines. This phase touches only role-and-agent stages, which were *not* isolated before; macros were already isolated and stay so.
+**Recommendation: no. Macro isolation is orthogonal.** Macros are not LLM stages — they are REPL-command sequences. The `pipeline_stage_admissible` check at [`src/config/resolver.rs:178-185`](../../../src/config/resolver.rs) explicitly rejects macros from pipelines. This phase touches only role-and-agent stages, which were *not* isolated before; macros were already isolated and stay so.
 
 ### 3. `PartialConfig` field set
 
@@ -186,7 +186,7 @@ This aligns with Theme 6 (`[dom-ai-00022]`) of the divergence playbook: "audit-b
 
 ### 4. Deferred — `dependencies.md` / `success-metrics.md` updates
 
-This phase does **not** update [`docs/roadmap/dependencies.md`](dependencies.md) or [`docs/roadmap/success-metrics.md`](success-metrics.md). Tracked as a follow-up doc PR with Phases 34 and 35.
+This phase does **not** update [`docs/roadmap/dependencies.md`](../dependencies.md) or [`docs/roadmap/success-metrics.md`](../success-metrics.md). Tracked as a follow-up doc PR with Phases 34 and 35.
 
 ## Testing
 
@@ -195,7 +195,7 @@ Per project guideline ("*Always* add integration tests via bats in addition to u
 - **`tests/regression/pipeline-isolation.sh`** — bats regression test covering:
   - 36A: a role with valid `config_override:` parses without warning; `aichat --info -r <role> -o json` shows the stage's overrides in the pipeline section.
   - 36B: a 2-stage pipeline where stage 1 mutates a config field (e.g. via a tool that changes working dir); stage 2 sees the *original* parent config, not stage 1's mutation. (Test via an instrumented role that echoes the current working directory.)
-  - 36C/escalation-rejection: a stage declaring `use_tools: [run_command]` when the parent role's `use_tools: [read_file]` fails preflight with the documented error message and a non-zero exit code (per [`src/utils/exit_code.rs`](../../src/utils/exit_code.rs)).
+  - 36C/escalation-rejection: a stage declaring `use_tools: [run_command]` when the parent role's `use_tools: [read_file]` fails preflight with the documented error message and a non-zero exit code (per [`src/utils/exit_code.rs`](../../../src/utils/exit_code.rs)).
   - 36C/narrowing-allowed: a stage declaring `use_tools: [read_file]` when the parent role's `use_tools: [read_file, write_file]` passes preflight.
   - 36C/working-dir-escape: a stage declaring `working_directory: ../../etc` fails preflight.
   - 36D: `aichat -r <pipeline-role> -o json` emits a `stages[].config_overrides_applied` field in the JSON output for each stage that declared overrides, and the field is empty (or absent) for stages without overrides.
@@ -220,15 +220,15 @@ Per project guideline ("*Always* add integration tests via bats in addition to u
 
 ## Files (consolidated)
 
-- [`src/pipe.rs`](../../src/pipe.rs) — `PipelineStage` field, `StageTrace` field, `run_stage` clone-and-merge logic
-- [`src/config/role.rs`](../../src/config/role.rs) — YAML parsing for `config_override:`
-- [`src/config/mod.rs`](../../src/config/mod.rs) — `PartialConfig` type, `Config::apply_partial` method, `is_path_descendant` helper
-- [`src/config/preflight.rs`](../../src/config/preflight.rs) — escalation guard in `validate_pipeline_stages`
+- [`src/pipe.rs`](../../../src/pipe.rs) — `PipelineStage` field, `StageTrace` field, `run_stage` clone-and-merge logic
+- [`src/config/role.rs`](../../../src/config/role.rs) — YAML parsing for `config_override:`
+- [`src/config/mod.rs`](../../../src/config/mod.rs) — `PartialConfig` type, `Config::apply_partial` method, `is_path_descendant` helper
+- [`src/config/preflight.rs`](../../../src/config/preflight.rs) — escalation guard in `validate_pipeline_stages`
 
 ## References
 
 - Theme 9 (`[ts-ai-00014]`) of the divergence playbook (analysis source for this phase)
-- [`src/pipe.rs:18-222`](../../src/pipe.rs) — current `PipelineStage` definition and `run_stage` model-restore pattern
-- [`src/config/resolver.rs:170-185`](../../src/config/resolver.rs) — macro-isolation pattern this phase adopts for pipeline stages
+- [`src/pipe.rs:18-222`](../../../src/pipe.rs) — current `PipelineStage` definition and `run_stage` model-restore pattern
+- [`src/config/resolver.rs:170-185`](../../../src/config/resolver.rs) — macro-isolation pattern this phase adopts for pipeline stages
 - [Phase 21 overview](phase-21-overview.md) — DAG primitives this phase extends within Epic 7
 - [Phase 22 overview](phase-22-overview.md) — sibling phase under Epic 7 (DAG observability); shares the `StageTrace` substrate touched in 36D

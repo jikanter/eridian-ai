@@ -12,7 +12,7 @@
 | 4D. Fix `JsonSchema` lossiness | Done | — | `FunctionDeclaration.parameters` changed from `JsonSchema` (8 keywords) to `serde_json::Value` (full fidelity). MCP tools now preserve `oneOf`, `allOf`, `$ref`, `additionalProperties`, etc. |
 | 4E. Pipeline stage tracebacks | Done | — | Pipeline failures include stage number, total, role name, model ID via `AichatError::PipelineStage` |
 
-Phase 4 enables cheap error recovery for agents consuming aichat. The [tool analysis](../analysis/2026-03-10-tool-analysis.md) argues that aichat should be "the cheapest tool an agent can reach for" — cheap invocation now pairs with cheap error recovery via structured JSON error payloads and semantic exit codes.
+Phase 4 enables cheap error recovery for agents consuming aichat. The [tool analysis](../../analysis/2026-03-10-tool-analysis.md) argues that aichat should be "the cheapest tool an agent can reach for" — cheap invocation now pairs with cheap error recovery via structured JSON error payloads and semantic exit codes.
 
 **Exit code reference** (from `src/utils/exit_code.rs`):
 

@@ -1,6 +1,6 @@
 # Phase 15: Contract Testing : Overview - Epic 4
 
-**Status (2026-05-29):** **Done.** Stage existence + capability checks (15A) run implicitly before every pipeline and are now also exposed standalone; cross-stage JSON Schema containment (15B) is implemented in `src/config/preflight.rs::schema_containment()`; and the `--check` flag (15C) validates a role or pipeline definition without executing it. User docs: [`docs/features/contract-testing.md`](../features/contract-testing.md). Demo: [`docs/demos/phase-15-contract-testing.md`](../demos/phase-15-contract-testing.md).
+**Status (2026-05-29):** **Done.** Stage existence + capability checks (15A) run implicitly before every pipeline and are now also exposed standalone; cross-stage JSON Schema containment (15B) is implemented in `src/config/preflight.rs::schema_containment()`; and the `--check` flag (15C) validates a role or pipeline definition without executing it. User docs: [`docs/features/contract-testing.md`](../../features/contract-testing.md). Demo: [`docs/demos/phase-15-contract-testing.md`](../../demos/phase-15-contract-testing.md).
 
 | Item | Description | Status |
 |---|---|---|
@@ -29,7 +29,7 @@ FAIL: stage 1 (extract) → stage 2 (review)
 check failed: 1 incompatible boundary      # exit 3
 ```
 
-JSON Schema containment check: a document conforming to stage N's `output_schema` must also pass stage N+1's `input_schema` validation (output schema ⊆ input schema). Deterministic — no LLM needed, zero runtime cost — and prevents an entire class of pipeline failures before any token is spent. See [`docs/features/contract-testing.md`](../features/contract-testing.md) for the full report semantics (Missing / Type mismatch / Forbidden / Extra, and the WARN / Unknown / SKIP non-failure verdicts).
+JSON Schema containment check: a document conforming to stage N's `output_schema` must also pass stage N+1's `input_schema` validation (output schema ⊆ input schema). Deterministic — no LLM needed, zero runtime cost — and prevents an entire class of pipeline failures before any token is spent. See [`docs/features/contract-testing.md`](../../features/contract-testing.md) for the full report semantics (Missing / Type mismatch / Forbidden / Extra, and the WARN / Unknown / SKIP non-failure verdicts).
 
 **Files:**
 - `src/config/preflight.rs` — `schema_containment()` (pure containment core, unit-tested) + `validate_pipeline_schema_containment()` (resolves adjacent stage roles).

@@ -2,7 +2,7 @@
 
 **Status:** Done
 **Epic:** 9 — Knowledge Evolution (was: RAG Evolution)
-**Design:** [epic-9.md](../analysis/epic-9.md)
+**Design:** [epic-9.md](../../analysis/epic-9.md)
 
 ---
 
@@ -12,7 +12,7 @@
 > append/patch-only mutation (per ACE's anti-collapse prescription), wires trace integration,
 > and surfaces per-fact attribution in LLM output.
 > Research basis: ACE paper (arxiv 2510.04618), Attributed QA atomic decomposition (arxiv 2410.16708).
-> Full design: [`docs/analysis/epic-9.md`](../analysis/epic-9.md).
+> Full design: [`docs/analysis/epic-9.md`](../../analysis/epic-9.md).
 
 | Item | Status | Notes |
 |---|---|---|

@@ -2,7 +2,7 @@
 
 *Merges existing Phase 10 resilience with Theme 3 (cost-aware routing).*
 
-**Status (2026-05-11):** All four resilience items shipped (10A–10D). Cost-aware model routing (`model_policy:`) appeared in earlier drafts of this overview as "10D" but was **never scoped into the shipped Phase 10**; the implementing work reused the 10D letter for pipeline model fallback. See [`docs/analysis/epic-2.md`](../analysis/epic-2.md) note at top: *"Cost-aware model routing was discussed as a possible Phase 10 expansion but was not scoped into the shipped Phase 10; it remains future work."* The shipped letter mapping is authoritative in [`phase-10-resilience.md`](./phase-10-resilience.md).
+**Status (2026-05-11):** All four resilience items shipped (10A–10D). Cost-aware model routing (`model_policy:`) appeared in earlier drafts of this overview as "10D" but was **never scoped into the shipped Phase 10**; the implementing work reused the 10D letter for pipeline model fallback. See [`docs/analysis/epic-2.md`](../../analysis/epic-2.md) note at top: *"Cost-aware model routing was discussed as a possible Phase 10 expansion but was not scoped into the shipped Phase 10; it remains future work."* The shipped letter mapping is authoritative in [`phase-10-resilience.md`](./phase-10-resilience.md).
 
 The decision to drop `model_policy:` is recorded in [`phase-11-context-budget.md`](./phase-11-context-budget.md) "What NOT to build": automatic model selection requires per-task quality benchmarks the project lacks, so manual `fallback_models:` chains were judged more reliable.
 

@@ -2,21 +2,21 @@
 
 **Status:** Done (2026-05-29)
 **Epic:** 5 — Server Pipeline Engine
-**Design:** [epic-5.md](../analysis/epic-5.md)
+**Design:** [epic-5.md](../../analysis/epic-5.md)
 
 > **[DONE 2026-05-29]** 16A–E and 16I landed in `src/serve.rs` (config keys
 > in `src/config/mod.rs`), completing the hardening surface. 16F/G/H shipped
 > earlier alongside Phase 20 federation. Tests: unit in `src/serve.rs` +
-> [`tests/integration/server-hardening.sh`](../../tests/integration/server-hardening.sh).
+> [`tests/integration/server-hardening.sh`](../../../tests/integration/server-hardening.sh).
 > 16J/F7/F8 (OpenAPI spec, cost-estimation endpoint) were never part of
-> Phase 16's table and remain unbuilt — see Phase 18 / [epic-5.md](../analysis/epic-5.md).
+> Phase 16's table and remain unbuilt — see Phase 18 / [epic-5.md](../../analysis/epic-5.md).
 
 ---
 
 > **[ADDED 2026-03-16]** Makes the server usable beyond localhost and exposes AIChat's knowledge model safely.
 > AIChat's `--serve` already works as an OpenWebUI backend (OpenAI-compatible HTTP). These changes
 > remove friction and fix data leakage without building platform features.
-> Full design: [`docs/analysis/epic-5.md`](../analysis/epic-5.md)
+> Full design: [`docs/analysis/epic-5.md`](../../analysis/epic-5.md)
 
 | Item | Status | Notes                                                                                                                                                                                                                                                                                              |
 |---|---|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -30,10 +30,10 @@
 | 16H. Cost in API responses | **Done** | `X-AIChat-Cost-USD` header on `/v1/roles/{name}/invoke`, `/v1/pipelines/run`, `/v1/batch`; `usage.cost_usd` in role/pipeline envelopes. |
 | 16I. Playground Refresh | **Done** | `ask()` in `assets/playground.html` wrapped in `try/finally` so `asking` (and `askAbortController`) always reset. Previously a throw before/around the stream left `asking` stuck `true`, and `handleAsk()`'s `if (this.asking) return` guard froze the UI. |
 
-**Implementation:** All items are server-side changes to `src/serve.rs`; 16A/16B config keys parse in `src/config/mod.rs`; 16I is a JS fix in `assets/playground.html`. Tests: unit (`serve.rs` — `CorsPolicy`, `check_api_key`, `stream_options`, usage chunk) and integration ([`tests/integration/server-hardening.sh`](../../tests/integration/server-hardening.sh), 12 cases including a Python mock-SSE streaming-usage round-trip).
+**Implementation:** All items are server-side changes to `src/serve.rs`; 16A/16B config keys parse in `src/config/mod.rs`; 16I is a JS fix in `assets/playground.html`. Tests: unit (`serve.rs` — `CorsPolicy`, `check_api_key`, `stream_options`, usage chunk) and integration ([`tests/integration/server-hardening.sh`](../../../tests/integration/server-hardening.sh), 12 cases including a Python mock-SSE streaming-usage round-trip).
 
 **Key files:** `src/serve.rs` (all server items), `src/config/mod.rs` (16A/16B config parsing), `assets/playground.html` (16I).
 
-**Demo:** [`docs/demos/phase-16-server-hardening.md`](../demos/phase-16-server-hardening.md) — a runnable showboat walk-through that exercises each knob against a live server and finishes with the full integration suite. User-facing reference: [`docs/features/server.md`](../features/server.md).
+**Demo:** [`docs/demos/phase-16-server-hardening.md`](../../demos/phase-16-server-hardening.md) — a runnable showboat walk-through that exercises each knob against a live server and finishes with the full integration suite. User-facing reference: [`docs/features/server.md`](../../features/server.md).
 
 **16I Bug description:** In some cases the Playground UI becomes unresponsive — typically during a chat session while the server is responding. Root cause: `buildBody()` (and any other throw) sat outside the try block, and `this.asking = false` ran only at the function tail, so an exception left the send/input path permanently disabled.

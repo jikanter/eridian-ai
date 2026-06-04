@@ -10,19 +10,33 @@ AIchat is a command-line swiss army knife for ai applications.
 ## Reference Context
 
 Read these files for background before starting work:
+
+<context>
 - @docs/README.md
 - @docs/ROADMAP.md
 - @docs/architecture/integrated-architecture/README.md
 - @docs/architecture/architecture.md
+</context>
 
 ## Deliverable
+
+<deliverable>
 A multi-tool for integrated interactions with AI models.A useful set of extensions to the pi harness for interaction with the tool.User documentation in docs/features
+</deliverable>
 
 ## Hard
 
+- Use docs/ROADMAP.md as the source of truth for the roadmap.
+- Use the test-driven development skill for all code
+- Use the showboat tool to build evergreen demos
+- Approach each task as accurate and analytical instead of encouraging
+- It is ok to say you do not know the answer to a question. Saying you don't know and doing the research is an infinitely better outcome than making up an answer.
+- If given information about a problem, use *ONLY* that information to solve the task and not your memory
 - System is designed to run as optimally on local models as frontier models.
 - System is token cost conscious
 - When running `showboat note`, output in an evergreen fashion. This is important for `showboat validate` to work.
+- If asked to implement against a standard (agentskills, mcp, acp, http3, etc.), download and cache that standard in docs/reference/standards
+- Focuses on batch use-cases only, leverages [pi](https://github.com/earendil-works/pi) wrapper for repl work. Falls back to minimal
 
 ## Soft
 

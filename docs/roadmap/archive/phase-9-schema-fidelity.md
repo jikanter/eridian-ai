@@ -2,13 +2,13 @@
 
 **Status:** Done
 **Epic:** 2 — Runtime Intelligence
-**Design:** [epic-2.md](../analysis/epic-2.md)
+**Design:** [epic-2.md](../../analysis/epic-2.md)
 
 ---
 
 > **[ADDED 2026-03-16]** Builds the deterministic intelligence layer between user input and LLM calls.
 > Governing principle: every token sent to an LLM should be a token that only an LLM can process.
-> Full design: [`docs/analysis/epic-2.md`](../analysis/epic-2.md)
+> Full design: [`docs/analysis/epic-2.md`](../../analysis/epic-2.md)
 
 | Item | Status | Notes |
 |---|--------|---|

@@ -19,7 +19,7 @@
 ## Summary of the phase
 
 Pipeline stages today share one `Config` instance for the whole run. The model
-field is saved/restored per stage (`run_stage` at [`src/pipe.rs:274`](../../src/pipe.rs)),
+field is saved/restored per stage (`run_stage` at [`src/pipe.rs:274`](../../../src/pipe.rs)),
 so the *LLM context* is isolated stage-to-stage — but tool permissions, sampling
 params, MCP bindings, and (newly) working directory are not. Phase 36 closes that
 gap with an **opt-in, per-stage `config_override:`** that clones the global
@@ -234,7 +234,7 @@ unit test that two temperatures yield different keys.
 
 ## §3 36C — escalation guard (follow-up PR)
 
-Extend preflight in [`src/config/preflight.rs`](../../src/config/preflight.rs).
+Extend preflight in [`src/config/preflight.rs`](../../../src/config/preflight.rs).
 `validate_pipeline_stages` (`:52`) takes `&[(String, Option<String>)]` (no override,
 no parent handle). Add a sibling **`validate_pipeline_overrides(parent_role,
 nodes)`** called from the same preflight blocks that already call

@@ -4,7 +4,7 @@ A pipeline stage can declare a `config_override:` block that runs that stage aga
 
 > **Status (2026-06-01):** **Shipped — Phase 36 complete (36A–D).** A stage's `config_override:` parses from role frontmatter (36A), is applied via clone-and-merge at the stage boundary — config-scoped fields (`working_directory`, `mcp_servers`) on the cloned `Config`, role-scoped fields (`use_tools`, `temperature`, `top_p`, `max_output_tokens`) on the stage's resolved role (36B), is preflight-checked so it can only narrow permissions (36C), and the applied field names surface in the `-o json` stage trace as `config_overrides_applied` (36D). Stages with no `config_override:` behave exactly as before — isolation is opt-in.
 
-See also: [Phase 36 design](../roadmap/phase-36-overview.md), [architecture.md](../architecture/architecture.md), [Typed Input](./typed-input.md).
+See also: [Phase 36 design](../roadmap/archive/phase-36-overview.md), [architecture.md](../architecture/architecture.md), [Typed Input](./typed-input.md).
 
 ## Why
 

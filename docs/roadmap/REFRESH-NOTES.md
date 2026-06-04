@@ -1,215 +1,118 @@
-# Roadmap Refresh — Notes
+# Roadmap Refresh — Notes (next-year + comprehensive archive)
 
-**Branch:** `roadmap-refresh-tri-repo` · **Scope:** documentation only · **Date of refresh:** 2026-06-02
+**Branch:** `roadmap-next-year-2026-06` · **Scope:** documentation only · **Date:** 2026-06-04
 
-This file records the roadmap refresh: the file/timestamp inventory it was based on, the
-proposed new structure, what was changed, what was archived (and why), what was deliberately
-left untouched, and open questions for the human reviewer.
-
-> **Status of this document:** Sections 1–3 are the *proposal* written before editing.
-> Sections 4–7 are the *post-edit summary*. If you are reviewing the diff, read §3 (proposed
-> structure) first, then §4 (what changed).
+This refresh (1) authors the **next year of phases (42–51)** organized around the four-repo
+integrated architecture, (2) **physically archives** every shipped per-phase doc behind one
+comprehensive ledger, and (3) condenses/refactors the remaining unimplemented items into a clean
+Now/Next/Later forward view. It supersedes the 2026-06-02 tri-repo refresh (which framed the
+horizons and tagged repos but did not add forward phases).
 
 ---
 
-## 1. Inventory + timestamp map
+## 1. What was added — the next year (Epics 15–17, Phases 42–51)
 
-All working-tree mtimes are identical (`Jun 2 14:45`, the worktree checkout time), so they
-carry no freshness signal. Authority is therefore decided by **last committed timestamp**
-(`git log -1 --format=%cI`). Newer = more authoritative when two docs conflict.
+Framed around the four-repo split (**aichat ↔ llm-functions ↔ brief ↔ astrophage**, + the pi
+harness). A **fifth strategic outcome** was added: *"An ecosystem that is observable, replayable,
+and evaluable."* Historical phase numbers were **not** renumbered (would break links/history);
+new work continues from 42.
 
-### 1.1 Current-scheme phase overviews (the live roadmap — keep)
+| New epic | Phases | Owner | Realizes |
+|---|---|---|---|
+| **15 Observability Keystone** | 42 trace emission · 43 test harness · 44 projections + training | aichat | `SPEC-001`, `SPEC-002`, `PLAN-trace-emission`, `PLAN-test-harness`, `ADR-0001` |
+| **16 Astrophage Substrate** | 45 cache-policy gateway + `replay-core` · 46 cassette/eval-replay · 47 mock/fault · 48 brief companion | astrophage / aichat / brief | `SPEC-003`, `SPEC-004`, `ADR-0005`, `EVAL-0005`, `SPEC-astrophage` |
+| **17 Federation & Scale** | 50 knowledge-as-cassette / federated KB · 51 vendor model extensions | aichat / cross-repo | `SPEC-mcp-json-artifact`, `2026-04-23-model-extensions` |
+| **10 Entity Evolution** (extended) | 49 agent memory federation (new) | aichat ↔ llm-functions ↔ harness | builds on 29B + 35 + 42 |
 
-| File | Last commit | Phase status per ROADMAP.md |
-|---|---|---|
-| `phase-37-overview.md` / `phase-37-response-caching.md` | 2026-06-01 | 37 Planned (active build focus) |
-| `phase-38..41-overview.md` | 2026-06-01 | 38–41 Planned (caching sub-track) |
-| `phase-36-overview.md` / `phase-36-implementation-plan.md` | 2026-06-01 | 36 Done |
-| `phase-34-overview.md` / `phase-34-auto-memory.md` | 2026-05-30 / 05-26 | 34 Done |
-| `phase-33-overview.md` | 2026-05-30 | 33 Done |
-| `phase-23-overview.md` | 2026-05-30 | 23 Done |
-| `phase-22-overview.md` | 2026-05-29 | 22 Done |
-| `phase-16-overview.md` / `phase-16-server-hardening.md` | 2026-05-29 | 16 Done |
-| `phase-15-overview.md` | 2026-05-29 | 15 Done |
-| `phase-13-overview.md` | 2026-05-29 | 13 Done |
-| `phase-11-overview.md` / `phase-11-context-budget.md` | 2026-05-29 / 05-03 | 11 Done |
-| `phase-35-overview.md` / `phase-35-knowledge-mcp.md` | 2026-05-26 | 35 Planned |
-| `phase-9/10/12/14/17/18/19/20/21/24/25/26/27/28/29/30/31-overview.md` | 2026-04→05 | per ROADMAP table |
-| `phase-9-schema-fidelity.md`, `phase-10-resilience.md`, `phase-17-server-execution.md`, `phase-18-server-discovery.md`, `phase-28-agent-composability.md`, `phase-29-agent-dynamism.md`, `phase-31-bridge-retirement.md` | 2026-04→05 | companion design detail — keep |
+Each new phase has a full house-style overview (`phase-42-overview.md` … `phase-51-overview.md`):
+goal, owner + horizon, sub-phase table, cross-repo seams, dependencies, acceptance criteria, and
+the grounding SPEC/ADR/PLAN it realizes. The **trace keystone (Phase 42)** is the new hard gate —
+pulled into **Now** because astrophage correlation (45D), tool-replay (46C), the test harness
+(43), and training extraction (44) all read the trace.
 
-### 1.2 Meta / index docs (refresh in place)
+The next-year plan **resolves** one standing `STOP-AND-ASK`: tool-replay key stability
+(`SPEC-astrophage §9.2`) is owned by Phase 46C.
 
-| File | Last commit | Verdict |
-|---|---|---|
-| `../ROADMAP.md` | (tree) | Authoritative index — **refresh**: add themes, Now/Next/Later horizons, owning-repo tags, tri-repo framing |
-| `dependencies.md` | 2026-06-01 | **Stale graph**: shows "Phase 13 planned / 15 partial / 22 planned" — all now Done; omits Phases 33–36, Memory 34–35, tri-repo. Refresh. |
-| `success-metrics.md` | 2026-05-11 | Mildly stale: phrases shipped phases (20, 21, 22) as future targets. Refresh status column. |
-| `anti-roadmap.md` | 2026-06-01 | Mostly evergreen. Light touch: tag the "forked-out tooling" row as astrophage (peer repo). |
+## 2. What was archived (physical move + comprehensive index)
 
-### 1.3 Superseded / legacy (archive candidates)
+All **Done** per-phase docs moved `docs/roadmap/ → docs/roadmap/archive/` (via `git mv`); nothing
+deleted. Moved: `phase-9-*`, `phase-10-*`, `phase-11-*`, `phase-12/13/14/15-overview`,
+`phase-16-*`, `phase-17-*`, `phase-19/20/21/22/23-overview`, `phase-25/26/27-knowledge-*`,
+`phase-30-macro-compilation`, `phase-31-*`, `phase-33-overview`, `phase-34-*`, `phase-36-*`.
 
-| File | Last commit | Why superseded |
-|---|---|---|
-| `initial-phased-roadmap.md` | 2026-03-11 | The original 2026-03-10 flat plan (old numbering, pre-renumber). Fully replaced by `ROADMAP.md` + per-phase docs. Historical. |
-| `phase-0-prerequisites.md` | 2026-03-30 | Epic 1 foundation, **Done**; summarized in `roadmap/archive/completed-epics.md`. |
-| `phase-1-token-efficiency.md` | 2026-03-30 | Epic 1 foundation, **Done**. |
-| `phase-2-pipeline-output.md` | 2026-03-30 | Epic 1 foundation, **Done**. |
-| `phase-3-mcp-consumption.md` | 2026-03-11 | Epic 1 foundation, **Done**. |
-| `phase-4-error-handling.md` | 2026-03-30 | Epic 1 foundation, **Done**. |
-| `phase-5-remote-mcp.md` | 2026-03-30 | Epic 1 foundation, **Done**. |
-| `phase-6-metadata-framework.md` | 2026-03-30 | Epic 1 foundation, **Done**. |
-| `phase-7-error-messages.md` | 2026-03-30 | Epic 1 foundation, **Done**. |
-| `phase-31.md` | 2026-05-03 | 3-line redirect stub; superseded by `phase-31-overview.md` + `phase-31-bridge-retirement.md`. |
+[`archive/completed-epics.md`](archive/completed-epics.md) was expanded from an Epic-1-only record
+into the **comprehensive ledger of every shipped phase** (Epics 1–14), one row per phase with
+sub-phase end-state and a link to the archived design doc.
 
-**Explicitly NOT archived:** `phase-8-data-observability.md` — Epic-1-numbered but treated as
-**active in-progress work** owned by another agent in the main worktree (see §5).
+**Link integrity.** Two classes of links were repaired:
+- **Inbound** (live docs → moved docs): `features/`, `demos/`, `analysis/`, and the live roadmap
+  docs (35, 37) now point into `archive/`.
+- **Internal** (inside the moved docs): physically moving down one level broke every `../` link
+  (to `features/`, `analysis/`, `src/`, `ROADMAP.md`, …). All were re-calibrated **+1 level**;
+  sibling links to still-live phases got `../`, and live meta-doc links got `../`. A full
+  broken-link scan confirms none of the 30 moved docs is a source of a broken link.
 
-### 1.4 Structural drift noted (not all fixable in a docs-only pass)
+The older foundation docs (`phase-0-7`, `initial-phased-roadmap.md`) had pre-existing broken
+`../analysis/…` links (left frozen by the 2026-06-02 refresh); since their targets still exist,
+those were recalibrated `+1` too so the **entire archive is link-clean**. The `phase-31.md`
+tombstone stub's two links were repointed to its now-sibling archived docs. A full scan confirms
+**zero broken links sourced anywhere under `docs/roadmap/`** (the 19 remaining in `docs/` are
+unrelated pre-existing issues outside the roadmap tree: the `2026-03-16-simple-planning.md`
+double-path bug and demo-fixture placeholders).
 
-- **integrated-architecture moved.** Git history shows `docs/roadmap/integrated-architecture/`
-  (May 1–3 commits); current tree has it at `docs/architecture/integrated-architecture/`.
-  `CLAUDE.md` still points readers to the old `docs/roadmap/integrated-architecture/README.md`
-  path (stale). See open questions (§6).
+## 3. What was refactored (unimplemented items)
 
----
+- **Thin stubs normalized.** `phase-28-overview.md` and `phase-29-overview.md` (≈400-byte stubs)
+  rewritten to house style (owner, horizon, cross-repo seams), keeping their companion-doc links.
+- **Astrophage-boundary note** added to the in-aichat caching overviews (37–41): a consistent
+  admonition clarifying *structure-aware in-process cache* (37–41) vs *wire-level runtime-agnostic
+  cache* (astrophage, 45–47), and that the two never share a key.
 
-## 2. Tri-repo model (framing the refresh)
+## 4. Meta-docs rewritten
 
-The integrated system spans three repositories. Every roadmap item now carries an
-**owning-repo tag** so readers can see *where the work lands*:
-
-| Tag | Repo | Role |
-|---|---|---|
-| **`aichat`** | this repo | CLI / runtime / MCP server-and-client. Owns inference, roles, agents, RAG, MCP, macros, caching, server. |
-| **`llm-functions`** | [jikanter/personal-llm-functions](https://github.com/jikanter/personal-llm-functions) | Tool + agent declarations consumed by aichat. |
-| **`harness (pi)`** | [earendil-works/pi](https://github.com/earendil-works/pi) | The REPL/harness surface other clients consume aichat through. |
-| **`cross-repo`** | [`docs/architecture/integrated-architecture/`](../architecture/integrated-architecture/) | Requirements that only make sense across ≥2 repos. Adjacent peer repos **astrophage** (record/replay/cache substrate) and **brief** are referenced here. |
-
-Most phases are `aichat`-internal. The cross-repo seams are: Phase 31 (bridge retirement,
-aichat ↔ llm-functions ↔ harness), Phase 32 (pi REPL cutover, aichat ↔ harness), Phase 35
-(knowledge-MCP protocol, cross-repo), Memory Surface 34/35 (pi-extension reader), and the
-caching sub-track's 37D pi integration.
-
----
-
-## 3. Proposed structure for `docs/ROADMAP.md`
-
-Reframe from a flat phase table into a PM-standard **outcome → theme → horizon** model,
-keeping the existing per-phase detail table as the canonical status ledger.
-
-1. **Vision** (keep, tighten) — "make for AI workflows."
-2. **Strategy pillars** (was "Governing Constraints") — cost-conscious, one-tool-per-job,
-   no-UI/no-breaking-argc.
-3. **Now / Next / Later horizons** *(new)* — the product view:
-   - **Now (in flight):** Caching sub-track Phase 37 (the architecture.svg "active build
-     focus"); Memory Surface Phase 35; Epic 8 Phase 24 (regression & distillation).
-   - **Next (committed, unstarted):** Caching 38 → 39 → 40 → 41; Epic 10 Phases 28–29
-     (agent evolution).
-   - **Later / Deferred:** Phase 18 (server discovery/estimation, deferred).
-   - **Shipped (this cycle):** Phases 13, 15, 16, 22, 23, 33, 34, 36.
-4. **Themes (epics) with owning-repo tags** *(new tagging)* — the 14 epics, each tagged by
-   owning repo, grouped under the four strategic outcomes they serve.
-5. **Status ledger** (keep the existing one-row-per-phase table, corrected + repo-tagged).
-6. **References** (keep; fix the cross-repo link to the moved integrated-architecture dir).
-
-Also add a thin **`docs/roadmap/README.md`** as the directory's navigational index (maps every
-file to its status and points at the authoritative `ROADMAP.md`), since the dir has 50+ files
-and no entry point.
-
-Archive location: all archived roadmap material lives under **`docs/roadmap/archive/`** — a
-single archive dir colocated with the roadmap it serves. The pre-existing `completed-epics.md`
-(formerly at `docs/archive/roadmap/`) was moved here too, retiring the split `docs/archive/`
-tree entirely. Rationale in §4.
-
----
-
-## 4. What changed (post-edit summary)
-
-### 4.1 `docs/ROADMAP.md` — reframed (PM structure)
-
-- Added **The three repositories** section (repo tags + links to llm-functions and pi).
-- Added **Horizons (Now / Next / Later)** — the product view, decoupled from epic numbering:
-  - **Now:** Phase 37 caching, Phase 35 knowledge-MCP, Phase 24 regression/distillation.
-  - **Next:** caching 38–41, Entity Evolution 28–29.
-  - **Later:** Phase 18 (deferred).
-  - **Shipped this cycle:** 13, 15, 16, 22, 23, 33, 34, 36.
-- Added **Themes → epics** roll-up (4 strategic outcomes, repo-tagged).
-- Added an **Owner** column to the status ledger; every phase now carries its owning repo.
-- Replaced the dense, timestamp-heavy "Active Track" prose with a cleaner **sequencing detail**
-  section (same facts, less noise).
-- Added a **Phase 8 note** in the ledger flagging it as active (not archived).
-- Renamed "Governing Constraints" → "Strategy pillars" and added the local-vs-frontier pillar
-  from `CLAUDE.md`.
-- Added References entries for the new roadmap-dir index and these notes.
-
-### 4.2 New file: `docs/roadmap/README.md`
-
-Directory navigational index. Maps every phase doc (overview + companion detail) to its
-location, points at `../ROADMAP.md` as authoritative, and carries a tombstone table for the
-archived docs.
-
-### 4.3 Meta-docs refreshed
-
-- **`dependencies.md`** — graph statuses corrected (13/15/22 were shown "planned/partial" but are
-  **Done**); added Phases 33–36 and the Memory Surface (34–35) track; added repo tags to every
-  epic; updated the critical path to "shipped through Phase 36"; clarified 37D/37E touch the
-  harness.
-- **`success-metrics.md`** — marked shipped targets **achieved** (Phase 11D, 22, 23, 36); added a
-  cache-hit cost-savings metric for the Phase 37 sub-track; removed a now-duplicated row.
-- **`anti-roadmap.md`** — named the "forked-out tooling" row as the **astrophage** peer repo with
-  a link to its cross-repo spec.
-
-### 4.4 Archived (moved to `docs/roadmap/archive/`, nothing deleted)
-
-`initial-phased-roadmap.md`, `phase-0-prerequisites.md` … `phase-7-error-messages.md`,
-`phase-31.md`. Reasons in §1.3. Link fixes:
-- `completed-epics.md` detail links rewritten `./roadmap/phase-N.md` → `./phase-N.md` (they were
-  already broken; the moves *repair* them since the targets are now siblings).
-- The Phase 8 link in `completed-epics.md` points to `../phase-8-data-observability.md`
-  (phase-8 stays in the live roadmap) and is tagged *active*.
-- The Phase 7.5 dead link (detail doc was never committed) replaced with an inline note.
-- The archived `phase-31.md` stub's links repointed at the live docs under `../`.
-
-> **Archive location decision.** The task asked for `docs/roadmap/archive/`. An earlier draft of
-> this refresh staged the foundation docs under a separate `docs/archive/roadmap/` (where
-> `completed-epics.md` historically lived). That split was reversed: everything — including
-> `completed-epics.md` — now lives under the single `docs/roadmap/archive/`, and the old
-> `docs/archive/` tree was removed. Inbound links from `ROADMAP.md`, `README.md`, and
-> `completed-epics.md` were updated accordingly.
+- **`../ROADMAP.md`** — five-repo intro, fifth strategic outcome, coming-year Now/Next/Later,
+  Epics 15/16/17 in Themes → epics, corrected status ledger (Done → `Done · archived` with links;
+  new 42–51 rows), trace-keystone sequencing detail, "Last updated 2026-06-04".
+- **`README.md`** — file map split into Active / Planned-committed / Planned-frontier / Deferred,
+  plus the archived table.
+- **`dependencies.md`** — redrawn graph with Epics 15/16/17, the trace-keystone gate, the
+  caching→astrophage chain (38A trait gate), the aichat→`replay-core` build-coupling arrow, and
+  the federation chain.
+- **`success-metrics.md`** — shipped targets marked achieved; next-year targets added (trace
+  coverage, control-flow determinism, eval-replay byte-identity, astrophage savings, training-pair
+  yield, tool-replay key stability, agent-memory federation, KB portability, local-model reach).
+- **`anti-roadmap.md`** — added a **Cross-repo boundaries** section (no astrophage reverse-dep, no
+  keys across the seam, brief stays runtime-free, no tool-execution caching, no parallel telemetry
+  model, no editing peer repos from aichat).
 
 ## 5. What was left alone
 
-- **Phase 8** (`phase-8-data-observability.md`) — per the hard constraint, treated as **active
-  in-progress work** owned by another agent in the main worktree. Not moved, not rewritten; only
-  the *inbound link* from the archived `completed-epics.md` was repointed and tagged active.
-- All **current per-phase overview + companion design docs** (Phases 9–41) — content untouched;
-  they remain the canonical design record. Only the index/ledger framing around them changed.
-- **Source code, Cargo files** — untouched (docs-only task).
-- **`docs/architecture/*`, `integrated-architecture/*`** — content untouched. (`CLAUDE.md` got a
-  single stale-path fix in the "Integrated requirements" section — see §6.1.)
-- Internal links *inside* the archived foundation docs (e.g. `../analysis/...`) were not chased;
-  those are frozen historical artifacts.
+- **Phase 8** (`phase-8-data-observability.md`) — active in the main worktree. Not moved; only
+  inbound links repointed and tagged active.
+- **Phase 18** — stays live as **Deferred** (Later horizon).
+- **`docs/analysis/caching/*`, `architecture/integrated-architecture/*`** — content untouched;
+  the new phases reference them as grounding.
+- **Source code, Cargo files** — untouched (docs-only).
 
-## 6. Open questions for the human
+## 6. Open questions / residual
 
-1. **Stale path in `CLAUDE.md`.** ✅ RESOLVED — §"Integrated requirements" pointed at
-   `docs/integrated-architecture/` and `docs/roadmap/integrated-architecture/README.md`; both
-   repointed to the real `docs/architecture/integrated-architecture/`. (Line 15 was already
-   correct.)
-2. **Archive dir name.** ✅ RESOLVED — all archived roadmap material consolidated under
-   `docs/roadmap/archive/` (§4.4); the split `docs/archive/` tree was removed and all inbound
-   links updated.
-3. **Phase numbering gap.** ✅ RESOLVED — no stub added. The new `docs/roadmap/README.md`
-   already cross-refs Phase 32 (Pi as REPL Surface) to `../features/repl-pi.md`, closing the
-   navigational gap without a redundant placeholder doc.
-4. **Phase 7.5 detail doc** was never committed; `completed-epics.md` referenced a missing file.
-   I replaced the dead link with a note — confirm the summary there is canonical.
+1. **Tool-replay key stability** (`SPEC-astrophage §9.2`) — now *owned* by Phase 46C, but the
+   schema decision (is `(tool_name, args_hash)` a stable lookup key?) is made when 46 is built.
+2. **Canonical-key field edges** (`SPEC-003 §2`) — any in-key/out-of-key field not settled by
+   37C's `transparent_key` remains a stop-and-ask for Phase 45A.
+3. **brief companion (Phase 48)** — documented here, built in the
+   [brief repo](https://github.com/jikanter/brief); optional (the direct-promptfoo path works
+   without it).
+4. **Non-roadmap pre-existing broken links** (the `2026-03-16-simple-planning.md` double-`analysis/`
+   path and demo-fixture placeholders) were left as-is — outside this refresh's scope.
 
 ## 7. Verification
 
-- `grep` for every archived filename across `docs/` — all remaining references resolve to
-  siblings within `docs/roadmap/archive/` or are intentional tombstones in the new index/notes.
-- `phase-8-data-observability.md` confirmed still present in `docs/roadmap/`.
-- No `src/`, Cargo, or Phase 8 doc content modified.
-- No timestamps/random values introduced into any demo-style output (none added).
-- Nothing committed or pushed; all changes left in the worktree for review.
+- `git mv` used for all moves (history preserved). Broken-link scan: **zero broken links sourced
+  anywhere under `docs/roadmap/`** (live + archive). The only broken links left in `docs/` are
+  unrelated pre-existing issues outside the roadmap tree — **zero** introduced by the new phases
+  or the archive move.
+- `phase-8-data-observability.md` confirmed still in `docs/roadmap/`; no `src/`/Cargo changes.
+- Every Done ledger row links to a file under `archive/`; every 42–51 row links to a new live
+  overview; horizons reconcile with the ledger.
+- Nothing committed/pushed beyond the working branch; left for review.

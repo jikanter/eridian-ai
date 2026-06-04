@@ -69,11 +69,11 @@ codebase already."
 
 Frontmatter is optional for hand-edited files — the read-on-startup path (34A) tolerates plain markdown without frontmatter. The curator gate (34D) emits frontmatter by default; the user can edit it out during the `e` (edit) branch if they want a hand-curated entry to look hand-written.
 
-The convention is documented in `docs/features/auto-memory.md` (new user-facing doc, sibling to [`docs/features/repl-pi.md`](../features/repl-pi.md)) when the implementation ships.
+The convention is documented in `docs/features/auto-memory.md` (new user-facing doc, sibling to [`docs/features/repl-pi.md`](../../features/repl-pi.md)) when the implementation ships.
 
 ## Reflector wiring
 
-The existing `--knowledge-reflect` Reflector lives in [`src/knowledge/evolve.rs`](../../src/knowledge/evolve.rs) and emits typed `EntityDescriptionPair` candidates. 34C reuses the *invocation primitive* (transcript-in, structured-out, role-driven) but with a different *output schema* and a different *system prompt*.
+The existing `--knowledge-reflect` Reflector lives in [`src/knowledge/evolve.rs`](../../../src/knowledge/evolve.rs) and emits typed `EntityDescriptionPair` candidates. 34C reuses the *invocation primitive* (transcript-in, structured-out, role-driven) but with a different *output schema* and a different *system prompt*.
 
 The refactor extracts a `ReflectorJob` enum:
 
@@ -191,17 +191,17 @@ Per project guideline that bats integration tests accompany every feature, the i
 
 ## Cited source ranges
 
-- [`src/config/session.rs:594-613`](../../src/config/session.rs) — `session.compress()`, the existing client-side LLM-driven session mutation that the Reflector pattern extends.
-- [`src/config/session.rs:641`](../../src/config/session.rs) — `session.exit()`, the call site for 34C.
-- [`src/config/session.rs:724`](../../src/config/session.rs) — `add_message`, the per-turn hook where a future Theme 7 (assume-interruption JSONL log) would write.
-- [`src/knowledge/evolve.rs`](../../src/knowledge/evolve.rs) — the existing Reflector primitive 34C factors against.
-- [`src/knowledge/store.rs:117`](../../src/knowledge/store.rs) — `RevisionEntry` struct (memory writes do not use this; cited for comparison — `memory/` deliberately does *not* gain a per-mutation log; git history is the audit substrate).
-- [`memory/MEMORY.md`](../../memory/MEMORY.md) — the existing index file (currently unread).
-- [`docs/analysis/open-memory/claude-code.md`](../analysis/open-memory/claude-code.md) — Claude Code precedent for the `memory/` discipline.
+- [`src/config/session.rs:594-613`](../../../src/config/session.rs) — `session.compress()`, the existing client-side LLM-driven session mutation that the Reflector pattern extends.
+- [`src/config/session.rs:641`](../../../src/config/session.rs) — `session.exit()`, the call site for 34C.
+- [`src/config/session.rs:724`](../../../src/config/session.rs) — `add_message`, the per-turn hook where a future Theme 7 (assume-interruption JSONL log) would write.
+- [`src/knowledge/evolve.rs`](../../../src/knowledge/evolve.rs) — the existing Reflector primitive 34C factors against.
+- [`src/knowledge/store.rs:117`](../../../src/knowledge/store.rs) — `RevisionEntry` struct (memory writes do not use this; cited for comparison — `memory/` deliberately does *not* gain a per-mutation log; git history is the audit substrate).
+- [`memory/MEMORY.md`](../../../memory/MEMORY.md) — the existing index file (currently unread).
+- [`docs/analysis/open-memory/claude-code.md`](../../analysis/open-memory/claude-code.md) — Claude Code precedent for the `memory/` discipline.
 
 ## References
 
 - Theme 2 (`[prj-ai-00023]`), Theme 11 (`[shr-ai-00025]`), Posture C (`[prj-ai-00025]`, `[prj-ai-00026]`) of the divergence playbook
 - [Phase 34 overview](phase-34-overview.md) — status table and sub-item summary
-- [Phase 35 overview](phase-35-overview.md) — typed side of the dual-store
+- [Phase 35 overview](../phase-35-overview.md) — typed side of the dual-store
 - [Phase 27 knowledge evolution](phase-27-knowledge-evolution.md) — the typed Reflector this phase factors against

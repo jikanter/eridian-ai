@@ -2,7 +2,7 @@
 
 **Status:** Deferred (2026-04-17)
 **Epic:** 5 — Server Pipeline Engine
-**Design:** [epic-5.md](../analysis/epic-5.md)
+**Design:** [epic-5.md](../../analysis/epic-5.md)
 
 > **[DEFERRED 2026-04-17]** Epic 5 (Phases 16, 17, 18) is explicitly parked
 > while Epic 9 (Knowledge Evolution) is in flight. Returning to the server
@@ -12,7 +12,7 @@
 
 > **[ADDED 2026-03-16]** Exposes AIChat's unique capabilities over HTTP. Turns the server from a
 > commodity proxy into a pipeline execution engine and role-as-API gateway.
-> Full design: [`docs/analysis/epic-5.md`](../analysis/epic-5.md)
+> Full design: [`docs/analysis/epic-5.md`](../../analysis/epic-5.md)
 
 | Item | Status | Notes |
 |---|---|---|

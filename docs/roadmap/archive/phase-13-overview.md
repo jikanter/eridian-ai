@@ -1,7 +1,7 @@
 # Phase 13: Authoring & Teaching : Overview - Epic 3
 
 **Status (2026-05-29):** **Done.** All four items shipped. User docs:
-[features/authoring.md](../features/authoring.md). Tests:
+[features/authoring.md](../../features/authoring.md). Tests:
 `tests/integration/authoring.sh` (12 bats cases) plus unit tests in
 `src/config/role.rs`.
 

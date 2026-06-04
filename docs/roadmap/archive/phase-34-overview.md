@@ -1,17 +1,17 @@
 # Phase 34: Auto-Memory Wiring : Overview - Epic 14
 
-**Status (2026-05-30):** **34A–34D Done** (read-only surface + topic-file lazy-load + Reflector/Curator write loop shipped). This phase fills the agent-writer slot at the session level by wiring a freeform `memory/` surface alongside the typed `knowledge/` store. Implements Theme 2 of [`260524_anthropic_memory_divergence.md`](https://github.com/jikanter/aichat-private/) (Posture C "compose"). Pairs with [Phase 35](phase-35-overview.md) (Knowledge-MCP) — together they form Epic 14's dual-writer architecture. User-facing doc: [`docs/features/auto-memory.md`](../features/auto-memory.md); demo: [`docs/demos/phase-34-auto-memory.md`](../demos/phase-34-auto-memory.md).
+**Status (2026-05-30):** **34A–34D Done** (read-only surface + topic-file lazy-load + Reflector/Curator write loop shipped). This phase fills the agent-writer slot at the session level by wiring a freeform `memory/` surface alongside the typed `knowledge/` store. Implements Theme 2 of [`260524_anthropic_memory_divergence.md`](https://github.com/jikanter/aichat-private/) (Posture C "compose"). Pairs with [Phase 35](../phase-35-overview.md) (Knowledge-MCP) — together they form Epic 14's dual-writer architecture. User-facing doc: [`docs/features/auto-memory.md`](../../features/auto-memory.md); demo: [`docs/demos/phase-34-auto-memory.md`](../../demos/phase-34-auto-memory.md).
 
 | Item | Description | Status |
 |---|---|---|
 | 34A | Read `memory/MEMORY.md` at REPL/CLI startup as additional system-prompt context — mirrors Claude Code's first-200-lines auto-load discipline. Read-only. | **Done** (2026-05-30) |
 | 34B | Topic-file lazy loading — a `memory:<ref>` path (resolved against `MEMORY.md` links or topic filenames) expands to the topic file at `Input::from_files`. `--memory-load <ref>` prints a resolved topic. | **Done** (2026-05-30) |
-| 34C | Session-exit Reflector pass — `--memory-reflect` / `--memory-reflect-on-exit` redact secrets, then emit candidate `memory/<topic>.md` files from the transcript, reusing the [`src/knowledge/evolve.rs`](../../src/knowledge/evolve.rs) Reflector pattern (`*-memory-reflector` role). | **Done** (2026-05-30) |
+| 34C | Session-exit Reflector pass — `--memory-reflect` / `--memory-reflect-on-exit` redact secrets, then emit candidate `memory/<topic>.md` files from the transcript, reusing the [`src/knowledge/evolve.rs`](../../../src/knowledge/evolve.rs) Reflector pattern (`*-memory-reflector` role). | **Done** (2026-05-30) |
 | 34D | Curator gate — `--memory-curate` prompts `[a]ccept [s]kip [e]dit [r]eject-all` before atomic-writing topic files + appending to `MEMORY.md`; `--memory-auto-curate` accepts all. Closes the dual-writer loop. | **Done** (2026-05-30) |
 
 ## Background
 
-The `memory/` directory at the aichat repo root contains `MEMORY.md` (an index of feedback topics) and `feedback_cite_sources.md` (one topic file). A grep across `src/` returns zero references — the directory is forward-intent, not code. The 2026-05-24 commits `57f3247` ("memory discovery") and `3c8a395` ("open memory descriptions") added [`docs/analysis/open-memory/`](../analysis/open-memory/) notes documenting the Claude Code precedent (`~/.claude/projects/<path>/memory/`), but no consumer or producer is wired.
+The `memory/` directory at the aichat repo root contains `MEMORY.md` (an index of feedback topics) and `feedback_cite_sources.md` (one topic file). A grep across `src/` returns zero references — the directory is forward-intent, not code. The 2026-05-24 commits `57f3247` ("memory discovery") and `3c8a395` ("open memory descriptions") added [`docs/analysis/open-memory/`](../../analysis/open-memory/) notes documenting the Claude Code precedent (`~/.claude/projects/<path>/memory/`), but no consumer or producer is wired.
 
 Anthropic's two-writer split — humans write CLAUDE.md, the agent writes auto-memory — maps to aichat as **(humans write CLAUDE.md / AGENTS.md / role YAMLs, agent writes ???)**. The agent-writer slot is vacant at the session level. The `knowledge/` store fills the slot *for typed citable facts compiled from source files*, but it does not fill it for the running session's incidental learnings — preferences the user expressed mid-conversation, errors observed once and not worth a full KB entry, hints about which roles are working well today. Anthropic's auto-memory is precisely the freeform-notes layer for this category. See divergence Theme 2 (`[prj-ai-00023]`) for the full framing.
 
@@ -42,7 +42,7 @@ At REPL entry and at single-shot CLI launch (`aichat "..."` and `aichat -r role`
 
 Mirrors Claude Code's behaviour: read the first ~200 lines of `MEMORY.md`, treat as context, do not write. Cap at 200 lines (or 8 KiB, whichever is smaller) to bound token cost; emit a one-line warning to stderr if truncation fires so the user knows they should split the file into topics.
 
-**Files:** [`src/repl/mod.rs`](../../src/repl/mod.rs) (read-on-launch hook before the prompt loop), [`src/config/session.rs`](../../src/config/session.rs) (session-level `memory_preamble: Option<String>` cached so multi-turn conversations don't re-read), [`src/config/mod.rs`](../../src/config/mod.rs) (project-root probe; reuse the `knowledge/` discovery logic at `src/knowledge/cli.rs`).
+**Files:** [`src/repl/mod.rs`](../../../src/repl/mod.rs) (read-on-launch hook before the prompt loop), [`src/config/session.rs`](../../../src/config/session.rs) (session-level `memory_preamble: Option<String>` cached so multi-turn conversations don't re-read), [`src/config/mod.rs`](../../../src/config/mod.rs) (project-root probe; reuse the `knowledge/` discovery logic at `src/knowledge/cli.rs`).
 
 ### 34A — as shipped (2026-05-30)
 
@@ -77,7 +77,7 @@ Tests: `tests/integration/auto-memory.sh` (bats) + `src/memory/mod.rs` units.
 
 ## 34B Design — Topic-file lazy loading
 
-When a turn references a relative markdown link found inside `MEMORY.md` (e.g. the user types "see my feedback on cite_sources" and the role's tool-search surfaces `feedback_cite_sources.md`), aichat lazy-loads that file via the existing `Input::from_files_with_spinner` plumbing in [`src/config/input.rs`](../../src/config/input.rs).
+When a turn references a relative markdown link found inside `MEMORY.md` (e.g. the user types "see my feedback on cite_sources" and the role's tool-search surfaces `feedback_cite_sources.md`), aichat lazy-loads that file via the existing `Input::from_files_with_spinner` plumbing in [`src/config/input.rs`](../../../src/config/input.rs).
 
 The reference can come from three sources, in precedence order:
 
@@ -87,13 +87,13 @@ The reference can come from three sources, in precedence order:
 
 For 34B alone, only (3) is wired. (1) and (2) become available when their parent themes ship; this phase reserves the loader API so they plug in without rework.
 
-**Files:** [`src/config/input.rs`](../../src/config/input.rs) (extend `Input::from_files_with_spinner` to accept a memory-root prefix), `src/repl/mod.rs` (lazy-load hook on cross-reference).
+**Files:** [`src/config/input.rs`](../../../src/config/input.rs) (extend `Input::from_files_with_spinner` to accept a memory-root prefix), `src/repl/mod.rs` (lazy-load hook on cross-reference).
 
 ## 34C Design — Session-exit Reflector pass
 
-At session exit (`session.exit()` in [`src/config/session.rs:641`](../../src/config/session.rs) or every N turns under a future `--memory-reflect-every N` flag), aichat invokes a Reflector role with the full conversation transcript and asks it to emit candidate `memory/<topic>.md` files.
+At session exit (`session.exit()` in [`src/config/session.rs:641`](../../../src/config/session.rs) or every N turns under a future `--memory-reflect-every N` flag), aichat invokes a Reflector role with the full conversation transcript and asks it to emit candidate `memory/<topic>.md` files.
 
-The Reflector role is structurally identical to the existing `--knowledge-reflect` Reflector in [`src/knowledge/evolve.rs`](../../src/knowledge/evolve.rs), but with three differences in its system prompt:
+The Reflector role is structurally identical to the existing `--knowledge-reflect` Reflector in [`src/knowledge/evolve.rs`](../../../src/knowledge/evolve.rs), but with three differences in its system prompt:
 
 1. **Output format is freeform markdown with YAML frontmatter**, not typed `EntityDescriptionPair` JSONL.
 2. **The candidate-topic name is derived from the conversation's recurring noun phrase**, not from a `FactId` content hash.
@@ -101,7 +101,7 @@ The Reflector role is structurally identical to the existing `--knowledge-reflec
 
 The Reflector emits a list of `(topic_name, frontmatter, body)` tuples; nothing is written to disk yet. 34D handles the gate.
 
-**Files:** [`src/knowledge/evolve.rs`](../../src/knowledge/evolve.rs) (factor out the Reflector invocation primitive so memory + knowledge share it), `src/config/session.rs` (call site at exit), new `src/memory/reflect.rs` (the secret-filter pass + topic-name derivation).
+**Files:** [`src/knowledge/evolve.rs`](../../../src/knowledge/evolve.rs) (factor out the Reflector invocation primitive so memory + knowledge share it), `src/config/session.rs` (call site at exit), new `src/memory/reflect.rs` (the secret-filter pass + topic-name derivation).
 
 ## 34D Design — Curator gate
 
@@ -151,7 +151,7 @@ Under `--memory-auto-curate`, every candidate auto-accepts. The flag is hidden f
 
 ### 4. Deferred — `dependencies.md` / `success-metrics.md` updates
 
-This phase does **not** update [`docs/roadmap/dependencies.md`](dependencies.md) or [`docs/roadmap/success-metrics.md`](success-metrics.md). Both files need rows for Phase 34 (and 35, 36) once implementation begins. Tracked as a follow-up doc PR.
+This phase does **not** update [`docs/roadmap/dependencies.md`](../dependencies.md) or [`docs/roadmap/success-metrics.md`](../success-metrics.md). Both files need rows for Phase 34 (and 35, 36) once implementation begins. Tracked as a follow-up doc PR.
 
 ## Testing
 
@@ -173,19 +173,19 @@ Per project guideline ("*Always* add integration tests via bats in addition to u
 
 ## Files (consolidated)
 
-- [`src/repl/mod.rs`](../../src/repl/mod.rs) — startup hook for 34A; lazy-load hook for 34B; `--memory-auto-curate` plumb
-- [`src/config/session.rs`](../../src/config/session.rs) — `memory_preamble` cache; Reflector call site at exit
-- [`src/config/input.rs`](../../src/config/input.rs) — memory-root-aware file loader
-- [`src/config/mod.rs`](../../src/config/mod.rs) — project-vs-user memory directory probe
-- [`src/knowledge/evolve.rs`](../../src/knowledge/evolve.rs) — factor out shared Reflector primitive
+- [`src/repl/mod.rs`](../../../src/repl/mod.rs) — startup hook for 34A; lazy-load hook for 34B; `--memory-auto-curate` plumb
+- [`src/config/session.rs`](../../../src/config/session.rs) — `memory_preamble` cache; Reflector call site at exit
+- [`src/config/input.rs`](../../../src/config/input.rs) — memory-root-aware file loader
+- [`src/config/mod.rs`](../../../src/config/mod.rs) — project-vs-user memory directory probe
+- [`src/knowledge/evolve.rs`](../../../src/knowledge/evolve.rs) — factor out shared Reflector primitive
 - `src/memory/reflect.rs` (new) — secret-filter + topic-name derivation
 - `src/memory/curate.rs` (new) — interactive curator + atomic write
-- [`src/cli.rs`](../../src/cli.rs) — `--memory-auto-curate` flag
+- [`src/cli.rs`](../../../src/cli.rs) — `--memory-auto-curate` flag
 - See deep design notes: [`phase-34-auto-memory.md`](phase-34-auto-memory.md)
 
 ## References
 
-- Theme 2 of the divergence playbook (analysis source for this phase) — see [`docs/analysis/open-memory/claude-code.md`](../analysis/open-memory/claude-code.md)
-- [`memory/MEMORY.md`](../../memory/MEMORY.md) — the existing (unread) index file
+- Theme 2 of the divergence playbook (analysis source for this phase) — see [`docs/analysis/open-memory/claude-code.md`](../../analysis/open-memory/claude-code.md)
+- [`memory/MEMORY.md`](../../../memory/MEMORY.md) — the existing (unread) index file
 - [Phase 27 knowledge evolution](phase-27-knowledge-evolution.md) — the existing typed Reflector surface this phase factors against
-- [Phase 35 overview](phase-35-overview.md) — sibling phase under Epic 14 (Knowledge-MCP, the typed side of the dual-store)
+- [Phase 35 overview](../phase-35-overview.md) — sibling phase under Epic 14 (Knowledge-MCP, the typed side of the dual-store)

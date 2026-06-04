@@ -17,10 +17,10 @@
 | 16I | Playground refresh — `ask()` wrapped in `try/finally` so a thrown chat request can't leave the UI stuck (`asking` always resets) | **Done** |
 
 Tests: unit (`src/serve.rs` — CorsPolicy, check_api_key, stream_options, usage
-chunk) + integration ([`tests/integration/server-hardening.sh`](../../tests/integration/server-hardening.sh),
+chunk) + integration ([`tests/integration/server-hardening.sh`](../../../tests/integration/server-hardening.sh),
 12 cases incl. a mock-SSE streaming-usage round-trip).
 
-Demo: [`docs/demos/phase-16-server-hardening.md`](../demos/phase-16-server-hardening.md) —
+Demo: [`docs/demos/phase-16-server-hardening.md`](../../demos/phase-16-server-hardening.md) —
 runnable showboat walk-through of every knob (health, bearer auth, CORS,
 hot-reload, streaming usage) against a live `aichat --serve`, capped by the
 full integration suite.

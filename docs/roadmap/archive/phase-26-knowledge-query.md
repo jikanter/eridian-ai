@@ -2,7 +2,7 @@
 
 **Status:** Done
 **Epic:** 9 — Knowledge Evolution (was: RAG Evolution)
-**Design:** [epic-9.md](../analysis/epic-9.md)
+**Design:** [epic-9.md](../../analysis/epic-9.md)
 
 ---
 
@@ -11,7 +11,7 @@
 > is deterministic: tag filter narrows candidates, BM25 ranks, a 1-hop graph walk on explicit
 > edges expands seeds. No embeddings, no vector neighborhood search. Composability surface
 > (roles, pipelines, CLI, LLM-tool mode) is identical in shape to the old plan — only the
-> retrieval substrate changes. Full design: [`docs/analysis/epic-9.md`](../analysis/epic-9.md).
+> retrieval substrate changes. Full design: [`docs/analysis/epic-9.md`](../../analysis/epic-9.md).
 
 | Item | Status | Notes |
 |---|---|---|

@@ -26,7 +26,7 @@
 
 ## Shipped (2026-05-29)
 
-Demo: [`docs/demos/phase-22-dag-observability.md`](../demos/phase-22-dag-observability.md).
+Demo: [`docs/demos/phase-22-dag-observability.md`](../../demos/phase-22-dag-observability.md).
 
 **22A — DAG trace tree.** `aichat --pipe (--stage… | --pipe-def <file>) --trace` now
 renders the executed DAG as an indented tree on stderr after the run. Each leaf stage

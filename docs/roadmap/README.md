@@ -1,12 +1,14 @@
 # Roadmap directory index
 
-This directory holds the per-phase design docs. The **authoritative roadmap** — vision,
-horizons (Now/Next/Later), themes, owning-repo tags, and the status ledger — lives one level up
-in [`../ROADMAP.md`](../ROADMAP.md). Start there. This README is just the file map.
+This directory holds the **live** per-phase design docs — planned, in-flight, active, and
+deferred phases only. The **authoritative roadmap** — vision, horizons (Now/Next/Later), themes,
+owning-repo tags, and the status ledger — lives one level up in [`../ROADMAP.md`](../ROADMAP.md).
+Start there.
 
-Cross-repo (integrated) requirements live in
-[`../architecture/integrated-architecture/`](../architecture/integrated-architecture/), **not**
-here — see that README for what qualifies.
+**Shipped (Done) phases are archived** under [`archive/`](archive/), indexed by the comprehensive
+[`archive/completed-epics.md`](archive/completed-epics.md). Cross-repo (integrated) requirements
+live in [`../architecture/integrated-architecture/`](../architecture/integrated-architecture/),
+**not** here.
 
 ## Meta docs
 
@@ -15,60 +17,68 @@ here — see that README for what qualifies.
 | [`dependencies.md`](dependencies.md) | Cross-epic dependency graph + critical path. |
 | [`success-metrics.md`](success-metrics.md) | Per-epic targets the roadmap commits to. |
 | [`anti-roadmap.md`](anti-roadmap.md) | Proposals considered and rejected, with reasons. |
-| [`REFRESH-NOTES.md`](REFRESH-NOTES.md) | Notes from the 2026-06-02 tri-repo roadmap refresh. |
+| [`REFRESH-NOTES.md`](REFRESH-NOTES.md) | Notes from the 2026-06-04 next-year refresh. |
 
-## Phase docs (current)
+## Live phase docs
 
-Each phase has an `-overview.md`; some carry a longer companion design doc. Status is in the
-[ledger](../ROADMAP.md#status-ledger).
+Status is in the [ledger](../ROADMAP.md#status-ledger).
+
+### Active (Epic 1, in main worktree)
+
+| Phase | Overview |
+|---|---|
+| 8 Data processing & observability | [phase-8-data-observability.md](phase-8-data-observability.md) |
+
+### Planned — finishing committed work
 
 | Phase | Overview | Companion detail |
 |---|---|---|
-| 9 Schema fidelity | [phase-9-overview.md](phase-9-overview.md) | [phase-9-schema-fidelity.md](phase-9-schema-fidelity.md) |
-| 10 Resilience & retry | [phase-10-overview.md](phase-10-overview.md) | [phase-10-resilience.md](phase-10-resilience.md) |
-| 11 Context budget | [phase-11-overview.md](phase-11-overview.md) | [phase-11-context-budget.md](phase-11-context-budget.md) |
-| 12 Discoverability | [phase-12-overview.md](phase-12-overview.md) | — |
-| 13 Authoring & teaching | [phase-13-overview.md](phase-13-overview.md) | — |
-| 14 Capability manifests | [phase-14-overview.md](phase-14-overview.md) | — |
-| 15 Contract testing | [phase-15-overview.md](phase-15-overview.md) | — |
-| 16 Server hardening | [phase-16-overview.md](phase-16-overview.md) | [phase-16-server-hardening.md](phase-16-server-hardening.md) |
-| 17 Role & pipeline execution | [phase-17-overview.md](phase-17-overview.md) | [phase-17-server-execution.md](phase-17-server-execution.md) |
-| 18 Discovery & estimation *(deferred)* | [phase-18-overview.md](phase-18-overview.md) | [phase-18-server-discovery.md](phase-18-server-discovery.md) |
-| 19 RoleResolver | [phase-19-overview.md](phase-19-overview.md) | — |
-| 20 Remote & federated | [phase-20-overview.md](phase-20-overview.md) | — |
-| 21 DAG primitives | [phase-21-overview.md](phase-21-overview.md) | — |
-| 22 DAG observability & budget | [phase-22-overview.md](phase-22-overview.md) | — |
-| 23 Role evaluation | [phase-23-overview.md](phase-23-overview.md) | — |
-| 24 Regression & distillation *(planned)* | [phase-24-overview.md](phase-24-overview.md) | — |
-| 25 Knowledge compilation | — | [phase-25-knowledge-compilation.md](phase-25-knowledge-compilation.md) |
-| 26 Knowledge query | — | [phase-26-knowledge-query.md](phase-26-knowledge-query.md) |
-| 27 Knowledge evolution | — | [phase-27-knowledge-evolution.md](phase-27-knowledge-evolution.md) |
-| 28 Agent composability *(planned)* | [phase-28-overview.md](phase-28-overview.md) | [phase-28-agent-composability.md](phase-28-agent-composability.md) |
-| 29 Agent dynamism *(planned)* | [phase-29-overview.md](phase-29-overview.md) | [phase-29-agent-dynamism.md](phase-29-agent-dynamism.md) |
-| 30 Macro compilation | — | [phase-30-macro-compilation.md](phase-30-macro-compilation.md) |
-| 31 Bridge retirement | [phase-31-overview.md](phase-31-overview.md) | [phase-31-bridge-retirement.md](phase-31-bridge-retirement.md) |
-| 33 Typed input surface | [phase-33-overview.md](phase-33-overview.md) | — |
-| 34 Auto-memory wiring | [phase-34-overview.md](phase-34-overview.md) | [phase-34-auto-memory.md](phase-34-auto-memory.md) |
-| 35 Knowledge-MCP protocol *(planned)* | [phase-35-overview.md](phase-35-overview.md) | [phase-35-knowledge-mcp.md](phase-35-knowledge-mcp.md) |
-| 36 Pipeline stage config isolation | [phase-36-overview.md](phase-36-overview.md) | [phase-36-implementation-plan.md](phase-36-implementation-plan.md) |
-| 37 Transparent response caching *(in flight)* | [phase-37-overview.md](phase-37-overview.md) | [phase-37-response-caching.md](phase-37-response-caching.md) |
-| 38 Cache backend abstraction *(planned)* | [phase-38-overview.md](phase-38-overview.md) | — |
-| 39 Remote cache backends *(planned)* | [phase-39-overview.md](phase-39-overview.md) | — |
-| 40 Embedding/rerank caching *(planned)* | [phase-40-overview.md](phase-40-overview.md) | — |
-| 41 Cache observability & admin *(planned)* | [phase-41-overview.md](phase-41-overview.md) | — |
+| 24 Regression & distillation | [phase-24-overview.md](phase-24-overview.md) | — |
+| 28 Agent composability | [phase-28-overview.md](phase-28-overview.md) | [phase-28-agent-composability.md](phase-28-agent-composability.md) |
+| 29 Agent dynamism | [phase-29-overview.md](phase-29-overview.md) | [phase-29-agent-dynamism.md](phase-29-agent-dynamism.md) |
+| 35 Knowledge-MCP protocol | [phase-35-overview.md](phase-35-overview.md) | [phase-35-knowledge-mcp.md](phase-35-knowledge-mcp.md) |
+| 37 Transparent response caching | [phase-37-overview.md](phase-37-overview.md) | [phase-37-response-caching.md](phase-37-response-caching.md) |
+| 38 Cache backend trait & control protocol | [phase-38-overview.md](phase-38-overview.md) | — |
+| 39 Remote cache backends | [phase-39-overview.md](phase-39-overview.md) | — |
+| 40 Embedding/rerank caching | [phase-40-overview.md](phase-40-overview.md) | — |
+| 41 Cache observability & admin | [phase-41-overview.md](phase-41-overview.md) | — |
 
-> Phase 32 (Pi as REPL Surface) is documented under [`../features/repl-pi.md`](../features/repl-pi.md),
-> not here. Phase 8 (data processing & observability) lives in
-> [`phase-8-data-observability.md`](phase-8-data-observability.md) and is **active** — see the note in the ledger.
+### Planned — next-year frontier (2026-06 refresh)
 
-## Archived (superseded — see [`archive/`](archive/))
+| Phase | Epic | Overview |
+|---|---|---|
+| 42 Trace emission (SPEC-001) | 15 Observability Keystone | [phase-42-overview.md](phase-42-overview.md) |
+| 43 Test harness (SPEC-002) | 15 Observability Keystone | [phase-43-overview.md](phase-43-overview.md) |
+| 44 Trace projections & training extraction | 15 Observability Keystone | [phase-44-overview.md](phase-44-overview.md) |
+| 45 Astrophage MVP: replay-core + cache gateway | 16 Astrophage Substrate | [phase-45-overview.md](phase-45-overview.md) |
+| 46 Cassette policy & eval-replay loop | 16 Astrophage Substrate | [phase-46-overview.md](phase-46-overview.md) |
+| 47 Mock policy & fault injection | 16 Astrophage Substrate | [phase-47-overview.md](phase-47-overview.md) |
+| 48 brief companion: cassette bindings | 16 Astrophage Substrate | [phase-48-overview.md](phase-48-overview.md) |
+| 49 Agent memory federation | 10 Entity Evolution | [phase-49-overview.md](phase-49-overview.md) |
+| 50 Knowledge-as-cassette / federated KB | 17 Federation & Scale | [phase-50-overview.md](phase-50-overview.md) |
+| 51 Vendor model extensions | 17 Federation & Scale | [phase-51-overview.md](phase-51-overview.md) |
 
-Tombstones. Moved out of the active roadmap on 2026-06-02; nothing deleted.
+### Deferred
 
-| Archived file | Why archived |
+| Phase | Overview | Companion detail |
+|---|---|---|
+| 18 Discovery & estimation *(deferred 2026-04-17)* | [phase-18-overview.md](phase-18-overview.md) | [phase-18-server-discovery.md](phase-18-server-discovery.md) |
+
+> Phase 32 (Pi as REPL Surface) shipped and is documented as a feature:
+> [`../features/repl-pi.md`](../features/repl-pi.md).
+
+## Archived (shipped — see [`archive/`](archive/))
+
+All **Done** phase docs moved to `archive/` on the 2026-06-04 refresh; nothing was deleted. The
+comprehensive ledger is [`archive/completed-epics.md`](archive/completed-epics.md).
+
+| Archived docs | Why archived |
 |---|---|
-| `initial-phased-roadmap.md` | Original 2026-03-10 flat plan (pre-renumber). Superseded by `../ROADMAP.md` + per-phase docs. |
-| `phase-0-prerequisites.md` … `phase-7-error-messages.md` | Epic 1 foundation, all **Done**. Summarized in [`completed-epics.md`](archive/completed-epics.md). |
-| `phase-31.md` | 3-line redirect stub; superseded by `phase-31-overview.md` + `phase-31-bridge-retirement.md`. |
+| `phase-0-*` … `phase-7-error-messages.md`, `initial-phased-roadmap.md`, `phase-31.md` | Epic 1 foundation + pre-renumber plan (archived 2026-06-02). |
+| `phase-9-*`, `phase-10-*`, `phase-11-*`, `phase-12-overview`, `phase-13-overview`, `phase-14-overview`, `phase-15-overview`, `phase-16-*`, `phase-17-*` | Epics 2–5 shipped phases. |
+| `phase-19-overview`, `phase-20-overview`, `phase-21-overview`, `phase-22-overview`, `phase-23-overview` | Epics 6–8 shipped phases. |
+| `phase-25-knowledge-compilation`, `phase-26-knowledge-query`, `phase-27-knowledge-evolution` | Epic 9 (Knowledge Evolution) shipped. |
+| `phase-30-macro-compilation`, `phase-31-overview`, `phase-31-bridge-retirement`, `phase-33-overview`, `phase-34-*`, `phase-36-*` | Epics 11–14 + DAG/typed-input shipped phases. |
 
-_Epic 1's `phase-8-data-observability.md` was **not** archived — it backs active in-progress work._
+_Internal `../` links inside the newly-archived docs were re-calibrated `+1` level for their new
+location; the older frozen foundation docs (`phase-0-7`) keep their original (historical) links._
