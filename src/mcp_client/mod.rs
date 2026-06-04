@@ -1156,12 +1156,14 @@ mod tests {
 
     #[test]
     fn test_resolve_env_vars_expansion() {
-        std::env::set_var("TEST_MCP_TOKEN_12345", "secret");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("TEST_MCP_TOKEN_12345", "secret") };
         let mut env = HashMap::new();
         env.insert("TOKEN".into(), "${TEST_MCP_TOKEN_12345}".into());
         let resolved = resolve_env_vars(&env);
         assert_eq!(resolved["TOKEN"], "secret");
-        std::env::remove_var("TEST_MCP_TOKEN_12345");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TEST_MCP_TOKEN_12345") };
     }
 
     // ---- Schema cache helpers ----

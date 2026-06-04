@@ -132,7 +132,7 @@ mod tests {
     use super::*;
 
     macro_rules! assert_render {
-        ($template:expr, [$(($key:literal, $value:literal),)*], $expect:literal) => {
+        ($template:expr_2021, [$(($key:literal, $value:literal),)*], $expect:literal) => {
             let data = HashMap::from([
                 $(($key, $value.into()),)*
             ]);

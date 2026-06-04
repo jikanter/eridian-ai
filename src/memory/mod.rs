@@ -384,7 +384,8 @@ mod tests {
             "Always cite sources inline.",
         )
         .unwrap();
-        std::env::set_var(get_env_name("memory_dir"), dir.path());
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var(get_env_name("memory_dir"), dir.path()) };
 
         // Substring of the link target stem resolves.
         let (path, text) = load_topic("cite_sources").unwrap();
@@ -398,7 +399,8 @@ mod tests {
         assert!(expanded[0].ends_with("feedback_cite_sources.md"));
         assert_eq!(expanded[1], "other.txt");
 
-        std::env::remove_var(get_env_name("memory_dir"));
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(get_env_name("memory_dir")) };
     }
 
     #[test]

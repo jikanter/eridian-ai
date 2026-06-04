@@ -370,16 +370,19 @@ mod tests {
 
     #[test]
     fn test_env_variable_substitution() {
-        std::env::set_var("AICHAT_TEST_VAR_1", "hello_world");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("AICHAT_TEST_VAR_1", "hello_world") };
         let mut text = "Value: {{$AICHAT_TEST_VAR_1}}".to_string();
         interpolate_variables_with_model(&mut text, None);
         assert_eq!(text, "Value: hello_world");
-        std::env::remove_var("AICHAT_TEST_VAR_1");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AICHAT_TEST_VAR_1") };
     }
 
     #[test]
     fn test_env_variable_unset() {
-        std::env::remove_var("AICHAT_TEST_UNSET_VAR");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AICHAT_TEST_UNSET_VAR") };
         let mut text = "Value: {{$AICHAT_TEST_UNSET_VAR}}".to_string();
         interpolate_variables_with_model(&mut text, None);
         assert_eq!(text, "Value: {{$AICHAT_TEST_UNSET_VAR}}");
@@ -387,30 +390,35 @@ mod tests {
 
     #[test]
     fn test_env_variable_mixed_with_system_vars() {
-        std::env::set_var("AICHAT_TEST_VAR_2", "env_value");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("AICHAT_TEST_VAR_2", "env_value") };
         let mut text = "OS: {{__os__}}, Env: {{$AICHAT_TEST_VAR_2}}".to_string();
         interpolate_variables_with_model(&mut text, None);
         assert!(!text.contains("{{__os__}}"));
         assert!(text.contains("env_value"));
         assert!(!text.contains("{{$AICHAT_TEST_VAR_2}}"));
-        std::env::remove_var("AICHAT_TEST_VAR_2");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AICHAT_TEST_VAR_2") };
     }
 
     #[test]
     fn test_env_variable_with_model_vars() {
-        std::env::set_var("AICHAT_TEST_VAR_3", "from_env");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("AICHAT_TEST_VAR_3", "from_env") };
         let model = make_test_model();
         let mut text = "Model: {{__model_name__}}, Env: {{$AICHAT_TEST_VAR_3}}".to_string();
         interpolate_variables_with_model(&mut text, Some(&model));
         assert!(text.contains("gpt-4o"));
         assert!(text.contains("from_env"));
-        std::env::remove_var("AICHAT_TEST_VAR_3");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AICHAT_TEST_VAR_3") };
     }
 
     #[test]
     fn test_env_variable_does_not_match_regular_vars() {
         let mut text = "Regular: {{foo}}, Env: {{$BAR}}".to_string();
-        std::env::remove_var("BAR");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("BAR") };
         interpolate_variables_with_model(&mut text, None);
         // {{foo}} gets processed by RE_VARIABLE (unresolved, stays as {{foo}})
         assert!(text.contains("{{foo}}"));
@@ -420,18 +428,21 @@ mod tests {
 
     #[test]
     fn test_env_variable_non_aichat_prefix_blocked() {
-        std::env::set_var("SECRET_TOKEN", "super_secret");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("SECRET_TOKEN", "super_secret") };
         let mut text = "Token: {{$SECRET_TOKEN}}".to_string();
         interpolate_variables_with_model(&mut text, None);
         // Non-AICHAT_ vars are blocked even when set
         assert_eq!(text, "Token: {{$SECRET_TOKEN}}");
         assert!(!text.contains("super_secret"));
-        std::env::remove_var("SECRET_TOKEN");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("SECRET_TOKEN") };
     }
 
     #[test]
     fn test_env_variable_ordering() {
-        std::env::set_var("AICHAT_TEST_VAR_4", "env_resolved");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("AICHAT_TEST_VAR_4", "env_resolved") };
         let model = make_test_model();
         let mut text = concat!(
             "{{#if __supports_vision__}}\n",
@@ -447,7 +458,8 @@ mod tests {
         // Phase 3: env var resolved
         assert!(text.contains("env_resolved"));
         assert!(!text.contains("{{"));
-        std::env::remove_var("AICHAT_TEST_VAR_4");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AICHAT_TEST_VAR_4") };
     }
 
     #[test]

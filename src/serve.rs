@@ -42,7 +42,11 @@ type AppResponse = Response<BoxBody<Bytes, Infallible>>;
 pub async fn run(config: GlobalConfig, addr: Option<String>) -> Result<()> {
     let addr = resolve_addr(&config, addr);
     let listener = TcpListener::bind(&addr).await?;
-    let stop_server = run_on(listener, &config).await?;
+    // Read-once at server startup: a user-exported AICHAT_BRIDGE_TOKEN enables
+    // the `/v1/state/*` REPL bridge. Concurrent read-only getenv is safe; we
+    // never write the variable.
+    let bridge_token = std::env::var("AICHAT_BRIDGE_TOKEN").ok();
+    let stop_server = run_on(listener, &config, bridge_token).await?;
     println!("Chat Completions API: http://{addr}/v1/chat/completions");
     println!("Models API:           http://{addr}/v1/models");
     println!("Roles API:            http://{addr}/v1/roles");
@@ -86,8 +90,9 @@ pub fn resolve_addr(config: &GlobalConfig, addr: Option<String>) -> String {
 pub async fn run_on(
     listener: TcpListener,
     config: &GlobalConfig,
+    bridge_token: Option<String>,
 ) -> Result<oneshot::Sender<()>> {
-    let server = Arc::new(Server::new(config));
+    let server = Arc::new(Server::new(config, bridge_token));
     server.run(listener).await
 }
 
@@ -97,7 +102,9 @@ struct Server {
     /// observe the new role / agent / session / rag. The CLI `--serve` path
     /// continues to behave identically because nothing else writes to it.
     config: GlobalConfig,
-    /// Bridge token sourced from `AICHAT_BRIDGE_TOKEN` at server start.
+    /// Bridge token passed explicitly at construction. For CLI `--serve` it is
+    /// read once from `AICHAT_BRIDGE_TOKEN` in [`run`]; for the pi bridge it is
+    /// the freshly minted token handed in by `src/repl/pi.rs`.
     /// When `None`, `/v1/state/*` routes 404 (CLI `--serve` users never see
     /// them). When `Some`, requests must carry `Authorization: Bearer <tok>`.
     bridge_token: Option<String>,
@@ -123,7 +130,7 @@ struct Listing {
 }
 
 impl Server {
-    fn new(config: &GlobalConfig) -> Self {
+    fn new(config: &GlobalConfig, bridge_token: Option<String>) -> Self {
         // Snapshot enough of the config at boot to populate the static
         // listings the OpenAI-compatible surface exposes. The live lock
         // (`self.config`) is what state-mutating bridge endpoints touch.
@@ -133,7 +140,7 @@ impl Server {
         let listing = Self::build_listing(&snapshot);
         Self {
             config: config.clone(),
-            bridge_token: std::env::var("AICHAT_BRIDGE_TOKEN").ok(),
+            bridge_token,
             api_key,
             cors,
             listing: RwLock::new(listing),
@@ -2296,6 +2303,22 @@ fn parse_tools(tools: Option<Vec<Value>>) -> Result<Option<Vec<FunctionDeclarati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Bridge token is passed explicitly, never read from process env ----
+
+    #[test]
+    fn server_new_uses_explicit_bridge_token() {
+        let config = Arc::new(RwLock::new(Config::default()));
+        let server = Server::new(&config, Some("explicit-token".to_string()));
+        assert_eq!(server.bridge_token.as_deref(), Some("explicit-token"));
+    }
+
+    #[test]
+    fn server_new_bridge_token_none_when_not_provided() {
+        let config = Arc::new(RwLock::new(Config::default()));
+        let server = Server::new(&config, None);
+        assert_eq!(server.bridge_token, None);
+    }
 
     // ---- Phase 17A: extract_last_user_message ----
 

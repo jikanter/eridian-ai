@@ -516,12 +516,14 @@ mod env_resolution {
     #[test]
     fn test_resolve_env_var_expansion() {
         // ${VAR} syntax reads from parent env
-        std::env::set_var("TEST_COMPAT_VAR", "resolved_value");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("TEST_COMPAT_VAR", "resolved_value") };
         let mut env_map = HashMap::new();
         env_map.insert("KEY".to_string(), "${TEST_COMPAT_VAR}".to_string());
         let resolved = resolve_env_vars(&env_map);
         assert_eq!(resolved["KEY"], "resolved_value");
-        std::env::remove_var("TEST_COMPAT_VAR");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TEST_COMPAT_VAR") };
     }
 
     #[test]
@@ -534,14 +536,16 @@ mod env_resolution {
 
     #[test]
     fn test_resolve_env_mixed() {
-        std::env::set_var("TEST_COMPAT_MIX", "from_env");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("TEST_COMPAT_MIX", "from_env") };
         let mut env_map = HashMap::new();
         env_map.insert("A".to_string(), "literal".to_string());
         env_map.insert("B".to_string(), "${TEST_COMPAT_MIX}".to_string());
         let resolved = resolve_env_vars(&env_map);
         assert_eq!(resolved["A"], "literal");
         assert_eq!(resolved["B"], "from_env");
-        std::env::remove_var("TEST_COMPAT_MIX");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("TEST_COMPAT_MIX") };
     }
 
     fn resolve_env_vars(env_map: &HashMap<String, String>) -> HashMap<String, String> {
@@ -2648,7 +2652,7 @@ mod tool_execution {
     }
 
     macro_rules! skip_if {
-        ($check:expr) => {
+        ($check:expr_2021) => {
             if let Some(reason) = $check {
                 eprintln!("SKIP: {reason}");
                 return;

@@ -41,9 +41,19 @@ use parking_lot::RwLock;
 use simplelog::{format_description, ConfigBuilder, LevelFilter, SimpleLogger, WriteLogger};
 use std::{env, process, sync::Arc};
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    // Load the env file while the process is still single-threaded, before the
+    // tokio runtime spawns any worker thread. load_env_file() mutates the
+    // process environment via set_var, which is only sound with no other
+    // threads running — so the runtime must be built *after* it returns.
     load_env_file()?;
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<()> {
     let cli = Cli::parse();
 
     // Phase 31E: validate a portable mcp.json declarations file. Runs before
@@ -1297,15 +1307,15 @@ async fn process_one_record(
     let output = if let Some(schema) = input.role().output_schema() {
         validate_schema_traced("output", schema, &output, trace_emitter.as_ref())?;
         output
-    } else if let Some(fmt) = config.read().output_format {
+    } else { match config.read().output_format { Some(fmt) => {
         if fmt.is_structured() {
             fmt.clean_output(&output)?
         } else {
             output
         }
-    } else {
+    } _ => {
         output
-    };
+    }}};
 
     Ok(output)
 }

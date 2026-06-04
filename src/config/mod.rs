@@ -3454,6 +3454,24 @@ impl Config {
     }
 }
 
+/// Parse `.env`-style contents into trimmed `(key, value)` pairs. Pure: no
+/// environment mutation, so it is safe to unit-test and call off the main
+/// thread. Comment (`#`) and blank lines are skipped; only the first `=` on a
+/// line splits key from value; lines without `=` are ignored.
+pub fn parse_env_file(contents: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            pairs.push((key.trim().to_string(), value.trim().to_string()));
+        }
+    }
+    pairs
+}
+
 pub fn load_env_file() -> Result<()> {
     let env_file_path = Config::env_file();
     let contents = match read_to_string(&env_file_path) {
@@ -3461,14 +3479,11 @@ pub fn load_env_file() -> Result<()> {
         Err(_) => return Ok(()),
     };
     debug!("Use env file '{}'", env_file_path.display());
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.starts_with('#') || line.is_empty() {
-            continue;
-        }
-        if let Some((key, value)) = line.split_once('=') {
-            env::set_var(key.trim(), value.trim());
-        }
+    for (key, value) in parse_env_file(&contents) {
+        // SAFETY: main() builds the tokio runtime only after load_env_file()
+        // returns, so this runs while the process is still single-threaded —
+        // no concurrent getenv can race this set_var.
+        unsafe { env::set_var(key, value) };
     }
     Ok(())
 }
@@ -3828,6 +3843,53 @@ fn validate_pipe_to_command(cmd: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    // ---- parse_env_file: pure parsing of .env contents (no env mutation) ----
+
+    #[test]
+    fn parse_env_file_extracts_key_value_pairs() {
+        let pairs = parse_env_file("FOO=bar\nBAZ=qux\n");
+        assert_eq!(
+            pairs,
+            vec![
+                ("FOO".to_string(), "bar".to_string()),
+                ("BAZ".to_string(), "qux".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_env_file_skips_comments_and_blank_lines() {
+        let pairs = parse_env_file("# comment\n\nFOO=bar\n   \n# another\n");
+        assert_eq!(pairs, vec![("FOO".to_string(), "bar".to_string())]);
+    }
+
+    #[test]
+    fn parse_env_file_trims_keys_and_values() {
+        let pairs = parse_env_file("  FOO  =  bar  \n");
+        assert_eq!(pairs, vec![("FOO".to_string(), "bar".to_string())]);
+    }
+
+    #[test]
+    fn parse_env_file_splits_on_first_equals_only() {
+        let pairs = parse_env_file("URL=http://x?a=1&b=2\n");
+        assert_eq!(
+            pairs,
+            vec![("URL".to_string(), "http://x?a=1&b=2".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_env_file_ignores_lines_without_equals() {
+        let pairs = parse_env_file("FOO=bar\nnonsense\nBAZ=qux\n");
+        assert_eq!(
+            pairs,
+            vec![
+                ("FOO".to_string(), "bar".to_string()),
+                ("BAZ".to_string(), "qux".to_string()),
+            ]
+        );
+    }
+
     // ---- Phase 36: PartialConfig / apply_partial / is_path_descendant ----
 
     #[test]
@@ -3997,17 +4059,20 @@ mod tests {
     #[test]
     fn remote_config_resolves_env_var_in_api_key() {
         // Use a fresh var name so we don't fight with other tests.
-        std::env::set_var("AICHAT_TEST_REMOTE_TOKEN_20C", "from-env-789");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("AICHAT_TEST_REMOTE_TOKEN_20C", "from-env-789") };
         let yaml = "endpoint: http://x\napi_key: ${AICHAT_TEST_REMOTE_TOKEN_20C}\n";
         let cfg: RemoteConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(cfg.resolved_api_key().as_deref(), Some("from-env-789"));
-        std::env::remove_var("AICHAT_TEST_REMOTE_TOKEN_20C");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AICHAT_TEST_REMOTE_TOKEN_20C") };
     }
 
     #[test]
     fn remote_config_unset_env_var_resolves_to_none() {
         // Variable deliberately not set.
-        std::env::remove_var("AICHAT_TEST_REMOTE_TOKEN_MISSING");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AICHAT_TEST_REMOTE_TOKEN_MISSING") };
         let cfg = RemoteConfig {
             endpoint: "http://x".into(),
             api_key: Some("${AICHAT_TEST_REMOTE_TOKEN_MISSING}".into()),

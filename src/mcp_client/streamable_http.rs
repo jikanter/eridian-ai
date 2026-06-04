@@ -255,12 +255,12 @@ pub fn build_transport(
                 .or_else(|| v.strip_prefix("bearer "))
                 .unwrap_or(v);
             config.auth_header = Some(token.to_string());
-        } else if let (Ok(name), Ok(value)) = (
+        } else { match (
             HeaderName::from_bytes(k.as_bytes()),
             HeaderValue::from_str(v),
-        ) {
+        ) { (Ok(name), Ok(value)) => {
             custom_headers.insert(name, value);
-        }
+        } _ => {}}}
     }
     if !custom_headers.is_empty() {
         config.custom_headers = custom_headers;

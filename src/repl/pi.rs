@@ -113,13 +113,12 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
                 .context("aichat bridge: listener has no local address")?;
             let url = format!("http://127.0.0.1:{}", addr.port());
             let token = mint_bridge_token();
-            // The bridge token must be set in this process's env _before_ we
-            // call serve::run_on so the Server picks it up in its
-            // constructor. Doing it via Command::env on the child only would
-            // mean the in-process server never sees the token and refuses
-            // every bridge call.
-            std::env::set_var("AICHAT_BRIDGE_TOKEN", &token);
-            let stop = serve::run_on(listener, config)
+            // Hand the freshly minted token straight to the in-process server
+            // instead of mutating our own process environment. Mutating env at
+            // runtime (set_var) is unsafe on the multi-threaded runtime — see
+            // the read-once discipline in serve::run. The child pi process
+            // still receives the token explicitly via Command::env below.
+            let stop = serve::run_on(listener, config, Some(token.clone()))
                 .await
                 .context("aichat bridge: failed to start in-process server")?;
             info!("aichat bridge listening on {url}");
@@ -157,15 +156,10 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
     let spawn_result = command.status().await;
 
     // Signal the in-process server to shut down (no-op when we reused one).
-    let we_started_server = stop_server.is_some();
+    // No env cleanup needed: the token was handed to the server and the child
+    // process explicitly, never written into our own process environment.
     if let Some(stop) = stop_server {
         let _ = stop.send(());
-    }
-    // Clear a token we set so a subsequent in-process invocation (e.g. tests
-    // reusing the binary) starts clean. When reusing a server we never set
-    // it, so a user-exported token is left untouched.
-    if we_started_server {
-        std::env::remove_var("AICHAT_BRIDGE_TOKEN");
     }
     // Clean up the staged extension + agent dir unless the user asked us not
     // to. The escape hatch is handy when debugging extension/model load
@@ -804,9 +798,11 @@ mod tests {
 
     #[tokio::test]
     async fn probe_existing_server_honors_opt_out() {
-        std::env::set_var("AICHAT_NO_SERVER_PROBE", "1");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("AICHAT_NO_SERVER_PROBE", "1") };
         let result = probe_existing_server().await;
-        std::env::remove_var("AICHAT_NO_SERVER_PROBE");
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("AICHAT_NO_SERVER_PROBE") };
         assert_eq!(result, None);
     }
 }

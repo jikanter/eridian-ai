@@ -703,15 +703,15 @@ async fn run_stage_inner(
                 ..Default::default()
             };
             if is_last && !input.stream() && !json_envelope_mode(config) {
-                let final_output = if let Some(fmt) = config.read().output_format {
+                let final_output = match config.read().output_format { Some(fmt) => {
                     if fmt.is_structured() {
                         fmt.clean_output(&cached)?
                     } else {
                         cached.clone()
                     }
-                } else {
+                } _ => {
                     cached.clone()
-                };
+                }};
                 print!("{final_output}");
                 std::io::Write::flush(&mut std::io::stdout())?;
                 if !final_output.ends_with('\n') {
@@ -825,15 +825,15 @@ async fn run_stage_inner(
     }
 
     if is_last && !input.stream() && !json_envelope_mode(config) {
-        let final_output = if let Some(fmt) = config.read().output_format {
+        let final_output = match config.read().output_format { Some(fmt) => {
             if fmt.is_structured() {
                 fmt.clean_output(&output)?
             } else {
                 output.to_string()
             }
-        } else {
+        } _ => {
             output.to_string()
-        };
+        }};
         print!("{final_output}");
         std::io::Write::flush(&mut std::io::stdout())?;
         if !final_output.ends_with('\n') {
@@ -2229,15 +2229,15 @@ async fn run_switch(
 /// last position of the top-level pipeline. Mirrors the printing block in
 /// `run_stage_inner` for sequential stages.
 fn print_final_output(config: &GlobalConfig, output: &str) -> Result<()> {
-    let final_output = if let Some(fmt) = config.read().output_format {
+    let final_output = match config.read().output_format { Some(fmt) => {
         if fmt.is_structured() {
             fmt.clean_output(output)?
         } else {
             output.to_string()
         }
-    } else {
+    } _ => {
         output.to_string()
-    };
+    }};
     print!("{final_output}");
     std::io::Write::flush(&mut std::io::stdout())?;
     if !final_output.ends_with('\n') {

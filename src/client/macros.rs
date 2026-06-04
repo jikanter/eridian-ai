@@ -279,7 +279,7 @@ macro_rules! config_get_fn {
 
 #[macro_export]
 macro_rules! unsupported_model {
-    ($name:expr) => {
+    ($name:expr_2021) => {
         anyhow::bail!("Unsupported model '{}'", $name)
     };
 }
