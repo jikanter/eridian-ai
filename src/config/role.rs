@@ -179,7 +179,118 @@ pub(crate) fn knowledge_bindings_to_export(bindings: &[KnowledgeBinding]) -> Val
 static RE_METADATA: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)-{3,}\s*(.*?)\s*-{3,}\s*(.*)").unwrap());
 
-pub trait RoleLike {
+/// Phase 52A: the six closed facet *families* (entity-model.md §4). Everything
+/// an entity carries beyond its irreducible core (model + prompt) belongs to
+/// exactly one family. The set is closed — new *kinds* of capability are not
+/// addable — but each family's internal vocabulary is open (§5.1).
+///
+// 52A only formalizes introspection; the consumers (`--dry-run` facet listing
+// in 52B, uniform resolution in 52C, trace attribution in 52D) land in later
+// sub-phases, so the surface is intentionally unused in prod for now.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Facet {
+    /// What it knows beyond the prompt: RAG, knowledge bindings, memory.
+    Know,
+    /// What it can do: tools, agent-as-tool, MCP servers.
+    Act,
+    /// Its I/O shape: typed schemas, examples, variables, lifecycle hooks,
+    /// attribution.
+    Shape,
+    /// How its loop behaves: fallback/retry policy, budgets, react config,
+    /// dynamic instructions.
+    Govern,
+    /// What it is made of: inheritance, pipeline, macro steps.
+    Compose,
+    /// How it is scored: metrics.
+    Judge,
+}
+
+#[allow(dead_code)]
+impl Facet {
+    /// The verb naming the question this family answers.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Facet::Know => "Know",
+            Facet::Act => "Act",
+            Facet::Shape => "Shape",
+            Facet::Govern => "Govern",
+            Facet::Compose => "Compose",
+            Facet::Judge => "Judge",
+        }
+    }
+}
+
+impl std::fmt::Display for Facet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Phase 52A: whether a facet is *owned* by the entity or merely *referenced*.
+///
+/// The §5.2 rule — **backing gates ownership, not reference** — is the single
+/// resolution invariant: a file-role can *reference* a toolset (`use_tools`) or
+/// a knowledge base, but only a directory-backed agent can *own* executable or
+/// stateful facets (its own tools, memory, RAG corpus, dynamic instructions).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum FacetOwnership {
+    Owned,
+    Referenced,
+}
+
+/// Phase 52A: the result of [`Entity::facets`] — the set of facet families an
+/// entity carries, each tagged owned or referenced. A single family may appear
+/// under both ownerships (e.g. an agent that *owns* its tools yet *references*
+/// an MCP server — both are `Act`).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FacetSet {
+    entries: std::collections::BTreeSet<(Facet, FacetOwnership)>,
+}
+
+#[allow(dead_code)]
+impl FacetSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record a facet presence. Owned and referenced are tracked
+    /// independently, so a family can be present under both.
+    pub fn insert(&mut self, facet: Facet, ownership: FacetOwnership) {
+        self.entries.insert((facet, ownership));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// True if the family is present under any ownership.
+    pub fn contains(&self, facet: Facet) -> bool {
+        self.entries.iter().any(|(fam, _)| *fam == facet)
+    }
+
+    pub fn is_owned(&self, facet: Facet) -> bool {
+        self.entries.contains(&(facet, FacetOwnership::Owned))
+    }
+
+    pub fn is_referenced(&self, facet: Facet) -> bool {
+        self.entries.contains(&(facet, FacetOwnership::Referenced))
+    }
+
+    /// The distinct families present, ownership collapsed.
+    pub fn families(&self) -> std::collections::BTreeSet<Facet> {
+        self.entries.iter().map(|(fam, _)| *fam).collect()
+    }
+
+    /// Iterate over every `(family, ownership)` pair, in stable order.
+    pub fn iter(&self) -> impl Iterator<Item = (Facet, FacetOwnership)> + '_ {
+        self.entries.iter().copied()
+    }
+}
+
+pub trait Entity {
     fn to_role(&self) -> Role;
     fn model(&self) -> &Model;
     fn temperature(&self) -> Option<f64>;
@@ -189,6 +300,15 @@ pub trait RoleLike {
     fn set_temperature(&mut self, value: Option<f64>);
     fn set_top_p(&mut self, value: Option<f64>);
     fn set_use_tools(&mut self, value: Option<String>);
+
+    /// Phase 52A: report which facet families this entity carries, each tagged
+    /// owned or referenced. This is the capability-introspection surface that
+    /// lets `--dry-run`, MCP capability negotiation, and uniform resolution
+    /// work across presets without branching on the concrete variant. See
+    /// `docs/architecture/entity-model.md` §4/§5.2.
+    // Consumed by 52B (`--dry-run`), 52C (resolution), 52D (trace).
+    #[allow(dead_code)]
+    fn facets(&self) -> FacetSet;
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -1804,7 +1924,7 @@ impl Role {
         Ok(())
     }
 
-    pub fn sync<T: RoleLike>(&mut self, role_like: &T) {
+    pub fn sync<T: Entity>(&mut self, role_like: &T) {
         let model = role_like.model();
         let temperature = role_like.temperature();
         let top_p = role_like.top_p();
@@ -2237,7 +2357,7 @@ impl Role {
     }
 }
 
-impl RoleLike for Role {
+impl Entity for Role {
     fn to_role(&self) -> Role {
         self.clone()
     }
@@ -2276,6 +2396,44 @@ impl RoleLike for Role {
 
     fn set_use_tools(&mut self, value: Option<String>) {
         self.use_tools = value;
+    }
+
+    fn facets(&self) -> FacetSet {
+        use FacetOwnership::{Owned, Referenced};
+        let mut facets = FacetSet::new();
+        // A role is file-backed: it can *own* declarative facets (Compose,
+        // Shape, Judge, Govern) but only *reference* executable/stateful ones
+        // (Act, Know) — the §5.2 backing-gates-ownership rule.
+        if !self.knowledge_bindings.is_empty() || self.knowledge_mode.is_some() {
+            facets.insert(Facet::Know, Referenced);
+        }
+        if self.use_tools.is_some() || !self.role_mcp_servers.is_empty() {
+            facets.insert(Facet::Act, Referenced);
+        }
+        if self.input_schema.is_some()
+            || self.output_schema.is_some()
+            || self.examples.is_some()
+            || !self.variables.is_empty()
+            || self.pipe_to.is_some()
+            || self.save_to.is_some()
+            || self.attributed_output
+        {
+            facets.insert(Facet::Shape, Owned);
+        }
+        if !self.fallback_models.is_empty()
+            || self.schema_retries.is_some()
+            || self.stage_retries.is_some()
+            || self.pipeline_budget_usd.is_some()
+        {
+            facets.insert(Facet::Govern, Owned);
+        }
+        if self.extends.is_some() || !self.include.is_empty() || self.pipeline.is_some() {
+            facets.insert(Facet::Compose, Owned);
+        }
+        if !self.metrics.is_empty() {
+            facets.insert(Facet::Judge, Owned);
+        }
+        facets
     }
 }
 
@@ -5073,5 +5231,81 @@ pipeline:
         assert!(!obj.contains_key("capabilities"));
         assert!(!obj.contains_key("input_schema"));
         assert!(!obj.contains_key("output_schema"));
+    }
+
+    // Phase 52A: Entity::facets() capability introspection.
+
+    #[test]
+    fn facets_bare_role_has_none() {
+        let role = Role::new("bare", "---\nmodel: gpt-4\n---\nHello.");
+        assert!(role.facets().is_empty());
+    }
+
+    #[test]
+    fn facets_role_references_act_via_use_tools() {
+        let role = Role::new("acts", "---\nuse_tools: fs_read\n---\nP.");
+        assert!(role.facets().is_referenced(Facet::Act));
+        assert!(!role.facets().is_owned(Facet::Act));
+    }
+
+    #[test]
+    fn facets_role_references_act_via_mcp_servers() {
+        let role = Role::new("mcp", "---\nmcp_servers: [github]\n---\nP.");
+        assert!(role.facets().is_referenced(Facet::Act));
+    }
+
+    #[test]
+    fn facets_role_references_know_via_knowledge() {
+        let role = Role::new("knows", "---\nknowledge: my-kb\n---\nP.");
+        assert!(role.facets().is_referenced(Facet::Know));
+        assert!(!role.facets().is_owned(Facet::Know));
+    }
+
+    #[test]
+    fn facets_role_owns_shape_via_output_schema() {
+        let role = Role::new(
+            "shaped",
+            "---\noutput_schema:\n  type: object\n---\nP.",
+        );
+        assert!(role.facets().is_owned(Facet::Shape));
+    }
+
+    #[test]
+    fn facets_role_owns_compose_via_extends() {
+        let role = Role::new("child", "---\nextends: parent\n---\nP.");
+        assert!(role.facets().is_owned(Facet::Compose));
+    }
+
+    #[test]
+    fn facets_role_owns_govern_via_fallback_models() {
+        let role = Role::new("guarded", "---\nfallback_models: [gpt-3.5]\n---\nP.");
+        assert!(role.facets().is_owned(Facet::Govern));
+    }
+
+    #[test]
+    fn facets_role_owns_judge_via_metrics() {
+        let role = Role::new(
+            "judged",
+            "---\nmetrics:\n  - name: len\n    shell: 'wc -c'\n---\nP.",
+        );
+        assert!(role.facets().is_owned(Facet::Judge));
+    }
+
+    #[test]
+    fn facets_role_distinguishes_owned_from_referenced() {
+        // A role that references Act (use_tools) but owns Shape (output_schema).
+        let role = Role::new(
+            "mixed",
+            "---\nuse_tools: fs_read\noutput_schema:\n  type: object\n---\nP.",
+        );
+        let f = role.facets();
+        assert!(f.is_referenced(Facet::Act));
+        assert!(f.is_owned(Facet::Shape));
+        // A file-role can never *own* Act (backing-gates-ownership, §5.2).
+        assert!(!f.is_owned(Facet::Act));
+        assert_eq!(
+            f.families(),
+            std::collections::BTreeSet::from([Facet::Act, Facet::Shape])
+        );
     }
 }

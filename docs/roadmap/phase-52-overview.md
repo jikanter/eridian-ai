@@ -14,10 +14,27 @@
 
 | Item | Description | Status |
 |---|---|---|
-| 52A | **`RoleLike` → `Entity` trait** — rename + a `facets()` capability-introspection method (which families are present, owned vs referenced). No behavior change; `to_role()` stays the bridge. | Planned (aichat) |
+| 52A | **`RoleLike` → `Entity` trait** — rename + a `facets()` capability-introspection method (which families are present, owned vs referenced). No behavior change; `to_role()` stays the bridge. | **Done** (aichat) |
 | 52B | **Facet taxonomy in code + docs** — the closed family set (Know · Act · Shape · Govern · Compose · Judge); document the couplings (§7 of the design); surface facets in `--dry-run`. | Planned (aichat) |
 | 52C | **Backing-aware uniform resolution** — collapse the variant-specific `SessionEntity` / `EntityRef` branches (`pipe.rs:517`, `config/mod.rs:1030`) onto the `Entity` trait; the **backing-gates-ownership** rule is the single resolution invariant. | Planned (aichat) |
 | 52D | **Trace entity attribution** — each invocation's keystone trace (Phase 42) carries `entity_id` + the *resolved facet set actually used*; the stable key Phase 49 attribution reads. | Planned (aichat) |
+
+### 52A implementation note (shipped)
+
+- The `RoleLike` trait is renamed to `Entity` (`src/config/role.rs`); all call
+  sites (`pipe.rs`, `main.rs`, `config/mod.rs`, `config/preflight.rs`,
+  `repl/mod.rs`) follow. `to_role()` is untouched — still the bridge.
+- New introspection surface: `Facet` (the six closed families), `FacetOwnership`
+  (`Owned` / `Referenced`), and `FacetSet`, with `Entity::facets() -> FacetSet`.
+- `facets()` is implemented for `Role`, `Agent`, and `Session` by **field
+  presence**, applying the §5.2 backing-gates-ownership rule: a file-role only
+  *references* `Act`/`Know`; a directory-agent *owns* its tools / RAG / dynamic
+  instructions while still *referencing* MCP servers. `Session` delegates to the
+  role it synthesizes via `to_role()`.
+- **No behavior change**: nothing in production calls `facets()` yet — it is the
+  foundation 52B (`--dry-run` listing), 52C (resolution), and 52D (trace)
+  consume. The new API carries `#[allow(dead_code)]` until then. No CLI surface
+  changed, so there is no showboat demo for 52A.
 
 ## Cross-repo seams
 

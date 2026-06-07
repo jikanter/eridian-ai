@@ -834,7 +834,7 @@ impl Session {
     }
 }
 
-impl RoleLike for Session {
+impl Entity for Session {
     fn to_role(&self) -> Role {
         let role_name = self.role_name.as_deref().unwrap_or_default();
         let mut role = Role::new(role_name, &self.role_prompt);
@@ -898,6 +898,12 @@ impl RoleLike for Session {
             self.use_tools = value;
             self.dirty = true;
         }
+    }
+
+    fn facets(&self) -> FacetSet {
+        // A session is a runtime container; its facets are those of the role it
+        // synthesizes from its own state (prompt, use_tools, schemas, hooks).
+        self.to_role().facets()
     }
 }
 

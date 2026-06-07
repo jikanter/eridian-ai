@@ -6,7 +6,7 @@ use crate::client::{
 use crate::config::{
     pipeline_stage_admissible, run_lifecycle_hooks, validate_schema_traced, Agent, Config,
     EntityRef, GlobalConfig, Input, MergeStrategy, ParallelNode, PartialConfig, PipelineNode, Role,
-    RoleLike, RolePipelineStage, SwitchNode,
+    Entity, RolePipelineStage, SwitchNode,
 };
 use crate::utils::*;
 
@@ -474,7 +474,7 @@ async fn run_stage(
 
 /// Phase 19C / 20D: resolved pipeline-stage target.
 ///
-/// Local stages collapse to a `Role` (agents via `RoleLike::to_role()`).
+/// Local stages collapse to a `Role` (agents via `Entity::to_role()`).
 /// Remote stages instead carry the resolved HTTP target so `run_stage_inner`
 /// can dispatch over the network without re-doing classification.
 enum StageTarget {
@@ -484,7 +484,7 @@ enum StageTarget {
 
 /// Phase 19C: load the entity for a pipeline stage. Roles use the existing
 /// path; agents are loaded via `Agent::init` and bridged to a Role through
-/// the `RoleLike::to_role()` synthesis. Macros are rejected — they aren't
+/// the `Entity::to_role()` synthesis. Macros are rejected — they aren't
 /// role-shaped. Phase 20D adds the Remote branch, which classifies but
 /// defers the HTTP call to `run_stage_inner`.
 ///

@@ -12,7 +12,7 @@ use crossterm::cursor::SetCursorStyle;
 use crate::client::call_react;
 use crate::config::{
     macro_execute, AgentVariables, AssertState, Config, GlobalConfig, Input, LastMessage,
-    RoleLike, StateFlags,
+    Entity, StateFlags,
 };
 use crate::render::render_error;
 use crate::utils::{

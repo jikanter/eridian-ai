@@ -16,7 +16,8 @@ pub use self::role::{
     build_role_explanation, format_pipeline_input_schema_error, format_role_explanation,
     read_role_raw_metadata, render_forked_role, run_lifecycle_hooks, validate_schema,
     validate_schema_detailed, validate_schema_traced, KnowledgeBinding, MergeStrategy,
-    ParallelNode, PipelineNode, Role, RoleExample, RoleLike,
+    ParallelNode, PipelineNode, Role, RoleExample, Entity,
+    Facet, FacetOwnership, FacetSet,
     evaluate_metrics, sanitize_role_name,
     RolePipelineStage, RolePublicView, SwitchNode, CODE_ROLE, CREATE_TITLE_ROLE,
     EXPLAIN_SHELL_ROLE, SHELL_ROLE,
@@ -1013,7 +1014,7 @@ impl Config {
         }
     }
 
-    pub fn role_like_mut(&mut self) -> Option<&mut dyn RoleLike> {
+    pub fn role_like_mut(&mut self) -> Option<&mut dyn Entity> {
         if let Some(session) = self.session.as_mut() {
             Some(session)
         } else if let Some(agent) = self.agent.as_mut() {

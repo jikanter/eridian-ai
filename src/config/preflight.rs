@@ -1,7 +1,7 @@
 use crate::client::Model;
 use crate::config::{
     is_path_descendant, pipeline_stage_admissible, Config, EntityRef, PartialConfig, PipelineNode,
-    Role, RoleLike,
+    Role, Entity,
 };
 use crate::function::FunctionDeclaration;
 

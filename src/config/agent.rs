@@ -361,7 +361,7 @@ impl Agent {
     }
 }
 
-impl RoleLike for Agent {
+impl Entity for Agent {
     fn to_role(&self) -> Role {
         let prompt = self.interpolated_instructions();
         let mut role = Role::new("", &prompt);
@@ -412,6 +412,39 @@ impl RoleLike for Agent {
 
     fn set_use_tools(&mut self, value: Option<String>) {
         self.config.use_tools = value;
+    }
+
+    fn facets(&self) -> FacetSet {
+        use FacetOwnership::{Owned, Referenced};
+        let mut facets = FacetSet::new();
+        // An agent is directory-backed: it can *own* executable/stateful facets
+        // its files provide (a tools toolset, a RAG corpus, dynamic
+        // instructions) while still *referencing* external ones (MCP servers).
+        if self.rag.is_some() || !self.definition.documents.is_empty() {
+            facets.insert(Facet::Know, Owned);
+        }
+        if !self.functions.is_empty() {
+            facets.insert(Facet::Act, Owned);
+        }
+        if self.config.use_tools.is_some() || !self.config.mcp_servers.is_empty() {
+            facets.insert(Facet::Act, Referenced);
+        }
+        if self.config.input_schema.is_some()
+            || self.config.output_schema.is_some()
+            || self.config.pipe_to.is_some()
+            || self.config.save_to.is_some()
+            || !self.config.variables.is_empty()
+            || !self.definition.variables.is_empty()
+        {
+            facets.insert(Facet::Shape, Owned);
+        }
+        if self.definition.dynamic_instructions
+            || self.shared_dynamic_instructions.is_some()
+            || self.session_dynamic_instructions.is_some()
+        {
+            facets.insert(Facet::Govern, Owned);
+        }
+        facets
     }
 }
 
@@ -687,5 +720,74 @@ save_to: out.txt
         assert!(cfg.output_schema.is_some());
         assert_eq!(cfg.pipe_to.as_deref(), Some("jq ."));
         assert_eq!(cfg.save_to.as_deref(), Some("out.txt"));
+    }
+
+    // Phase 52A: Entity::facets() — agent (directory) backing owns
+    // executable/stateful facets and references external ones.
+
+    fn bare_agent() -> Agent {
+        Agent {
+            name: "t".into(),
+            config: AgentConfig::default(),
+            definition: AgentDefinition::default(),
+            shared_variables: AgentVariables::default(),
+            session_variables: None,
+            shared_dynamic_instructions: None,
+            session_dynamic_instructions: None,
+            functions: Functions::default(),
+            rag: None,
+            model: Model::default(),
+        }
+    }
+
+    #[test]
+    fn agent_facets_bare_has_none() {
+        assert!(bare_agent().facets().is_empty());
+    }
+
+    #[test]
+    fn agent_owns_act_via_functions() {
+        let mut a = bare_agent();
+        a.functions.add_declarations(vec![serde_json::from_value(
+            serde_json::json!({"name": "f", "description": "d", "parameters": {}}),
+        )
+        .unwrap()]);
+        assert!(a.facets().is_owned(Facet::Act));
+        assert!(!a.facets().is_referenced(Facet::Act));
+    }
+
+    #[test]
+    fn agent_references_act_via_mcp_servers() {
+        let mut a = bare_agent();
+        a.config.mcp_servers = vec!["github".into()];
+        assert!(a.facets().is_referenced(Facet::Act));
+        assert!(!a.facets().is_owned(Facet::Act));
+    }
+
+    #[test]
+    fn agent_act_is_both_owned_and_referenced() {
+        let mut a = bare_agent();
+        a.functions.add_declarations(vec![serde_json::from_value(
+            serde_json::json!({"name": "f", "description": "d", "parameters": {}}),
+        )
+        .unwrap()]);
+        a.config.mcp_servers = vec!["github".into()];
+        let f = a.facets();
+        assert!(f.is_owned(Facet::Act));
+        assert!(f.is_referenced(Facet::Act));
+    }
+
+    #[test]
+    fn agent_owns_know_via_documents() {
+        let mut a = bare_agent();
+        a.definition.documents = vec!["handbook.md".into()];
+        assert!(a.facets().is_owned(Facet::Know));
+    }
+
+    #[test]
+    fn agent_owns_govern_via_dynamic_instructions() {
+        let mut a = bare_agent();
+        a.definition.dynamic_instructions = true;
+        assert!(a.facets().is_owned(Facet::Govern));
     }
 }

@@ -235,8 +235,9 @@ JUDGE       metrics
 
 ## 12. Grounding
 
-- Trait + bridge in source: `src/config/role.rs:182` (`RoleLike`), `src/config/agent.rs:365`
-  (`Agent::to_role()`), `src/pipe.rs:517` and `src/config/mod.rs:1030` (uniform dispatch).
+- Trait + bridge in source: `src/config/role.rs` (`Entity` trait + `Facet` / `FacetOwnership` /
+  `FacetSet`; renamed from `RoleLike` in Phase 52A), `src/config/agent.rs`
+  (`Agent::to_role()`), `src/pipe.rs` and `src/config/mod.rs` (uniform dispatch).
 - Architecture prose: [`architecture.md` → Entity Types](architecture.md#entity-types).
 - Roadmap realization: [Phase 52 — Entity model formalization](../roadmap/phase-52-overview.md),
   building under Epic 10 ([`analysis/epic-10.md`](../analysis/epic-10.md)).
