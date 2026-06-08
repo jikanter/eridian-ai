@@ -86,6 +86,8 @@ Pi's own commands (`/model`, `/new`, `/fork`, `/clone`, `/compact`, `/copy`,
 | `.extensions set <k> <v>` | not yet bridged | |
 | `.exit role/session/rag/agent` | `/exit-context <kind>` | |
 | `.exit` | pi-native `/quit` | |
+| (no legacy equivalent) | `/aichat-flags [query]` | Discover CLI flags, optionally filtered. See [discovery.md](discovery.md). |
+| (no legacy equivalent) | `/aichat-docs [name]` | List bundled feature docs, or print one inline. See [discovery.md](discovery.md). |
 | `.help` | pi-native `/help` | Pi lists its own commands; the bridge commands appear under "Extensions". |
 
 "Not yet bridged" entries land in follow-up phases. The endpoints are

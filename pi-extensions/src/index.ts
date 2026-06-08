@@ -31,6 +31,30 @@ interface BridgeResult {
   [key: string]: unknown;
 }
 
+/** One CLI flag, as returned by `GET /v1/discovery/flags`. */
+interface FlagInfo {
+  long: string | null;
+  short: string | null;
+  help: string;
+  takes_value: boolean;
+}
+
+/** One embedded feature doc, as returned by `GET /v1/discovery/docs`. */
+interface DocInfo {
+  name: string;
+  file: string;
+  title: string;
+}
+
+/** Render a flag the way `aichat --help` would: `-s, --long <VALUE>  help`. */
+function formatFlag(f: FlagInfo): string {
+  const forms: string[] = [];
+  if (f.short) forms.push(`-${f.short}`);
+  if (f.long) forms.push(`--${f.long}${f.takes_value ? " <VALUE>" : ""}`);
+  const lhs = forms.join(", ");
+  return f.help ? `${lhs}\n    ${f.help}` : lhs;
+}
+
 async function bridgeFetch(
   path: string,
   init: { method: "GET" | "POST"; body?: unknown } = { method: "GET" },
@@ -303,12 +327,70 @@ export default function aichatBridge(pi: ExtensionAPI): void {
     },
   });
 
+  // Phase 53: discovery surface — find aichat's flags and feature docs from
+  // inside the REPL without dropping to a shell. Both are read-only GETs
+  // against the same bridge server; nothing about the live context changes.
+  pi.registerCommand("aichat-flags", {
+    description:
+      "Discover aichat CLI flags, optionally filtered (e.g. /aichat-flags role)",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const q = args.trim();
+      const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+      await runWithFeedback(
+        ctx,
+        () => bridgeFetch(`/v1/discovery/flags${qs}`, { method: "GET" }),
+        (result) => {
+          const flags = (result.flags as FlagInfo[] | undefined) ?? [];
+          if (flags.length === 0) {
+            return q ? `No flags match "${q}"` : "No flags found";
+          }
+          const header = q
+            ? `aichat flags matching "${q}" (${flags.length}):`
+            : `aichat flags (${flags.length}):`;
+          return [header, ...flags.map(formatFlag)].join("\n");
+        },
+      );
+    },
+  });
+
+  pi.registerCommand("aichat-docs", {
+    description:
+      "List aichat feature docs, or show one (e.g. /aichat-docs server)",
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const name = args.trim();
+      const qs = name ? `?name=${encodeURIComponent(name)}` : "";
+      await runWithFeedback(
+        ctx,
+        () => bridgeFetch(`/v1/discovery/docs${qs}`, { method: "GET" }),
+        (result) => {
+          if (name) {
+            return typeof result.content === "string"
+              ? result.content
+              : `(no content for ${name})`;
+          }
+          const docs = (result.docs as DocInfo[] | undefined) ?? [];
+          if (docs.length === 0) return "No feature docs found";
+          const rows = docs.map((d) => `  ${d.name} — ${d.title}`);
+          return [
+            `aichat feature docs (${docs.length}):`,
+            ...rows,
+            "",
+            "Show one with: /aichat-docs <name>",
+          ].join("\n");
+        },
+      );
+    },
+  });
+
   // register the subprocess with acp if invoking under zed
-  // generate a subprocess by invoking the bridge
+  // generate a subprocess by invoking the bridge. `aichatBridge` is sync (pi
+  // calls it without awaiting), so fire-and-forget inside an async IIFE.
   if (process.env.ZED_BRIDGE_URL) {
-    const subprocess = await bridgeFetch("/v1/state/subprocess", {
-      method: "POST",
-      body: {},
-    });
+    void (async () => {
+      await bridgeFetch("/v1/state/subprocess", {
+        method: "POST",
+        body: {},
+      });
+    })();
   }
 }

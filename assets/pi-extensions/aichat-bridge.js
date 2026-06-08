@@ -3,6 +3,14 @@ import path from "node:path";
 import fs from "node:fs/promises";
 var BRIDGE_URL = process.env.AICHAT_BRIDGE_URL;
 var BRIDGE_TOKEN = process.env.AICHAT_BRIDGE_TOKEN;
+function formatFlag(f) {
+  const forms = [];
+  if (f.short) forms.push(`-${f.short}`);
+  if (f.long) forms.push(`--${f.long}${f.takes_value ? " <VALUE>" : ""}`);
+  const lhs = forms.join(", ");
+  return f.help ? `${lhs}
+    ${f.help}` : lhs;
+}
 async function bridgeFetch(path2, init = { method: "GET" }) {
   if (!BRIDGE_URL || !BRIDGE_TOKEN) {
     throw new Error(
@@ -205,6 +213,58 @@ function aichatBridge(pi) {
       );
     }
   });
+  pi.registerCommand("aichat-flags", {
+    description: "Discover aichat CLI flags, optionally filtered (e.g. /aichat-flags role)",
+    handler: async (args, ctx) => {
+      const q = args.trim();
+      const qs = q ? `?q=${encodeURIComponent(q)}` : "";
+      await runWithFeedback(
+        ctx,
+        () => bridgeFetch(`/v1/discovery/flags${qs}`, { method: "GET" }),
+        (result) => {
+          const flags = result.flags ?? [];
+          if (flags.length === 0) {
+            return q ? `No flags match "${q}"` : "No flags found";
+          }
+          const header = q ? `aichat flags matching "${q}" (${flags.length}):` : `aichat flags (${flags.length}):`;
+          return [header, ...flags.map(formatFlag)].join("\n");
+        }
+      );
+    }
+  });
+  pi.registerCommand("aichat-docs", {
+    description: "List aichat feature docs, or show one (e.g. /aichat-docs server)",
+    handler: async (args, ctx) => {
+      const name = args.trim();
+      const qs = name ? `?name=${encodeURIComponent(name)}` : "";
+      await runWithFeedback(
+        ctx,
+        () => bridgeFetch(`/v1/discovery/docs${qs}`, { method: "GET" }),
+        (result) => {
+          if (name) {
+            return typeof result.content === "string" ? result.content : `(no content for ${name})`;
+          }
+          const docs = result.docs ?? [];
+          if (docs.length === 0) return "No feature docs found";
+          const rows = docs.map((d) => `  ${d.name} \u2014 ${d.title}`);
+          return [
+            `aichat feature docs (${docs.length}):`,
+            ...rows,
+            "",
+            "Show one with: /aichat-docs <name>"
+          ].join("\n");
+        }
+      );
+    }
+  });
+  if (process.env.ZED_BRIDGE_URL) {
+    void (async () => {
+      await bridgeFetch("/v1/state/subprocess", {
+        method: "POST",
+        body: {}
+      });
+    })();
+  }
 }
 export {
   aichatBridge as default

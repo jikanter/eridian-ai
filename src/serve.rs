@@ -269,7 +269,7 @@ impl Server {
         // per-launch bearer token; absent CLI `--serve` users never see
         // these routes, they just 404 like any unknown path. The bridge has
         // its own token, so it is exempt from the public `serve_api_key` gate.
-        if path.starts_with("/v1/state/") {
+        if path.starts_with("/v1/state/") || path.starts_with("/v1/discovery/") {
             let mut res = self
                 .handle_bridge(&method, path, req)
                 .await
@@ -1494,6 +1494,14 @@ impl Server {
             (&Method::POST, "/v1/state/agent") => self.state_agent(req).await,
             (&Method::POST, "/v1/state/exit-context") => self.state_exit_context(req).await,
             (&Method::POST, "/v1/state/macro") => self.state_macro(req).await,
+            // Phase 53: read-only discovery surface. Behind the bridge token so
+            // it shares the REPL's reuse/probe semantics, but it mutates
+            // nothing — pure introspection of flags and embedded feature docs.
+            (&Method::GET, "/v1/discovery/flags") => self.discovery_flags(req).await,
+            (&Method::GET, "/v1/discovery/docs") => self.discovery_docs(req).await,
+            (_, "/v1/discovery/flags") | (_, "/v1/discovery/docs") => {
+                bridge_status_response(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
+            }
             (_, "/v1/state/info")
             | (_, "/v1/state/role")
             | (_, "/v1/state/session")
@@ -1528,6 +1536,47 @@ impl Server {
             Some(other) => bail!("Unknown info kind: {other}"),
         };
         Ok(json_response(StatusCode::OK, json!({ "info": text })))
+    }
+
+    /// Phase 53: `GET /v1/discovery/flags?q=<query>` — introspect aichat's
+    /// CLI flag surface. With `?q=`, filter to flags whose name or help text
+    /// matches. Read-only; the live `Config` is untouched.
+    async fn discovery_flags(
+        self: &Arc<Self>,
+        req: hyper::Request<Incoming>,
+    ) -> Result<AppResponse> {
+        let q = query_param(&req, "q");
+        let flags = crate::discovery::discover_flags(q.as_deref());
+        let count = flags.len();
+        Ok(json_response(
+            StatusCode::OK,
+            json!({ "flags": flags, "count": count }),
+        ))
+    }
+
+    /// Phase 53: `GET /v1/discovery/docs` lists embedded feature docs;
+    /// `GET /v1/discovery/docs?name=<slug>` returns one doc's full content.
+    async fn discovery_docs(
+        self: &Arc<Self>,
+        req: hyper::Request<Incoming>,
+    ) -> Result<AppResponse> {
+        match query_param(&req, "name") {
+            Some(name) => match crate::discovery::read_doc(&name) {
+                Some(content) => Ok(json_response(
+                    StatusCode::OK,
+                    json!({ "name": name, "content": content }),
+                )),
+                None => bridge_status_response(StatusCode::NOT_FOUND, "Unknown doc"),
+            },
+            None => {
+                let docs = crate::discovery::list_docs();
+                let count = docs.len();
+                Ok(json_response(
+                    StatusCode::OK,
+                    json!({ "docs": docs, "count": count }),
+                ))
+            }
+        }
     }
 
     /// `POST /v1/state/role` body: `{"name": "<role>"}`

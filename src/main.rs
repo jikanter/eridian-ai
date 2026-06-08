@@ -4,6 +4,7 @@ mod client;
 mod compare;
 mod config;
 mod context_budget;
+mod discovery;
 mod function;
 mod knowledge;
 mod mcp;

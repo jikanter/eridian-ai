@@ -2,7 +2,8 @@
 
 **Last updated:** 2026-06-04 · **Horizon model:** Now / Next / Later · **Coverage:** the coming year (2026-06 → 2027-06)
 **Repos:** aichat · llm-functions · brief · astrophage · harness (pi)
-**Next Step Implementation Note (2026-06-07) **:  For the implementation thread: the load-bearing decision is §9.4 (the off-diagonal (backing × facet) presets). Phases 28/29 will harden the RoleLike → Entity trait shape by accident if built before 52. 52A (trait rename + `facets()`) and 52B (facet taxonomy + `--dry-run` surfacing) are **shipped**. The natural next concrete step is **52C** — collapse the variant-specific `SessionEntity` / `EntityRef` resolution branches (`pipe.rs:517`, `config/mod.rs:1030`) onto the `Entity` trait, making **backing-gates-ownership** the single resolution invariant.
+**Next Step Implementation Note (2026-06-07) **:  For the implementation thread: the load-bearing decision is §9.4 (the off-diagonal (backing × facet) presets). 
+Phases 28/29 will harden the RoleLike → Entity trait shape by accident if built before 52. 52A (trait rename + `facets()`) and 52B (facet taxonomy + `--dry-run` surfacing) are **shipped**. The natural next concrete step is **52C** — collapse the variant-specific `SessionEntity` / `EntityRef` resolution branches (`pipe.rs:517`, `config/mod.rs:1030`) onto the `Entity` trait, making **backing-gates-ownership** the single resolution invariant.
 
 ## Vision
 
@@ -149,6 +150,7 @@ design doc; planned/new phases link the live doc.
 | 11 Bridge Retirement | 31 | cross-repo | MCP pool hardening | 31A–E **Done · archived** | [archive/phase-31-overview.md](roadmap/archive/phase-31-overview.md) |
 | 12 Developer Experience | 30 | aichat | Macro compilation | 30A–D **Done · archived** | [archive/phase-30-macro-compilation.md](roadmap/archive/phase-30-macro-compilation.md) |
 | 13 Pi as REPL Surface | 32 | aichat ↔ harness | Pi cutover | 32A–D **Done** | [features/repl-pi.md](features/repl-pi.md) |
+| 13 Pi as REPL Surface | 53 | aichat ↔ harness | Discovery surface (`/aichat-flags`, `/aichat-docs`) | **Done** | [features/discovery.md](features/discovery.md) |
 | 14 Memory Surface | 34 | aichat (↔ harness) | Auto-memory wiring | 34A–D **Done · archived** | [archive/phase-34-overview.md](roadmap/archive/phase-34-overview.md) |
 | 14 Memory Surface | 35 | cross-repo | Knowledge-MCP protocol | 35A–D **Planned** (Now) | [phase-35-overview.md](roadmap/phase-35-overview.md) |
 | **15 Observability Keystone** | 42 | aichat | Trace emission (SPEC-001) | 42A–D **Planned** (Now) | [phase-42-overview.md](roadmap/phase-42-overview.md) |
