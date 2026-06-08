@@ -15,7 +15,7 @@
 | Item | Description | Status |
 |---|---|---|
 | 52A | **`RoleLike` → `Entity` trait** — rename + a `facets()` capability-introspection method (which families are present, owned vs referenced). No behavior change; `to_role()` stays the bridge. | **Done** (aichat) |
-| 52B | **Facet taxonomy in code + docs** — the closed family set (Know · Act · Shape · Govern · Compose · Judge); document the couplings (§7 of the design); surface facets in `--dry-run`. | Planned (aichat) |
+| 52B | **Facet taxonomy in code + docs** — the closed family set (Know · Act · Shape · Govern · Compose · Judge); document the couplings (§7 of the design); surface facets in `--dry-run`. | **Done** (aichat) |
 | 52C | **Backing-aware uniform resolution** — collapse the variant-specific `SessionEntity` / `EntityRef` branches (`pipe.rs:517`, `config/mod.rs:1030`) onto the `Entity` trait; the **backing-gates-ownership** rule is the single resolution invariant. | Planned (aichat) |
 | 52D | **Trace entity attribution** — each invocation's keystone trace (Phase 42) carries `entity_id` + the *resolved facet set actually used*; the stable key Phase 49 attribution reads. | Planned (aichat) |
 
@@ -35,6 +35,23 @@
   foundation 52B (`--dry-run` listing), 52C (resolution), and 52D (trace)
   consume. The new API carries `#[allow(dead_code)]` until then. No CLI surface
   changed, so there is no showboat demo for 52A.
+
+### 52B implementation note (shipped)
+
+- `FacetSet::summary()` (`src/config/role.rs`) renders the facet families in
+  closed-taxonomy order as a compact line — e.g. `Act(ref), Shape(owned)` — a
+  family present under both ownerships collapsing to `(owned, ref)`. Empty when
+  no facets are present.
+- `emit_dry_run_preview` (`src/main.rs`) emits a `  facets: …` line after
+  `capabilities:`, **omitted entirely** when the entity carries none, so the
+  preview stays clean for bare prompts/roles. The line sits before the pipeline
+  tree on stderr — stdout still carries only the assembled prompt.
+- The six-family closed taxonomy and its advisory couplings are already in the
+  design (`entity-model.md` §4 / §7); §7's "surfaced in docs and `--dry-run`"
+  claim is now load-bearing. No authoring-format change.
+- Coverage: `facetset_summary_*` unit tests (rendering, dual-ownership collapse,
+  empty) + `tests/regression/phase-52b.sh` (the `--dry-run` line present for a
+  mixed entity, omitted for a bare one).
 
 ## Cross-repo seams
 

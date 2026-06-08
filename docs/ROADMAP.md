@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-06-04 · **Horizon model:** Now / Next / Later · **Coverage:** the coming year (2026-06 → 2027-06)
 **Repos:** aichat · llm-functions · brief · astrophage · harness (pi)
-**Next Step Implementation Note (2026-06-04) **:  For the implementation thread: the load-bearing decision is §9.4 (the off-diagonal (backing × facet) presets). Phases 28/29 will harden the RoleLike → Entity trait shape by accident if built before 52 — so 52A (the trait rename + facets() introspection) is the natural first concrete step, and it's pure clarification with no behavior change.
+**Next Step Implementation Note (2026-06-07) **:  For the implementation thread: the load-bearing decision is §9.4 (the off-diagonal (backing × facet) presets). Phases 28/29 will harden the RoleLike → Entity trait shape by accident if built before 52. 52A (trait rename + `facets()`) and 52B (facet taxonomy + `--dry-run` surfacing) are **shipped**. The natural next concrete step is **52C** — collapse the variant-specific `SessionEntity` / `EntityRef` resolution branches (`pipe.rs:517`, `config/mod.rs:1030`) onto the `Entity` trait, making **backing-gates-ownership** the single resolution invariant.
 
 ## Vision
 
@@ -142,7 +142,7 @@ design doc; planned/new phases link the live doc.
 | 9 Knowledge Evolution | 25 | aichat | Knowledge compilation | **Done · archived** | [archive/phase-25-knowledge-compilation.md](roadmap/archive/phase-25-knowledge-compilation.md) |
 | 9 Knowledge Evolution | 26 | aichat | Knowledge query | **Done · archived** | [archive/phase-26-knowledge-query.md](roadmap/archive/phase-26-knowledge-query.md) |
 | 9 Knowledge Evolution | 27 | aichat | Evolution, attribution & trace | **Done · archived** | [archive/phase-27-knowledge-evolution.md](roadmap/archive/phase-27-knowledge-evolution.md) |
-| 10 Entity Evolution | 52 | aichat | Entity model formalization (Epic 10 foundation) | 52A–D **Planned** (Next) | [phase-52-overview.md](roadmap/phase-52-overview.md) |
+| 10 Entity Evolution | 52 | aichat | Entity model formalization (Epic 10 foundation) | 52A–B **Done** · 52C–D **Planned** (Next) | [phase-52-overview.md](roadmap/phase-52-overview.md) |
 | 10 Entity Evolution | 28 | aichat ↔ llm-functions | Agent composability | 28A–C **Planned** (Next) | [phase-28-overview.md](roadmap/phase-28-overview.md) |
 | 10 Entity Evolution | 29 | aichat ↔ llm-functions | Agent dynamism | 29A/B **Planned** (Next) | [phase-29-overview.md](roadmap/phase-29-overview.md) |
 | 10 Entity Evolution | 49 | aichat ↔ llm-functions ↔ harness | Agent memory federation | 49A–C **Planned** (Next) | [phase-49-overview.md](roadmap/phase-49-overview.md) |

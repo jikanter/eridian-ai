@@ -288,6 +288,27 @@ impl FacetSet {
     pub fn iter(&self) -> impl Iterator<Item = (Facet, FacetOwnership)> + '_ {
         self.entries.iter().copied()
     }
+
+    /// Phase 52B: a compact, stable one-line rendering for `--dry-run`, e.g.
+    /// `Act(ref), Shape(owned)`. Families appear in closed-taxonomy order; a
+    /// family present under both ownerships renders once as `(owned, ref)`.
+    /// Empty when no facets are present.
+    pub fn summary(&self) -> String {
+        self.families()
+            .into_iter()
+            .map(|fam| {
+                let mut tags = Vec::with_capacity(2);
+                if self.is_owned(fam) {
+                    tags.push("owned");
+                }
+                if self.is_referenced(fam) {
+                    tags.push("ref");
+                }
+                format!("{fam}({})", tags.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 pub trait Entity {
@@ -5307,5 +5328,35 @@ pipeline:
             f.families(),
             std::collections::BTreeSet::from([Facet::Act, Facet::Shape])
         );
+    }
+
+    // Phase 52B: FacetSet::summary() renders a stable, compact line for
+    // `--dry-run`.
+
+    #[test]
+    fn facetset_summary_empty_is_blank() {
+        let role = Role::new("bare", "---\nmodel: gpt-4\n---\nHi.");
+        assert_eq!(role.facets().summary(), "");
+    }
+
+    #[test]
+    fn facetset_summary_lists_family_and_ownership() {
+        // References Act (use_tools), owns Shape (output_schema). Families are
+        // rendered in the closed-taxonomy order (Know·Act·Shape·…), each tagged.
+        let role = Role::new(
+            "mixed",
+            "---\nuse_tools: fs_read\noutput_schema:\n  type: object\n---\nP.",
+        );
+        assert_eq!(role.facets().summary(), "Act(ref), Shape(owned)");
+    }
+
+    #[test]
+    fn facetset_summary_collapses_dual_ownership() {
+        // A single family present as both owned and referenced renders once,
+        // with both tags in a stable order (owned before ref).
+        let mut f = FacetSet::new();
+        f.insert(Facet::Act, FacetOwnership::Referenced);
+        f.insert(Facet::Act, FacetOwnership::Owned);
+        assert_eq!(f.summary(), "Act(owned, ref)");
     }
 }

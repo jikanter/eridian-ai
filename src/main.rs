@@ -1354,6 +1354,13 @@ fn emit_dry_run_preview(role: &config::Role) {
     if !role.capabilities().is_empty() {
         eprintln!("  capabilities: [{}]", role.capabilities().join(", "));
     }
+    // Phase 52B: the entity's facet families (Know·Act·Shape·Govern·Compose·
+    // Judge), each tagged owned vs referenced per the backing-gates-ownership
+    // rule. Omitted when the entity carries no facets.
+    let facets = role.facets();
+    if !facets.is_empty() {
+        eprintln!("  facets: {}", facets.summary());
+    }
     if let Some(nodes) = role.pipeline() {
         if !nodes.is_empty() {
             eprintln!("--- Pipeline ---");
