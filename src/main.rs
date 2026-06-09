@@ -187,6 +187,18 @@ fn apply_runtime_flags(config: &GlobalConfig, cli: &Cli) {
             jsonl_file: trace_file,
             truncate_at: 500,
         });
+
+        // Phase 42D: enable the SPEC-001 keystone emitter under the same
+        // `--trace` / `AICHAT_TRACE` opt-in. (SPEC-001 §1's default-on is a
+        // user-facing behavior change held back pending explicit opt-in.)
+        let base_dir = crate::utils::trace_spec::layout::TraceLayout::from_env()
+            .base()
+            .to_path_buf();
+        config.write().spec_trace = Some(crate::utils::trace_spec::wiring::SpecTraceConfig {
+            base_dir,
+            parent_session_id: std::env::var("AICHAT_PARENT_SESSION_ID").ok(),
+            fixture_id: std::env::var("AICHAT_FIXTURE_ID").ok(),
+        });
     }
 }
 

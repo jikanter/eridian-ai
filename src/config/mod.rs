@@ -312,6 +312,12 @@ pub struct Config {
     #[serde(skip)]
     pub trace_config: Option<trace::TraceConfig>,
 
+    /// Phase 42D: SPEC-001 structured-trace settings. `Some(_)` when `--trace`
+    /// or `AICHAT_TRACE` is active; drives the `trace_spec` keystone emitter,
+    /// distinct from the ad-hoc `trace_config` above.
+    #[serde(skip)]
+    pub spec_trace: Option<crate::utils::trace_spec::wiring::SpecTraceConfig>,
+
     #[serde(skip)]
     pub output_format: Option<crate::cli::OutputFormat>,
     /// Phase 22A: set by the `--pipe` runner when it will wrap the result in a
@@ -632,6 +638,7 @@ impl Default for Config {
             run_log: None,
             role_ledger_dir: None,
             trace_config: None,
+            spec_trace: None,
 
             output_format: None,
             pipeline_emits_envelope: false,
