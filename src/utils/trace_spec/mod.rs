@@ -13,6 +13,7 @@
 //! public items are not yet referenced from the request path.
 #![allow(dead_code)]
 
+pub mod blob;
 pub mod event;
 pub mod redact;
 pub mod ulid;
