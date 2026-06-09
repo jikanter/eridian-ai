@@ -12,6 +12,7 @@ mod render_prompt;
 mod request;
 mod spinner;
 pub mod trace;
+pub mod trace_spec;
 mod variables;
 
 pub use self::abort_signal::*;
