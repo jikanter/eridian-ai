@@ -2,8 +2,7 @@
 
 **Last updated:** 2026-06-04 · **Horizon model:** Now / Next / Later · **Coverage:** the coming year (2026-06 → 2027-06)
 **Repos:** aichat · llm-functions · brief · astrophage · harness (pi)
-**Next Step Implementation Note (2026-06-07) **:  For the implementation thread: the load-bearing decision is §9.4 (the off-diagonal (backing × facet) presets). 
-Phases 28/29 will harden the RoleLike → Entity trait shape by accident if built before 52. 52A (trait rename + `facets()`) and 52B (facet taxonomy + `--dry-run` surfacing) are **shipped**. The natural next concrete step is **52C** — collapse the variant-specific `SessionEntity` / `EntityRef` resolution branches (`pipe.rs:517`, `config/mod.rs:1030`) onto the `Entity` trait, making **backing-gates-ownership** the single resolution invariant.
+**Next Step Implementation Note (2026-06-09) **:  For the implementation thread: the load-bearing decision is §9.4 (the off-diagonal (backing × facet) presets). Phases 28/29 will harden the RoleLike → Entity trait shape by accident if built before 52. 52A (trait rename + `facets()`) and 52B (facet taxonomy + `--dry-run` surfacing) are **shipped**; 52C (collapse the variant-specific `SessionEntity` / `EntityRef` resolution branches onto the `Entity` trait, **backing-gates-ownership** as the single resolution invariant) is in flight on its own branch. **Phase 42A is now shipped** — the SPEC-001 trace emitter keystone (`src/utils/trace_spec/`: ULID session ids, the 17-variant event envelope, the `LineSink`/`TraceSender` dedicated OS writer thread with bounded `sync_channel` + in-band `trace.dropped` accounting, and the `env_subset` redaction gate), built with **zero new dependencies**. 52D (trace entity attribution: `entity_id` + resolved facet set per keystone trace) is gated on Phase 42 *event coverage* — the schema now exists, so the remaining gate is **42C** (lifecycle event coverage) and **42D** (`--trace`/`AICHAT_TRACE` surface unification + session-ULID correlation). The natural next concrete step is therefore **42B** (content-addressed blob store + record-time auth-header stripping) → **42C** → **42D**, which together unblock 52D, the test harness (43), and astrophage correlation (45D/46). The parallel unblocked Epic 10 successor remains **Phase 28** (agent composability).
 
 ## Vision
 
@@ -153,7 +152,7 @@ design doc; planned/new phases link the live doc.
 | 13 Pi as REPL Surface | 53 | aichat ↔ harness | Discovery surface (`/aichat-flags`, `/aichat-docs`) | **Done** | [features/discovery.md](features/discovery.md) |
 | 14 Memory Surface | 34 | aichat (↔ harness) | Auto-memory wiring | 34A–D **Done · archived** | [archive/phase-34-overview.md](roadmap/archive/phase-34-overview.md) |
 | 14 Memory Surface | 35 | cross-repo | Knowledge-MCP protocol | 35A–D **Planned** (Now) | [phase-35-overview.md](roadmap/phase-35-overview.md) |
-| **15 Observability Keystone** | 42 | aichat | Trace emission (SPEC-001) | 42A–D **Planned** (Now) | [phase-42-overview.md](roadmap/phase-42-overview.md) |
+| **15 Observability Keystone** | 42 | aichat | Trace emission (SPEC-001) | 42A **Done** · 42B–D **Planned** (Now) | [phase-42-overview.md](roadmap/phase-42-overview.md) |
 | **15 Observability Keystone** | 43 | aichat | Test harness (SPEC-002) | 43A–D **Planned** (Next) | [phase-43-overview.md](roadmap/phase-43-overview.md) |
 | **15 Observability Keystone** | 44 | aichat | Trace projections & training extraction | 44A–D **Planned** (Next) | [phase-44-overview.md](roadmap/phase-44-overview.md) |
 | **16 Astrophage Substrate** | 45 | astrophage (aichat seam) | MVP: replay-core + cache gateway | 45A–D **Planned** (Next) | [phase-45-overview.md](roadmap/phase-45-overview.md) |
