@@ -1,6 +1,6 @@
 # Phase 42 — Trace Emission (SPEC-001 Ph1) : Overview — Epic 15 (Observability Keystone)
 
-**Status:** In progress — 42A–B **Done** (2026-06-09) · **Owner:** aichat · **Horizon:** Now (pulled forward)
+**Status:** In progress — 42A–C **Done** (2026-06-09); 42D remaining · **Owner:** aichat · **Horizon:** Now (pulled forward)
 
 > **Goal.** Build the **structured-trace keystone** — the single artifact every downstream
 > consumer reads: astrophage replay (Epic 16), the test harness (Phase 43), training extraction
@@ -16,7 +16,7 @@
 |---|---|---|
 | 42A | SPEC-001 event schema (v0.1, the 13 event types) + dedicated **OS writer thread** (bounded MPSC, streaming-safe per [`ADR-0002`](../analysis/caching/ADR-0002-streaming-safe.md)/[`ADR-0003`](../analysis/caching/ADR-0003-async-writer-thread.md)) | **Done** (`src/utils/trace_spec/`: ULID + 17-variant envelope + `LineSink`/`TraceSender` writer thread + env_subset redaction gate; std `sync_channel`, zero new deps) |
 | 42B | Content-addressed blob store (`traces/blobs/<sha256>`) + **record-mode redaction gate** (strip auth headers, pattern-scrub secrets *before* any byte hits disk) | **Done** (`blob.rs`: SHA-256, two-level sharded `blobs/ab/cd/<hex>`, write-once via `create_new`/O_EXCL; `redact.rs`: recursive `strip_auth_headers` + `redacted_body_hash` so `messages_hash` is key-independent) |
-| 42C | Full lifecycle event coverage (request / response / tool / pipeline-stage / retry / error / `cache.lookup`) + per-parent `manifest.jsonl` | Planned |
+| 42C | Full lifecycle event coverage (request / response / tool / pipeline-stage / retry / error / `cache.lookup`) + per-parent `manifest.jsonl` | **Done** (`layout.rs`: SPEC §1 paths + `manifest.jsonl`; `session.rs`: `TraceSession` orchestrator emitting the full lifecycle set with large payloads offloaded to the blob store. Call-site wiring into `call_react`/`main` is 42D.) |
 | 42D | `--trace` / `AICHAT_TRACE` surface unification (supersede ad-hoc 8F/8G), `schema_version` stamping, session-ULID correlation (`X-Eridian-Session-Id`) | Planned |
 
 ## Cross-repo seams

@@ -15,6 +15,8 @@
 
 pub mod blob;
 pub mod event;
+pub mod layout;
 pub mod redact;
+pub mod session;
 pub mod ulid;
 pub mod writer;
