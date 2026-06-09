@@ -18,5 +18,6 @@ pub mod event;
 pub mod layout;
 pub mod redact;
 pub mod session;
+pub mod wiring;
 pub mod ulid;
 pub mod writer;

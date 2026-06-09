@@ -497,17 +497,88 @@ pub async fn call_react(
         .clone()
         .map(crate::utils::trace::TraceEmitter::new);
 
+    // Phase 42D: SPEC-001 keystone trace session (opt-in via --trace /
+    // AICHAT_TRACE). Best-effort: `start_turn` returns None on any I/O error,
+    // so tracing never breaks the run. Lives alongside the ad-hoc tracer until
+    // 8F/8G is retired.
+    let mut spec_session = client
+        .global_config()
+        .read()
+        .spec_trace
+        .clone()
+        .and_then(|cfg| {
+            let info = crate::utils::trace_spec::session::StartInfo {
+                aichat_version: env!("CARGO_PKG_VERSION").to_string(),
+                config_hash: String::new(),
+                role: Some(input.role().name().to_string()),
+                model_spec: Some(client.model().id()),
+                fixture_id: None,
+                cwd: std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                args: std::env::args().collect(),
+            };
+            crate::utils::trace_spec::wiring::start_turn(&cfg, info)
+        });
+
     // Phase 7C: Track repeated tool failures for retry budget.
     // Key: (tool_name, error_signature_hash), Value: retry count
     let mut failure_counts: std::collections::HashMap<(String, u64), usize> =
         std::collections::HashMap::new();
 
     loop {
-        let (text, tool_results, metrics) = if input.stream() {
-            call_chat_completions_streaming(input, client, abort_signal.clone()).await?
+        // Phase 42D: provider.request before the call. The request body is the
+        // current input text (full wire-message capture is a future refinement
+        // that needs plumbing into call_chat_completions).
+        let spec_request_id = spec_session.as_ref().map(|s| {
+            let messages = serde_json::json!({ "text": input.text() });
+            s.provider_request(
+                client.name(),
+                &client.model().id(),
+                serde_json::json!({ "stream": input.stream() }),
+                &messages,
+                "",
+            )
+        });
+
+        let step_result = if input.stream() {
+            call_chat_completions_streaming(input, client, abort_signal.clone()).await
         } else {
-            call_chat_completions(input, print_output, false, client, abort_signal.clone()).await?
+            call_chat_completions(input, print_output, false, client, abort_signal.clone()).await
         };
+        let (text, tool_results, metrics) = match step_result {
+            Ok(v) => v,
+            Err(e) => {
+                // Phase 42D: record the failure and close the trace turn.
+                if let Some(s) = spec_session.as_ref() {
+                    s.error("provider_error", &e.to_string(), None);
+                }
+                crate::utils::trace_spec::wiring::end_turn(
+                    spec_session.take(),
+                    1,
+                    cumulative_metrics.input_tokens,
+                    cumulative_metrics.output_tokens,
+                    Some(cumulative_metrics.cost_usd),
+                );
+                return Err(e);
+            }
+        };
+
+        // Phase 42D: provider.response (status/body approximated from the
+        // returned text + metrics; finish_reason inferred from tool presence).
+        if let (Some(s), Some(req_id)) = (spec_session.as_ref(), spec_request_id.as_ref()) {
+            let finish_reason = if tool_results.is_empty() { "stop" } else { "tool_use" };
+            s.provider_response(
+                req_id,
+                "",
+                200,
+                finish_reason,
+                metrics.input_tokens,
+                metrics.output_tokens,
+                metrics.latency_ms.saturating_mul(1_000_000),
+                text.as_bytes(),
+            );
+        }
 
         // Trace: emit request info
         if let Some(ref mut t) = tracer {
@@ -532,6 +603,17 @@ pub async fn call_react(
             if let Some(ref t) = tracer {
                 t.emit_summary(&cumulative_metrics);
             }
+            // Phase 42D: output.final + session.end close the trace turn.
+            if let Some(s) = spec_session.as_ref() {
+                s.output_final(&total_text, cumulative_metrics.output_tokens);
+            }
+            crate::utils::trace_spec::wiring::end_turn(
+                spec_session.take(),
+                0,
+                cumulative_metrics.input_tokens,
+                cumulative_metrics.output_tokens,
+                Some(cumulative_metrics.cost_usd),
+            );
             return Ok((total_text, vec![], cumulative_metrics));
         }
 
@@ -547,8 +629,42 @@ pub async fn call_react(
             t.emit_tool_results(&tool_results, metrics.latency_ms);
         }
 
+        // Phase 42D: tool.requested + tool.executed per result.
+        if let Some(s) = spec_session.as_ref() {
+            for r in &tool_results {
+                let tool_call_id = r.call.id.clone().unwrap_or_default();
+                s.tool_requested(&tool_call_id, &r.call.name, r.call.arguments.clone());
+                let out = r.output.to_string();
+                let is_err = out.contains("[TOOL_ERROR]");
+                s.tool_executed(
+                    &tool_call_id,
+                    &r.call.name,
+                    if is_err { 1 } else { 0 },
+                    0,
+                    out.as_bytes(),
+                    b"",
+                    false,
+                );
+            }
+        }
+
         step += 1;
         if step >= max_steps {
+            // Phase 42D: record the step-limit failure and close the turn.
+            if let Some(s) = spec_session.as_ref() {
+                s.error(
+                    "exhausted_retries",
+                    &format!("ReAct loop exceeded maximum steps ({max_steps})"),
+                    None,
+                );
+            }
+            crate::utils::trace_spec::wiring::end_turn(
+                spec_session.take(),
+                1,
+                cumulative_metrics.input_tokens,
+                cumulative_metrics.output_tokens,
+                Some(cumulative_metrics.cost_usd),
+            );
             bail!("ReAct loop exceeded maximum steps ({max_steps})");
         }
         *input = input.clone().merge_tool_results(text, tool_results);

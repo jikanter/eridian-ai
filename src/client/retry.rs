@@ -130,8 +130,20 @@ pub async fn send_with_retry(
     }
 }
 
-/// Convenience: send using the process-wide retry config.
+/// Stamp the `X-Eridian-Session-Id` correlation header (Phase 42D) when a value
+/// is supplied. Pure so it can be tested without the process-global; `send`
+/// feeds it the active trace turn's id.
+pub fn apply_session_header(builder: RequestBuilder, session_id: Option<String>) -> RequestBuilder {
+    match session_id {
+        Some(id) => builder.header(crate::utils::trace_spec::wiring::SESSION_HEADER, id),
+        None => builder,
+    }
+}
+
+/// Convenience: send using the process-wide retry config, stamping the trace
+/// correlation header for the active turn (if any).
 pub async fn send(builder: RequestBuilder) -> Result<reqwest::Response> {
+    let builder = apply_session_header(builder, crate::utils::trace_spec::wiring::current_session());
     send_with_retry(builder, &global()).await
 }
 
@@ -146,6 +158,29 @@ mod tests {
         assert_eq!(c.initial_backoff_ms, 1000);
         assert_eq!(c.max_backoff_ms, 30_000);
         assert!((c.backoff_multiplier - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn session_header_applied_when_present() {
+        let client = reqwest::Client::new();
+        let req = apply_session_header(client.get("http://x"), Some("01HSESSION".into()))
+            .build()
+            .unwrap();
+        assert_eq!(
+            req.headers()
+                .get("X-Eridian-Session-Id")
+                .and_then(|v| v.to_str().ok()),
+            Some("01HSESSION")
+        );
+    }
+
+    #[test]
+    fn session_header_absent_when_none() {
+        let client = reqwest::Client::new();
+        let req = apply_session_header(client.get("http://x"), None)
+            .build()
+            .unwrap();
+        assert!(req.headers().get("X-Eridian-Session-Id").is_none());
     }
 
     #[test]
