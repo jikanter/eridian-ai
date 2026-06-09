@@ -70,6 +70,52 @@ pub fn env_subset_from_process() -> IndexMap<String, String> {
     build_env_subset(|k| std::env::var(k).ok())
 }
 
+/// Object keys treated as auth headers and stripped from stored request bodies
+/// before hashing (SPEC §6). Matched case-insensitively.
+const AUTH_HEADER_KEYS: &[&str] = &["authorization", "x-api-key"];
+
+/// The placeholder substituted for a stripped auth-header value.
+pub const REDACTED_PLACEHOLDER: &str = "<redacted>";
+
+/// Recursively strip auth-header values from a JSON value, in place. Any object
+/// key matching [`AUTH_HEADER_KEYS`] (case-insensitive) has its value replaced
+/// with [`REDACTED_PLACEHOLDER`]. Run this on a stored request/response body
+/// *before* hashing so `messages_hash` is independent of which key signed the
+/// request (SPEC §6).
+pub fn strip_auth_headers(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                if AUTH_HEADER_KEYS
+                    .iter()
+                    .any(|h| k.eq_ignore_ascii_case(h))
+                {
+                    *v = serde_json::Value::String(REDACTED_PLACEHOLDER.to_string());
+                } else {
+                    strip_auth_headers(v);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                strip_auth_headers(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Strip auth headers from a clone of `value` and return its SPEC-001 hash
+/// reference (`sha256:<hex>` over the canonical JSON bytes). The redaction
+/// happens before hashing so equivalent requests signed with different keys
+/// hash identically.
+pub fn redacted_body_hash(value: &serde_json::Value) -> String {
+    let mut clone = value.clone();
+    strip_auth_headers(&mut clone);
+    let bytes = serde_json::to_vec(&clone).unwrap_or_default();
+    super::blob::hash_ref(&super::blob::sha256_hex(&bytes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +174,49 @@ mod tests {
             redact_value("OPENAI_API_BASE", "http://localhost:1234"),
             "http://localhost:1234"
         );
+    }
+
+    #[test]
+    fn strips_auth_headers_case_insensitively_and_nested() {
+        let mut v = serde_json::json!({
+            "headers": {
+                "Authorization": "Bearer sk-secret",
+                "X-Api-Key": "xai-9999",
+                "Content-Type": "application/json"
+            },
+            "batch": [
+                {"authorization": "Bearer other"}
+            ],
+            "model": "claude-opus-4-7"
+        });
+        strip_auth_headers(&mut v);
+        assert_eq!(v["headers"]["Authorization"], "<redacted>");
+        assert_eq!(v["headers"]["X-Api-Key"], "<redacted>");
+        assert_eq!(v["headers"]["Content-Type"], "application/json");
+        assert_eq!(v["batch"][0]["authorization"], "<redacted>");
+        assert_eq!(v["model"], "claude-opus-4-7");
+    }
+
+    #[test]
+    fn body_hash_is_key_independent() {
+        // Two requests identical but for the Authorization value must hash equal
+        // once the auth header is stripped (SPEC §6).
+        let a = serde_json::json!({
+            "headers": {"Authorization": "Bearer sk-AAAA"},
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        let b = serde_json::json!({
+            "headers": {"Authorization": "Bearer sk-BBBB"},
+            "messages": [{"role": "user", "content": "hi"}]
+        });
+        assert_eq!(redacted_body_hash(&a), redacted_body_hash(&b));
+        assert!(redacted_body_hash(&a).starts_with("sha256:"));
+    }
+
+    #[test]
+    fn body_hash_differs_on_real_content_change() {
+        let a = serde_json::json!({"messages": [{"content": "hi"}]});
+        let b = serde_json::json!({"messages": [{"content": "bye"}]});
+        assert_ne!(redacted_body_hash(&a), redacted_body_hash(&b));
     }
 }
