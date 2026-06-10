@@ -18,6 +18,11 @@
 | 42B | Content-addressed blob store (`traces/blobs/<sha256>`) + **record-mode redaction gate** (strip auth headers, pattern-scrub secrets *before* any byte hits disk) | **Done** (`blob.rs`: SHA-256, two-level sharded `blobs/ab/cd/<hex>`, write-once via `create_new`/O_EXCL; `redact.rs`: recursive `strip_auth_headers` + `redacted_body_hash` so `messages_hash` is key-independent) |
 | 42C | Full lifecycle event coverage (request / response / tool / pipeline-stage / retry / error / `cache.lookup`) + per-parent `manifest.jsonl` | **Done** (`layout.rs`: SPEC §1 paths + `manifest.jsonl`; `session.rs`: `TraceSession` orchestrator emitting the full lifecycle set with large payloads offloaded to the blob store. Call-site wiring into `call_react`/`main` is 42D.) |
 | 42D | `--trace` / `AICHAT_TRACE` surface unification (supersede ad-hoc 8F/8G), `schema_version` stamping, session-ULID correlation (`X-Eridian-Session-Id`) | **Done** (`wiring.rs`: `SpecTraceConfig` + `start_turn`/`end_turn` + current-session global; `TraceSession` minted in `call_react` from global config and emitting session.start → provider.request/response → tool.requested/executed → output.final/error → session.end; `X-Eridian-Session-Id` stamped at the single `retry::send` chokepoint. Opt-in via the existing `--trace`/`AICHAT_TRACE`; SPEC §1 default-on held back as an Ask-First behavior change. Verified end-to-end.) |
+| 42E | **Transport-boundary capture** — move `provider.*` capture to the `reqwest` boundary so the events carry ground-truth wire bytes (real body / status / finish_reason, per-attempt, SSE chunk timing) instead of 42D's pre-send intent stubs. In-process, no mitmproxy. | Planned → [phase-42e-overview.md](phase-42e-overview.md) |
+
+> **42D carry-over.** 42D's `provider.request`/`response` payloads are reconstructed from
+> pre-send *intent* (a `{"text":…}` stub, hardcoded `200`, inferred `finish_reason`); the
+> `OutputChunk` event is unwired. **Phase 42E** closes this [`EVAL-001`](../analysis/caching/EVAL-001-compare-to-mitmproxy.md) §5 gap in-process.
 
 ## Cross-repo seams
 
