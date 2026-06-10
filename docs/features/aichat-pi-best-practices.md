@@ -42,6 +42,7 @@ aichat is designed for two distinct modes of existence. To ensure deep integrati
 
  ### C. Idempotency and State
 
+
  - Stateless by Default: Since every pi tool call is a fresh process, your tools should ideally be stateless.
  - Session Management: If a tool requires state (e.g., a conversation history), use the --session or --save-session
     flags. pi can manage the lifecycle of these sessions, effectively giving the agent "memory" through your tool.
