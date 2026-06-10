@@ -19,6 +19,10 @@ case "$AICHAT_BIN" in
   *) AICHAT_BIN="$(pwd)/$AICHAT_BIN" ;;
 esac
 
+# Repo root, derived from the binary path (target/debug/aichat → ../../..),
+# so source-bundle assertions work after the tests `cd` to a scratch dir.
+AICHAT_REPO_ROOT="${AICHAT_REPO_ROOT:-$(cd "$(dirname "$AICHAT_BIN")/../.." && pwd)}"
+
 setup() {
   cfg="$BATS_TEST_TMPDIR/aichat"
   mkdir -p "$cfg/roles"
@@ -175,6 +179,127 @@ stop_aichat_bg() {
   code=$(curl -sS -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $BRIDGE_TOKEN" \
     "$BRIDGE_URL/v1/state/role")
+  [ "$code" = "405" ]
+
+  stop_aichat_bg
+}
+
+@test "bridge: bundled extension registers the /aichat-edit command" {
+  # The committed, embedded bundle must expose the edit surface so the REPL
+  # can drive /v1/state/edit. Grep the source-of-truth bundle directly — this
+  # is independent of where the launcher stages it.
+  bundle="$AICHAT_REPO_ROOT/assets/pi-extensions/aichat-bridge.js"
+  [ -f "$bundle" ]
+  grep -q 'registerCommand("aichat-edit"' "$bundle"
+  # And it must call the edit endpoint for both read (GET) and write (POST).
+  grep -q '/v1/state/edit' "$bundle"
+}
+
+@test "bridge: edit read returns the live config file content" {
+  make_blocking_stub
+  start_aichat_bg
+
+  body=$(curl -sS -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    "$BRIDGE_URL/v1/state/edit?target=config")
+  echo "$body" | jq -e '.target == "config"' >/dev/null
+  # The content field carries the actual config.yaml text the test wrote.
+  echo "$body" | jq -e '.content | contains("openai:gpt-4o-mini")' >/dev/null
+
+  stop_aichat_bg
+}
+
+@test "bridge: edit read of session is deferred to pi-native → 400" {
+  make_blocking_stub
+  start_aichat_bg
+
+  # Sessions are owned by pi's native format; .edit session must not bridge.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    "$BRIDGE_URL/v1/state/edit?target=session")
+  [ "$code" = "400" ]
+
+  stop_aichat_bg
+}
+
+@test "bridge: edit read with no target → 400" {
+  make_blocking_stub
+  start_aichat_bg
+
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    "$BRIDGE_URL/v1/state/edit")
+  [ "$code" = "400" ]
+
+  stop_aichat_bg
+}
+
+@test "bridge: edit write round-trips config content" {
+  make_blocking_stub
+  start_aichat_bg
+
+  http=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    -H 'Content-Type: application/json' \
+    --data '{"target":"config","content":"model: openai:gpt-4o-mini\nclients:\n  - type: openai\n    api_key: dummy\n# ROUNDTRIP_MARKER\n"}' \
+    "$BRIDGE_URL/v1/state/edit")
+  [ "$http" = "200" ]
+
+  body=$(curl -sS -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    "$BRIDGE_URL/v1/state/edit?target=config")
+  echo "$body" | jq -e '.content | contains("ROUNDTRIP_MARKER")' >/dev/null
+
+  stop_aichat_bg
+}
+
+@test "bridge: edit role round-trips and reload is visible via /info" {
+  make_blocking_stub
+  start_aichat_bg
+
+  # Activate the role so the bridge can resolve which role file to edit.
+  curl -sS -o /dev/null -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    -H 'Content-Type: application/json' --data '{"name":"test-role"}' \
+    "$BRIDGE_URL/v1/state/role"
+
+  # Read the role file back through the edit surface.
+  body=$(curl -sS -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    "$BRIDGE_URL/v1/state/edit?target=role")
+  echo "$body" | jq -e '.content | contains("DETERMINISTIC_TEST_ROLE_MARKER")' >/dev/null
+
+  # Write a new body; the handler must persist AND reload the live role.
+  http=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    -H 'Content-Type: application/json' \
+    --data '{"target":"role","content":"---\nmodel: openai:gpt-4o-mini\n---\n\nEDITED_ROLE_MARKER\n"}' \
+    "$BRIDGE_URL/v1/state/edit")
+  [ "$http" = "200" ]
+
+  info=$(curl -sS -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    "$BRIDGE_URL/v1/state/info?of=role")
+  echo "$info" | jq -e '.info | contains("EDITED_ROLE_MARKER")' >/dev/null
+
+  stop_aichat_bg
+}
+
+@test "bridge: edit role with no active role → 409" {
+  make_blocking_stub
+  start_aichat_bg
+
+  # No role activated: nothing to resolve, so the edit surface refuses.
+  code=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    "$BRIDGE_URL/v1/state/edit?target=role")
+  [ "$code" = "409" ]
+
+  stop_aichat_bg
+}
+
+@test "bridge: edit route rejects unsupported method → 405" {
+  make_blocking_stub
+  start_aichat_bg
+
+  code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+    -H "Authorization: Bearer $BRIDGE_TOKEN" \
+    "$BRIDGE_URL/v1/state/edit")
   [ "$code" = "405" ]
 
   stop_aichat_bg

@@ -382,6 +382,71 @@ export default function aichatBridge(pi: ExtensionAPI): void {
     },
   });
 
+  // `.edit <target>` bridge. The legacy REPL spawned `$EDITOR` on a YAML file;
+  // here pi owns the TTY, so we round-trip through pi's *native* in-TUI editor
+  // instead: GET the current text, hand it to `ctx.ui.editor`, then POST the
+  // result back for aichat to persist and reload. `session` is intentionally
+  // absent — pi owns that format, so sessions are edited via pi's own surface.
+  pi.registerCommand("aichat-edit", {
+    description:
+      "Edit an aichat file in pi's editor (config|role|rag-docs|agent-config)",
+    getArgumentCompletions: (prefix: string) => {
+      const choices = ["config", "role", "rag-docs", "agent-config"];
+      const filtered = choices.filter((c) => c.startsWith(prefix));
+      return filtered.length > 0
+        ? filtered.map((value) => ({ value, label: value }))
+        : null;
+    },
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
+      const target = args.trim();
+      if (!target) {
+        ctx.ui.notify(
+          "Usage: /aichat-edit config|role|rag-docs|agent-config",
+          "warning",
+        );
+        return;
+      }
+
+      // 1. Read the current on-disk text from the bridge. A 4xx (e.g. no
+      //    active role, or `session`) surfaces here as a thrown error.
+      let current: BridgeResult;
+      try {
+        current = await bridgeFetch(
+          `/v1/state/edit?target=${encodeURIComponent(target)}`,
+          { method: "GET" },
+        );
+      } catch (err) {
+        ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+        return;
+      }
+      const content = typeof current.content === "string" ? current.content : "";
+      const label = typeof current.label === "string" ? current.label : target;
+
+      // 2. Edit in pi's native multi-line editor, seeded with the content.
+      const edited = await ctx.ui.editor(`Edit ${label}`, content);
+      if (edited === undefined) {
+        ctx.ui.notify("Edit cancelled", "info");
+        return;
+      }
+      if (edited === content) {
+        ctx.ui.notify("No changes", "info");
+        return;
+      }
+
+      // 3. Persist + reload through the bridge; surface its `info` summary.
+      await runWithFeedback(
+        ctx,
+        () =>
+          bridgeFetch("/v1/state/edit", {
+            method: "POST",
+            body: { target, content: edited },
+          }),
+        (result) =>
+          typeof result.info === "string" ? result.info : `Saved ${target}`,
+      );
+    },
+  });
+
   // register the subprocess with acp if invoking under zed
   // generate a subprocess by invoking the bridge. `aichatBridge` is sync (pi
   // calls it without awaiting), so fire-and-forget inside an async IIFE.
