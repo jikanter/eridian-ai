@@ -110,13 +110,40 @@ the legacy REPL printed.
 
 ## Sessions: pi owns the format
 
-Pi sessions live under `~/.pi/agent/sessions/` and use the v3 JSONL tree
-format documented in pi's
+Pi sessions use the v3 JSONL tree format documented in pi's
 [`docs/session-format.md`](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md).
+**Where** they live depends on which of two parallel session-store modes is
+active:
 
-Aichat sessions (`<config>/sessions/<name>.yaml`) remain the source of
-truth for **batch mode** (`aichat -s <name> ...`). They do not appear in
-pi's `/resume` list automatically — convert first:
+| Mode | Trigger | Pi session store | Models |
+|---|---|---|---|
+| **Segregated** (default) | model-pinned launch (the default) | `<config>/pi-sessions/` (aichat-owned; override `AICHAT_PI_SESSIONS_DIR`) | aichat's |
+| **Native** | `AICHAT_PI_NATIVE_MODELS=1` | `~/.pi/agent/sessions/` (device-wide pi store) | pi's own |
+
+In the **segregated** default, the launcher stages pi's agent dir with
+`sessions/` symlinked to an aichat-owned directory instead of the device-wide
+`~/.pi/agent/sessions/`. REPL history from aichat-driven pi launches therefore
+never mixes with sessions from a bare `pi` invocation, and vice-versa. The
+store is persistent (it outlives the throwaway agent stage), so pi's `/resume`
+list carries across launches within this store. Point a launch at a different
+store — e.g. per-project history — by exporting `AICHAT_PI_SESSIONS_DIR`.
+
+In **native** mode (`AICHAT_PI_NATIVE_MODELS=1`), aichat does not stage an
+agent dir at all: pi reads and writes its own device-wide
+`~/.pi/agent/sessions/` store (and its own models). Use this when you want one
+unified pi history shared with standalone `pi`.
+
+`~/.pi/agent/sessions/` is pi's own default store, used in native mode and by
+standalone `pi`.
+
+uAichat's own sessions (`<config>/sessions/<name>.jsonl`) are now stored in the
+**same pi v3 JSONL format**. A batch-mode session (`aichat -s <name> ...`) is
+therefore already a pi session file — see [`session-format.md`](session-format.md)
+for the format cutover, the `aichat` metadata header, and `--migrate-sessions`.
+The legacy YAML format is deprecated and read-only.
+
+To inspect or copy a single session into pi's own store, `--convert-session`
+still emits pi JSONL to stdout or `--out PATH` without touching the original:
 
 ```bash
 aichat --convert-session my-session --to pi --out ~/.pi/agent/sessions/imported.jsonl
@@ -124,16 +151,18 @@ aichat --convert-session my-session --to pi --out ~/.pi/agent/sessions/imported.
 aichat --convert-session ~/.config/aichat/sessions/my-session.yaml --to pi | head
 ```
 
-Limitations of the converter:
+Notes on the converted output:
 
 - System-role messages are dropped; pi composes the system prompt from the
   active model and extension config at session start.
-- Compressed history is flattened in front of live messages (no
-  `CompactionEntry` is emitted yet).
 - Token usage and cost numbers are zeroed — aichat never recorded those
   per-message.
 - Tool calls split into one assistant entry with `toolCall` content blocks
   plus one `toolResult` entry per call, matching pi's expected shape.
+- The compression boundary, structured tool outputs (`aichatOutput`), and image
+  URLs (`aichatUrl`) are preserved in pi-ignored side fields, so an aichat
+  re-import is lossless; a pi loader simply ignores them. See
+  [`session-format.md`](session-format.md).
 
 ## Bridge security
 
@@ -207,9 +236,11 @@ How it works:
    model's `max_input_tokens`/`max_output_tokens`). `settings.json` is copied
    from the user's real one with `defaultProvider`/`defaultModel` overridden to
    the aichat provider; all other prefs (theme, thinking level) are preserved.
-3. Every other entry of the real agent dir (`sessions/`, `auth.json`, themes,
-   prompts) is symlinked into the stage, so session history and pi config keep
-   working. `models.json`/`settings.json` are the only files replaced.
+3. Every other entry of the real agent dir (`auth.json`, themes, prompts) is
+   symlinked into the stage, so pi config keeps working.
+   `models.json`/`settings.json` are replaced, and `sessions/` is **not**
+   symlinked through — it is pointed at the segregated aichat-owned session
+   store instead (see [Sessions](#sessions-pi-owns-the-format)).
 4. Pi is exec'd with `PI_CODING_AGENT_DIR` pointed at the stage. The stage is
    removed on exit (kept when `AICHAT_KEEP_PI_STAGE=1`).
 

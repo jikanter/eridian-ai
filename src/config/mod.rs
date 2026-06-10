@@ -503,6 +503,17 @@ impl PartialConfig {
 /// whether the result stays within `parent`'s tree. Equal paths count as
 /// descendants. Symlink resolution is deliberately out of scope — roles are
 /// trusted code; this guards accidents, not adversaries.
+/// Merge session names from the canonical `.jsonl` store and the legacy
+/// `.yaml` store into one sorted, de-duplicated list. A session present in
+/// both formats (mid-migration) appears once.
+fn merge_session_names(jsonl: Vec<String>, yaml: Vec<String>) -> Vec<String> {
+    let mut names: Vec<String> = jsonl;
+    names.extend(yaml);
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+
 pub fn is_path_descendant(parent: &Path, child: &Path) -> bool {
     fn normalize(p: &Path) -> Vec<std::ffi::OsString> {
         use std::path::Component;
@@ -889,11 +900,40 @@ impl Config {
         Self::functions_dir().join(FUNCTIONS_BIN_DIR_NAME)
     }
 
+    /// Canonical on-disk path for a session: pi v3 JSONL (`<name>.jsonl`). The
+    /// YAML format is deprecated; new sessions always save here. For *reading*
+    /// an existing session that may still be legacy YAML, use
+    /// [`Config::resolve_session_file`].
     pub fn session_file(&self, name: &str) -> PathBuf {
+        match name.split_once("/") {
+            Some((dir, name)) => self.sessions_dir().join(dir).join(format!("{name}.jsonl")),
+            None => self.sessions_dir().join(format!("{name}.jsonl")),
+        }
+    }
+
+    /// Legacy YAML path for a session (`<name>.yaml`). Used only to locate or
+    /// migrate pre-cutover sessions; never written to.
+    pub fn legacy_session_file(&self, name: &str) -> PathBuf {
         match name.split_once("/") {
             Some((dir, name)) => self.sessions_dir().join(dir).join(format!("{name}.yaml")),
             None => self.sessions_dir().join(format!("{name}.yaml")),
         }
+    }
+
+    /// Resolve the path to read an existing session from: the canonical
+    /// `.jsonl` if present, else a legacy `.yaml` if present, else the
+    /// canonical `.jsonl` (which the caller will find absent). Lets the loader
+    /// transparently open sessions written before the pi-JSONL cutover.
+    pub fn resolve_session_file(&self, name: &str) -> PathBuf {
+        let canonical = self.session_file(name);
+        if canonical.exists() {
+            return canonical;
+        }
+        let legacy = self.legacy_session_file(name);
+        if legacy.exists() {
+            return legacy;
+        }
+        canonical
     }
 
     pub fn rag_file(&self, name: &str) -> PathBuf {
@@ -1263,7 +1303,10 @@ impl Config {
     pub fn delete(config: &GlobalConfig, kind: &str) -> Result<()> {
         let (dir, file_ext) = match kind {
             "role" => (Self::roles_dir(), Some(".md")),
-            "session" => (config.read().sessions_dir(), Some(".yaml")),
+            // Canonical session format is `.jsonl`; legacy `.yaml` is merged in
+            // below and removed alongside it so pre-cutover sessions stay
+            // deletable.
+            "session" => (config.read().sessions_dir(), Some(".jsonl")),
             "rag" => (Self::rags_dir(), Some(".yaml")),
             "macro" => (Self::macros_dir(), Some(".yaml")),
             "agent-data" => (Self::agents_data_dir(), None),
@@ -1287,7 +1330,12 @@ impl Config {
                         }
                     }
                 }
+                if kind == "session" {
+                    // Fold in legacy YAML sessions not yet migrated.
+                    names.extend(list_file_names(&dir, ".yaml"));
+                }
                 names.sort_unstable();
+                names.dedup();
                 names
             }
             Err(_) => vec![],
@@ -1311,6 +1359,22 @@ impl Config {
 
         for name in select_names {
             match file_ext {
+                Some(_) if kind == "session" => {
+                    // Remove whichever format(s) exist for this session.
+                    let mut removed = false;
+                    for ext in [".jsonl", ".yaml"] {
+                        let path = dir.join(format!("{name}{ext}"));
+                        if path.exists() {
+                            remove_file(&path).with_context(|| {
+                                format!("Failed to delete {kind} at '{}'", path.display())
+                            })?;
+                            removed = true;
+                        }
+                    }
+                    if !removed {
+                        bail!("No session '{name}' to delete");
+                    }
+                }
                 Some(ext) => {
                     let path = dir.join(format!("{name}{ext}"));
                     remove_file(&path).with_context(|| {
@@ -1861,16 +1925,21 @@ impl Config {
         let mut session;
         match session_name {
             None | Some(TEMP_SESSION_NAME) => {
-                let session_file = self.session_file(TEMP_SESSION_NAME);
-                if session_file.exists() {
-                    remove_file(session_file).with_context(|| {
-                        format!("Failed to cleanup previous '{TEMP_SESSION_NAME}' session")
-                    })?;
+                // Clean up a previous temp session in either format.
+                for session_file in [
+                    self.session_file(TEMP_SESSION_NAME),
+                    self.legacy_session_file(TEMP_SESSION_NAME),
+                ] {
+                    if session_file.exists() {
+                        remove_file(&session_file).with_context(|| {
+                            format!("Failed to cleanup previous '{TEMP_SESSION_NAME}' session")
+                        })?;
+                    }
                 }
                 session = Some(Session::new(self, TEMP_SESSION_NAME));
             }
             Some(name) => {
-                let session_path = self.session_file(name);
+                let session_path = self.resolve_session_file(name);
                 if !session_path.exists() {
                     session = Some(Session::new(self, name));
                 } else {
@@ -1996,11 +2065,18 @@ impl Config {
     }
 
     pub fn list_sessions(&self) -> Vec<String> {
-        list_file_names(self.sessions_dir(), ".yaml")
+        merge_session_names(
+            list_file_names(self.sessions_dir(), ".jsonl"),
+            list_file_names(self.sessions_dir(), ".yaml"),
+        )
     }
 
     pub fn list_autoname_sessions(&self) -> Vec<String> {
-        list_file_names(self.sessions_dir().join("_"), ".yaml")
+        let dir = self.sessions_dir().join("_");
+        merge_session_names(
+            list_file_names(&dir, ".jsonl"),
+            list_file_names(&dir, ".yaml"),
+        )
     }
 
     pub fn maybe_compress_session(config: GlobalConfig) {
@@ -2856,10 +2932,13 @@ impl Config {
         } else if cmd == ".agent" {
             if args.len() == 2 {
                 let dir = Self::agent_data_dir(args[0]).join(SESSIONS_DIR_NAME);
-                values = list_file_names(dir, ".yaml")
-                    .into_iter()
-                    .map(|v| (v, None))
-                    .collect();
+                values = merge_session_names(
+                    list_file_names(&dir, ".jsonl"),
+                    list_file_names(&dir, ".yaml"),
+                )
+                .into_iter()
+                .map(|v| (v, None))
+                .collect();
             }
             values.extend(complete_agent_variables(args[0]));
         };

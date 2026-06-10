@@ -2,8 +2,8 @@
   "lsp": {
     "rust-analyzer": {
       "initialization_options": {
-        "checkOnSave": true,
-      },
-    },
-  },
+        "checkOnSave": true
+      }
+    }
+  }
 }

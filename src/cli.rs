@@ -154,6 +154,13 @@ pub struct Cli {
     /// `jq` directly.
     #[clap(long = "out", value_name = "PATH", requires = "convert_session")]
     pub convert_out: Option<String>,
+    /// Migrate all legacy `.yaml` sessions in the sessions directory to the
+    /// native pi JSONL format (`.jsonl`), in place. The YAML session format is
+    /// deprecated; this is the one-shot bulk converter. Recurses into the
+    /// auto-named `_/` subdir. Each converted `.yaml` is removed after its
+    /// `.jsonl` is written.
+    #[clap(long = "migrate-sessions")]
+    pub migrate_sessions: bool,
     /// Run as an MCP stdio server
     #[clap(long)]
     pub mcp: bool,

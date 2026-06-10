@@ -10,26 +10,26 @@
 
 AIChat is **"make for AI workflows"**: a token-efficient, Unix-native CLI that lets agents and
 humans compose multi-model pipelines, consume external tools via MCP, and expose roles as
-callable infrastructure. The REPL is provided by [pi](https://github.com/earendil-works/pi); aichat owns all batch interfaces and the underlying implementation 
-of almost all functionality.
+callable infrastructure. 
+
+The REPL is provided by [pi](https://github.com/earendil-works/pi); aichat owns all batch interfaces and the underlying implementation of almost all functionality.
+By design, aichat is meant to be **batch only**, meaning that all interactivity is built into it's integration with pi.
 
 The **Entity** is the fundamental unit of composition — a named, addressable, invocable,
-traceable configuration that produces LLM calls. **Prompt, Role, Agent, and Macro are presets
-over it**, not four unrelated types (see [`architecture/entity-model.md`](architecture/entity-model.md)).
+traceable configuration that produces LLM calls. 
+
+**Prompt, Role, Agent, and Macro are presets over the Entity**, not four unrelated types (see [`architecture/entity-model.md`](architecture/entity-model.md)).
 The roadmap evolves entities from static prompt templates into **typed, addressable, evaluable
 building blocks** that compose across machines, execution models, and cost budgets — and, in the
-coming year, into a four-repo ecosystem that can **record, replay, and evaluate itself**.
+coming year, into a four-repo ecosystem that can **record, replay, and evaluate itself**. The primary 
+composition language is **brief**, and the primary composition layer is the **unix command line**. 
+
+Only the repl interface violates the above assumptions and is implemented as a convenience for the 
+user and for testing.
 
 ### Strategy pillars
 
-- **Cost-conscious above all.** Every feature must justify its token budget.
-- **One tool per job.** Unix composition over monolithic features.
-- **No desktop UI, no breaking argc/llm-functions** without explicit approval.
-- **Runs as well on local models as on frontier models.**
-- **The trace is the keystone.** Testing, evaluation, training extraction, and observability all
-  read one structured artifact — never a per-tool data model.
-- **The Entity is the authoring counterpart.** Prompt / Role / Agent / Macro are *presets* over one
-  `Entity` substrate; the runtime speaks one trait. `resolve Entity → execute → emit Trace`.
+See [CLAUDE.md](../CLAUDE.md) for strategy pillars
 
 ---
 

@@ -17,7 +17,13 @@
 //! 4. pins pi to aichat's models: stages a throwaway pi agent dir whose
 //!    `models.json` registers only the in-process aichat server as a provider
 //!    and points pi at it via `PI_CODING_AGENT_DIR`, so pi ignores its own
-//!    configured providers/models (opt out: `AICHAT_PI_NATIVE_MODELS=1`),
+//!    configured providers/models, AND segregates pi's session store —
+//!    `<stage>/sessions` is symlinked to an aichat-owned dir
+//!    (`<config>/pi-sessions`, override `AICHAT_PI_SESSIONS_DIR`) rather than
+//!    the device-wide `~/.pi/agent/sessions/`, so REPL history stays out of
+//!    pi's own store. Both behaviours opt out together with
+//!    `AICHAT_PI_NATIVE_MODELS=1`, which leaves pi reading/writing its native
+//!    models and its own device session store,
 //! 5. stages the shipped extension into that agent dir's `extensions/`
 //!    subdir, the only place pi 0.79.1 auto-discovers slash-command bridges,
 //! 6. execs `pi` with stdio inherited so the child owns the terminal,
@@ -48,8 +54,34 @@ const PI_AICHAT_PROVIDER: &str = "aichat";
 /// how we make pi ignore its own configured models.
 const PI_AGENT_DIR_ENV: &str = "PI_CODING_AGENT_DIR";
 
-/// Opt-out: when set, aichat leaves pi's own model config untouched.
+/// Opt-out: when set, aichat leaves pi's own model config untouched AND lets
+/// pi read/write its own device-wide session store (`~/.pi/agent/sessions/`).
+/// Unset (the default) pins pi to aichat's models and segregates pi's REPL
+/// history into an aichat-owned session store (see [`segregated_pi_sessions_dir`]).
 const PI_NATIVE_MODELS_ENV: &str = "AICHAT_PI_NATIVE_MODELS";
+
+/// Env var overriding the segregated aichat-owned pi session store path.
+/// When unset, the store defaults to `<aichat config dir>/pi-sessions`.
+const PI_SESSIONS_DIR_ENV: &str = "AICHAT_PI_SESSIONS_DIR";
+
+/// Subdir of aichat's config dir holding the segregated pi REPL session store
+/// (pi's JSONL session tree) used in the default, model-pinned mode. Keeps pi
+/// REPL history out of the device-wide `~/.pi/agent/sessions/` store so the two
+/// surfaces never cross-contaminate.
+const PI_SESSIONS_DIR_NAME: &str = "pi-sessions";
+
+/// Resolve the segregated, aichat-owned pi session store. This is where pi
+/// writes its JSONL session tree when aichat pins it to aichat models (the
+/// default). It is deliberately *not* `~/.pi/agent/sessions/`: that device-wide
+/// store is only used in native mode (`AICHAT_PI_NATIVE_MODELS=1`). The store
+/// is persistent (it outlives the throwaway agent stage) so pi's `/resume`
+/// keeps working across launches. Override with `AICHAT_PI_SESSIONS_DIR`.
+fn segregated_pi_sessions_dir() -> PathBuf {
+    if let Some(v) = std::env::var_os(PI_SESSIONS_DIR_ENV) {
+        return PathBuf::from(v);
+    }
+    crate::config::Config::config_dir().join(PI_SESSIONS_DIR_NAME)
+}
 
 /// Hint emitted when `pi` is not discoverable on `PATH`. Keep terse and
 /// actionable — the user lost their REPL, they don't want a tutorial.
@@ -429,27 +461,46 @@ struct StagedAgentDir {
 }
 
 impl StagedAgentDir {
-    fn stage(real_dir: &Path, models: &Value, settings: &Value) -> Result<Self> {
+    /// Stage a throwaway pi agent dir. `session_store` is the aichat-owned
+    /// directory pi's `sessions/` is pointed at, segregating pi REPL history
+    /// from the device-wide `~/.pi/agent/sessions/` store. The real agent dir's
+    /// own `sessions/` entry is therefore *not* symlinked through.
+    fn stage(real_dir: &Path, models: &Value, settings: &Value, session_store: &Path) -> Result<Self> {
         let path = std::env::temp_dir()
             .join(format!("aichat-pi-agent-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&path)
             .with_context(|| format!("failed to create pi agent stage {}", path.display()))?;
 
         // Symlink every entry of the real agent dir except the two files we
-        // override, so sessions/auth/themes/prompts stay live. Best-effort:
-        // a broken or unreadable entry just won't be available to pi.
+        // override and `sessions/` (which we segregate below), so auth/themes/
+        // prompts stay live. Best-effort: a broken or unreadable entry just
+        // won't be available to pi.
         #[cfg(unix)]
         if real_dir.is_dir() {
             if let Ok(entries) = std::fs::read_dir(real_dir) {
                 for entry in entries.flatten() {
                     let name = entry.file_name();
-                    if name == "models.json" || name == "settings.json" {
+                    if name == "models.json" || name == "settings.json" || name == "sessions" {
                         continue;
                     }
                     let _ = std::os::unix::fs::symlink(entry.path(), path.join(&name));
                 }
             }
         }
+
+        // Segregate pi's session store: point `<stage>/sessions` at the
+        // aichat-owned, persistent dir instead of `~/.pi/agent/sessions/`. The
+        // store must outlive the throwaway stage so `/resume` survives across
+        // launches; create it up front so pi can write into it immediately.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(session_store).with_context(|| {
+                format!("failed to create pi session store {}", session_store.display())
+            })?;
+            let _ = std::os::unix::fs::symlink(session_store, path.join("sessions"));
+        }
+        #[cfg(not(unix))]
+        let _ = session_store;
 
         std::fs::write(path.join("models.json"), serde_json::to_vec_pretty(models)?)
             .context("failed to write staged pi models.json")?;
@@ -494,12 +545,14 @@ fn stage_pi_agent_dir(
     let existing_settings = std::fs::read_to_string(real_dir.join("settings.json")).ok();
     let settings_json = build_pi_settings(existing_settings.as_deref(), &default_model);
 
-    let staged = StagedAgentDir::stage(&real_dir, &models_json, &settings_json)?;
+    let session_store = segregated_pi_sessions_dir();
+    let staged = StagedAgentDir::stage(&real_dir, &models_json, &settings_json, &session_store)?;
     let chat_count = models
         .iter()
         .filter(|m| m.model_type() == ModelType::Chat)
         .count();
     info!("aichat bridge: pinned pi to {chat_count} aichat model(s); default '{default_model}'");
+    info!("aichat bridge: pi REPL sessions segregated to {}", session_store.display());
     Ok(staged)
 }
 
@@ -611,6 +664,7 @@ mod tests {
     #[test]
     fn staged_agent_dir_writes_our_files_and_symlinks_the_rest() {
         let real = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
         // Pre-existing user agent dir: sessions/, auth.json, and a stale
         // models.json that must NOT leak through.
         std::fs::create_dir_all(real.path().join("sessions")).unwrap();
@@ -620,7 +674,8 @@ mod tests {
 
         let models = json!({"providers":{"aichat":{}}});
         let settings = json!({"defaultProvider":"aichat"});
-        let staged = StagedAgentDir::stage(real.path(), &models, &settings).unwrap();
+        let staged =
+            StagedAgentDir::stage(real.path(), &models, &settings, store.path()).unwrap();
         let dir = staged.path.clone();
 
         // Our models.json is a real file with our content — not the user's.
@@ -630,12 +685,7 @@ mod tests {
         assert!(!dir.join("models.json").symlink_metadata().unwrap().file_type().is_symlink());
         // settings.json is ours too.
         assert!(std::fs::read_to_string(dir.join("settings.json")).unwrap().contains("aichat"));
-        // Everything else is symlinked back to the real dir so sessions/auth survive.
-        assert!(dir.join("sessions").symlink_metadata().unwrap().file_type().is_symlink());
-        assert_eq!(
-            std::fs::read_to_string(dir.join("sessions/s1.json")).unwrap(),
-            "session"
-        );
+        // auth/themes/prompts are symlinked back to the real dir so they survive.
         assert!(dir.join("auth.json").symlink_metadata().unwrap().file_type().is_symlink());
 
         staged.cleanup();
@@ -645,17 +695,73 @@ mod tests {
         assert!(real.path().join("auth.json").exists());
     }
 
+    /// The session store is segregated: `<stage>/sessions` points at the
+    /// aichat-owned store, NOT the device-wide `~/.pi/agent/sessions/`. Pi REPL
+    /// history written through the stage lands in the store and never touches
+    /// the real pi sessions dir.
+    #[cfg(unix)]
+    #[test]
+    fn staged_agent_dir_segregates_sessions_to_given_store() {
+        let real = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        // The real pi store has a session the REPL must NOT see or write to.
+        std::fs::create_dir_all(real.path().join("sessions")).unwrap();
+        std::fs::write(real.path().join("sessions/device.jsonl"), b"device-history").unwrap();
+
+        let models = json!({"providers":{"aichat":{}}});
+        let settings = json!({});
+        let staged =
+            StagedAgentDir::stage(real.path(), &models, &settings, store.path()).unwrap();
+        let dir = staged.path.clone();
+
+        // `sessions/` is a symlink to the aichat-owned store, not the real dir.
+        assert!(dir.join("sessions").symlink_metadata().unwrap().file_type().is_symlink());
+        let target = std::fs::read_link(dir.join("sessions")).unwrap();
+        assert_eq!(target, store.path());
+        // The device pi history is invisible through the stage.
+        assert!(!dir.join("sessions/device.jsonl").exists());
+
+        // A session pi writes through the stage persists in the store, not the
+        // device dir.
+        std::fs::write(dir.join("sessions/repl.jsonl"), b"repl-history").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(store.path().join("repl.jsonl")).unwrap(),
+            "repl-history"
+        );
+        assert!(!real.path().join("sessions/repl.jsonl").exists());
+
+        // Cleanup removes the throwaway stage but leaves the persistent store
+        // and the device dir untouched.
+        staged.cleanup();
+        assert!(!dir.exists());
+        assert!(store.path().join("repl.jsonl").exists());
+        assert!(real.path().join("sessions/device.jsonl").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn staged_agent_dir_handles_missing_real_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().join("does-not-exist");
+        let store = tmp.path().join("store");
         let models = json!({"providers":{}});
         let settings = json!({});
-        let staged = StagedAgentDir::stage(&real, &models, &settings).unwrap();
+        let staged = StagedAgentDir::stage(&real, &models, &settings, &store).unwrap();
         assert!(staged.path.join("models.json").exists());
         assert!(staged.path.join("settings.json").exists());
+        // The store is created even when the real agent dir is absent.
+        assert!(store.is_dir());
         staged.cleanup();
+    }
+
+    #[test]
+    fn segregated_sessions_dir_honors_env_override() {
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var(PI_SESSIONS_DIR_ENV, "/tmp/custom-pi-store") };
+        let dir = segregated_pi_sessions_dir();
+        // FIXME: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var(PI_SESSIONS_DIR_ENV) };
+        assert_eq!(dir, PathBuf::from("/tmp/custom-pi-store"));
     }
 
     #[test]

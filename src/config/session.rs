@@ -1,7 +1,10 @@
 use super::input::*;
 use super::*;
 
-use crate::client::{Message, MessageContent, MessageContentPart, MessageRole};
+use crate::client::{
+    ImageUrl, Message, MessageContent, MessageContentPart, MessageContentToolCalls, MessageRole,
+};
+use crate::function::{ToolCall, ToolResult};
 use crate::render::MarkdownRender;
 
 use anyhow::{bail, Context, Result};
@@ -11,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs::{read_to_string, write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::LazyLock;
 
 static RE_AUTONAME_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{8}T\d{6}-").unwrap());
@@ -88,8 +92,13 @@ impl Session {
     pub fn load(config: &Config, name: &str, path: &Path) -> Result<Self> {
         let content = read_to_string(path)
             .with_context(|| format!("Failed to load session {} at {}", name, path.display()))?;
-        let mut session: Self =
-            serde_norway::from_str(&content).with_context(|| format!("Invalid session {name}"))?;
+        let mut session: Self = if looks_like_pi_jsonl(&content) {
+            Self::import_from_pi_jsonl(&content)
+                .with_context(|| format!("Invalid pi session {name}"))?
+        } else {
+            warn_legacy_yaml(path);
+            serde_norway::from_str(&content).with_context(|| format!("Invalid session {name}"))?
+        };
 
         session.model = Model::retrieve_model(config, &session.model_id, ModelType::Chat)?;
 
@@ -245,12 +254,21 @@ impl Session {
         // Header. `version: 3` is the current pi format; older sessions get
         // migrated by pi on load, so we ship the latest to avoid the loader
         // doing work it doesn't need to do.
+        //
+        // The `aichat` block carries aichat's own session metadata (model,
+        // role, sampling, agent state, compression boundary) that pi's tree
+        // format has no slot for. Pi ignores unknown header keys, so the file
+        // stays pi-loadable; `import_from_pi_jsonl` reads the block back so the
+        // round-trip is lossless. This is what lets pi JSONL be aichat's native
+        // session format, not just a one-way export target.
+        let compressed_entries = pi_entry_count(&self.compressed_messages);
         let header = json!({
             "type": "session",
             "version": 3,
             "id": session_uuid,
             "timestamp": iso_ms(&base),
             "cwd": cwd_str,
+            "aichat": self.aichat_meta(compressed_entries),
         });
         writeln!(out, "{header}")?;
 
@@ -357,6 +375,10 @@ impl Session {
                                 "content": [{"type": "text", "text": output_text}],
                                 "isError": false,
                                 "timestamp": body_ts(*step),
+                                // Lossless mirror of the raw tool output so the
+                                // import round-trip recovers structured outputs
+                                // (pi only models text content blocks).
+                                "aichatOutput": tr.output,
                             });
                             let entry = json!({
                                 "type": "message",
@@ -408,6 +430,10 @@ impl Session {
                             "content": [{"type": "text", "text": content.to_text()}],
                             "isError": false,
                             "timestamp": body_ts(*step),
+                            // Tagged so the importer can round-trip a bare Tool
+                            // message that has no matching assistant tool call.
+                            "aichatOrphanTool": true,
+                            "aichatOutput": content.to_text(),
                         });
                         let entry = json!({
                             "type": "message",
@@ -434,6 +460,218 @@ impl Session {
         walk(&self.messages, &mut prev_id, &mut step, out)?;
 
         Ok(())
+    }
+
+    /// Build the `aichat` header block holding session metadata pi's tree
+    /// format can't represent. `compressed_entries` is the number of JSONL
+    /// message entries belonging to compressed history, so `import` can split
+    /// the reconstructed message stream back into compressed + live at the
+    /// same boundary. Only non-default fields are emitted to keep files lean.
+    fn aichat_meta(&self, compressed_entries: i64) -> Value {
+        let mut m = serde_json::Map::new();
+        m.insert("model".into(), json!(self.model_id));
+        if let Some(v) = self.temperature {
+            m.insert("temperature".into(), json!(v));
+        }
+        if let Some(v) = self.top_p {
+            m.insert("topP".into(), json!(v));
+        }
+        if let Some(v) = &self.use_tools {
+            m.insert("useTools".into(), json!(v));
+        }
+        if let Some(v) = self.save_session {
+            m.insert("saveSession".into(), json!(v));
+        }
+        if let Some(v) = self.compress_threshold {
+            m.insert("compressThreshold".into(), json!(v));
+        }
+        if let Some(v) = &self.role_name {
+            m.insert("roleName".into(), json!(v));
+        }
+        if !self.agent_variables.is_empty() {
+            m.insert("agentVariables".into(), json!(self.agent_variables));
+        }
+        if !self.agent_instructions.is_empty() {
+            m.insert("agentInstructions".into(), json!(self.agent_instructions));
+        }
+        if !self.data_urls.is_empty() {
+            m.insert("dataUrls".into(), json!(self.data_urls));
+        }
+        m.insert("compressedEntries".into(), json!(compressed_entries));
+        Value::Object(m)
+    }
+
+    /// Parse pi's v3 JSONL tree format back into an aichat `Session`. The
+    /// inverse of [`Session::export_to_pi_jsonl`]: the `aichat` header block
+    /// restores session metadata, the message tree is replayed into aichat's
+    /// linear `messages`/`compressed_messages` lists, and the `aichatOutput`/
+    /// `aichatUrl` mirrors recover structured tool outputs and image URLs that
+    /// pi's text-only content blocks would otherwise flatten.
+    ///
+    /// Returns a `Session` with the persisted fields populated; the caller
+    /// ([`Session::load`]) resolves the runtime `Model`, role prompt, and token
+    /// count, exactly as for the legacy YAML path.
+    pub fn import_from_pi_jsonl(content: &str) -> Result<Self> {
+        let mut lines = content.lines().filter(|l| !l.trim().is_empty());
+        let header_line = lines.next().context("empty pi session file")?;
+        let header: Value =
+            serde_json::from_str(header_line).context("invalid pi session header line")?;
+
+        let mut session = Self::default();
+        let meta = header.get("aichat");
+        if let Some(meta) = meta {
+            if let Some(v) = meta.get("model").and_then(Value::as_str) {
+                session.model_id = v.to_string();
+            }
+            session.temperature = meta.get("temperature").and_then(Value::as_f64);
+            session.top_p = meta.get("topP").and_then(Value::as_f64);
+            session.use_tools = meta
+                .get("useTools")
+                .and_then(Value::as_str)
+                .map(String::from);
+            session.save_session = meta.get("saveSession").and_then(Value::as_bool);
+            session.compress_threshold = meta
+                .get("compressThreshold")
+                .and_then(Value::as_u64)
+                .map(|v| v as usize);
+            session.role_name = meta
+                .get("roleName")
+                .and_then(Value::as_str)
+                .map(String::from);
+            if let Some(v) = meta.get("agentVariables") {
+                session.agent_variables = serde_json::from_value(v.clone()).unwrap_or_default();
+            }
+            if let Some(v) = meta.get("agentInstructions").and_then(Value::as_str) {
+                session.agent_instructions = v.to_string();
+            }
+            if let Some(v) = meta.get("dataUrls") {
+                session.data_urls = serde_json::from_value(v.clone()).unwrap_or_default();
+            }
+        }
+        let compressed_entries = meta
+            .and_then(|m| m.get("compressedEntries"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+
+        // Replay the entry stream. `all` accumulates reconstructed aichat
+        // messages in order; toolResult entries fold into the assistant
+        // `ToolCalls` message they belong to (matched by tool-call id) rather
+        // than becoming their own message. `compressed_count` tracks how many
+        // reconstructed messages fall before the compression boundary.
+        let mut all: Vec<Message> = Vec::new();
+        let mut pending: HashMap<String, (usize, usize)> = HashMap::new();
+        let mut entry_idx: i64 = 0;
+        let mut compressed_count: usize = 0;
+
+        for line in lines {
+            let entry: Value =
+                serde_json::from_str(line).context("invalid pi session entry line")?;
+            if entry.get("type").and_then(Value::as_str) != Some("message") {
+                continue;
+            }
+            let msg = match entry.get("message") {
+                Some(m) => m,
+                None => continue,
+            };
+            let before_boundary = entry_idx < compressed_entries;
+            match msg.get("role").and_then(Value::as_str).unwrap_or("") {
+                "user" => {
+                    let content =
+                        pi_content_to_user(msg.get("content").unwrap_or(&Value::Null));
+                    all.push(Message::new(MessageRole::User, content));
+                }
+                "assistant" => {
+                    let mut text = String::new();
+                    let mut tool_results: Vec<ToolResult> = Vec::new();
+                    let mut call_ids: Vec<String> = Vec::new();
+                    if let Some(blocks) = msg.get("content").and_then(Value::as_array) {
+                        for b in blocks {
+                            match b.get("type").and_then(Value::as_str) {
+                                Some("text") => {
+                                    if !text.is_empty() {
+                                        text.push('\n');
+                                    }
+                                    text.push_str(
+                                        b.get("text").and_then(Value::as_str).unwrap_or(""),
+                                    );
+                                }
+                                Some("toolCall") => {
+                                    let id = b.get("id").and_then(Value::as_str).map(String::from);
+                                    let name = b
+                                        .get("name")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let args =
+                                        b.get("arguments").cloned().unwrap_or(Value::Null);
+                                    call_ids.push(id.clone().unwrap_or_default());
+                                    tool_results.push(ToolResult::new(
+                                        ToolCall::new(name, args, id),
+                                        Value::Null,
+                                    ));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if tool_results.is_empty() {
+                        all.push(Message::new(
+                            MessageRole::Assistant,
+                            MessageContent::Text(text),
+                        ));
+                    } else {
+                        let msg_idx = all.len();
+                        for (tr_idx, id) in call_ids.iter().enumerate() {
+                            if !id.is_empty() {
+                                pending.insert(id.clone(), (msg_idx, tr_idx));
+                            }
+                        }
+                        all.push(Message::new(
+                            MessageRole::Assistant,
+                            MessageContent::ToolCalls(MessageContentToolCalls::new(
+                                tool_results,
+                                text,
+                            )),
+                        ));
+                    }
+                }
+                "toolResult" => {
+                    let output = pi_tool_output(msg);
+                    let call_id = msg.get("toolCallId").and_then(Value::as_str).unwrap_or("");
+                    match pending.get(call_id) {
+                        Some(&(mi, ti)) => {
+                            if let MessageContent::ToolCalls(tc) = &mut all[mi].content {
+                                if let Some(tr) = tc.tool_results.get_mut(ti) {
+                                    tr.output = output;
+                                }
+                            }
+                        }
+                        None => {
+                            // No matching call: a bare Tool message (legacy
+                            // orphan). Preserve it as aichat's Tool role.
+                            let text = match output.as_str() {
+                                Some(s) => s.to_string(),
+                                None => output.to_string(),
+                            };
+                            all.push(Message::new(
+                                MessageRole::Tool,
+                                MessageContent::Text(text),
+                            ));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if before_boundary {
+                compressed_count = all.len();
+            }
+            entry_idx += 1;
+        }
+
+        let live = all.split_off(compressed_count.min(all.len()));
+        session.compressed_messages = all;
+        session.messages = live;
+        Ok(session)
     }
 
     pub fn render(
@@ -702,7 +940,7 @@ impl Session {
                     session_name = format!("{session_name}-{autoname}")
                 }
             }
-            let session_path = session_dir.join(format!("{session_name}.yaml"));
+            let session_path = session_dir.join(format!("{session_name}.jsonl"));
             self.save(&session_name, &session_path, is_repl)?;
         }
         Ok(())
@@ -713,8 +951,13 @@ impl Session {
 
         self.path = Some(session_path.display().to_string());
 
-        let content = serde_norway::to_string(&self)
-            .with_context(|| format!("Failed to serde session '{}'", self.name))?;
+        // Native session format is pi v3 JSONL (the YAML format is deprecated).
+        // The header's `aichat` block carries metadata pi ignores, so the file
+        // is both pi-loadable and losslessly re-importable by aichat.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut content: Vec<u8> = Vec::new();
+        self.export_to_pi_jsonl(&cwd, &mut content)
+            .with_context(|| format!("Failed to serialize session '{}'", self.name))?;
         write(session_path, content).with_context(|| {
             format!(
                 "Failed to write session '{}' to '{}'",
@@ -1128,6 +1371,179 @@ mod pi_export_tests {
             assert!(seen.insert(id.clone()), "id collision: {id}");
         }
     }
+
+    // --- round-trip (export -> import) ------------------------------------
+
+    /// Export a session to pi JSONL then import it back. The native format is
+    /// pi JSONL, so this round-trip must be lossless for everything aichat
+    /// persists.
+    fn roundtrip(session: &Session) -> Session {
+        let mut buf: Vec<u8> = Vec::new();
+        session
+            .export_to_pi_jsonl(&PathBuf::from("/tmp/aichat-test"), &mut buf)
+            .expect("export should not fail");
+        let text = String::from_utf8(buf).unwrap();
+        assert!(looks_like_pi_jsonl(&text), "exported file must be detected as pi JSONL");
+        Session::import_from_pi_jsonl(&text).expect("import should not fail")
+    }
+
+    /// Compare two message lists by their serialized JSON (Message has no Eq).
+    fn assert_messages_eq(a: &[Message], b: &[Message]) {
+        assert_eq!(json!(a), json!(b));
+    }
+
+    #[test]
+    fn round_trip_preserves_text_messages_and_metadata() {
+        let mut session = Session::default();
+        session.model_id = "openai:gpt-4o-mini".to_string();
+        session.temperature = Some(0.7);
+        session.top_p = Some(0.9);
+        session.use_tools = Some("fs_read,grep".to_string());
+        session.save_session = Some(true);
+        session.compress_threshold = Some(2000);
+        session.role_name = Some("coder".to_string());
+        session.agent_instructions = "be terse".to_string();
+        session.messages = vec![user("hi"), assistant("hello"), user("bye")];
+
+        let got = roundtrip(&session);
+        assert_eq!(got.model_id, "openai:gpt-4o-mini");
+        assert_eq!(got.temperature, Some(0.7));
+        assert_eq!(got.top_p, Some(0.9));
+        assert_eq!(got.use_tools.as_deref(), Some("fs_read,grep"));
+        assert_eq!(got.save_session, Some(true));
+        assert_eq!(got.compress_threshold, Some(2000));
+        assert_eq!(got.role_name.as_deref(), Some("coder"));
+        assert_eq!(got.agent_instructions, "be terse");
+        assert_messages_eq(&got.messages, &session.messages);
+        assert!(got.compressed_messages.is_empty());
+    }
+
+    #[test]
+    fn round_trip_preserves_tool_calls_and_structured_output() {
+        let call = ToolCall {
+            name: "bash".into(),
+            arguments: json!({"command": "ls"}),
+            id: Some("call_abc".into()),
+        };
+        // A *structured* (non-string) output: the lossless `aichatOutput`
+        // mirror must recover it, not flatten it to text.
+        let tool_results = vec![ToolResult::new(call, json!({"files": ["a", "b"], "count": 2}))];
+        let asst = Message::new(
+            MessageRole::Assistant,
+            MessageContent::ToolCalls(MessageContentToolCalls::new(
+                tool_results,
+                "running ls".into(),
+            )),
+        );
+        let mut session = Session::default();
+        session.model_id = "openai:gpt-4o".to_string();
+        session.messages = vec![user("list files"), asst];
+
+        let got = roundtrip(&session);
+        assert_messages_eq(&got.messages, &session.messages);
+        // Confirm the structured output survived as JSON, not a string.
+        if let MessageContent::ToolCalls(tc) = &got.messages[1].content {
+            assert_eq!(tc.tool_results[0].output, json!({"files": ["a", "b"], "count": 2}));
+        } else {
+            panic!("expected ToolCalls message");
+        }
+    }
+
+    #[test]
+    fn round_trip_preserves_compression_boundary() {
+        let mut session = Session::default();
+        session.model_id = "openai:gpt-4o".to_string();
+        // Two compressed turns (4 entries), one live turn (2 entries).
+        session.compressed_messages = vec![user("c1"), assistant("c1a"), user("c2"), assistant("c2a")];
+        session.messages = vec![user("live"), assistant("live-a")];
+
+        let got = roundtrip(&session);
+        assert_messages_eq(&got.compressed_messages, &session.compressed_messages);
+        assert_messages_eq(&got.messages, &session.messages);
+    }
+
+    #[test]
+    fn round_trip_preserves_compression_boundary_across_tool_calls() {
+        // A tool-call turn in compressed history emits 1 + N entries; the
+        // boundary must still split correctly by entry count.
+        let call = ToolCall {
+            name: "bash".into(),
+            arguments: json!({"command": "ls"}),
+            id: Some("call_1".into()),
+        };
+        let asst = Message::new(
+            MessageRole::Assistant,
+            MessageContent::ToolCalls(MessageContentToolCalls::new(
+                vec![ToolResult::new(call, json!("ok"))],
+                String::new(),
+            )),
+        );
+        let mut session = Session::default();
+        session.model_id = "openai:gpt-4o".to_string();
+        session.compressed_messages = vec![user("c1"), asst];
+        session.messages = vec![user("live")];
+
+        let got = roundtrip(&session);
+        assert_messages_eq(&got.compressed_messages, &session.compressed_messages);
+        assert_messages_eq(&got.messages, &session.messages);
+    }
+
+    #[test]
+    fn round_trip_preserves_multimodal_image_message() {
+        let parts = vec![
+            MessageContentPart::Text { text: "look".into() },
+            MessageContentPart::ImageUrl {
+                image_url: ImageUrl {
+                    url: "data:image/png;base64,AAAA".into(),
+                },
+            },
+        ];
+        let mut session = Session::default();
+        session.model_id = "openai:gpt-4o".to_string();
+        session.messages = vec![Message::new(MessageRole::User, MessageContent::Array(parts))];
+
+        let got = roundtrip(&session);
+        assert_messages_eq(&got.messages, &session.messages);
+    }
+
+    #[test]
+    fn looks_like_pi_jsonl_detects_format() {
+        assert!(looks_like_pi_jsonl(
+            r#"{"type":"session","version":3,"id":"x","timestamp":"t","cwd":"/"}"#
+        ));
+        // Leading blank lines tolerated.
+        assert!(looks_like_pi_jsonl("\n\n{\"type\":\"session\"}"));
+        // Legacy YAML session is not pi JSONL.
+        assert!(!looks_like_pi_jsonl("model: openai:gpt-4o\nmessages: []\n"));
+        assert!(!looks_like_pi_jsonl(""));
+    }
+
+    #[test]
+    fn import_pi_native_session_without_aichat_block() {
+        // A pi-native file (no `aichat` header block, text-only tool result):
+        // messages still reconstruct; metadata defaults; tool output falls
+        // back to the joined text content.
+        let jsonl = concat!(
+            r#"{"type":"session","version":3,"id":"s","timestamp":"2020-01-01T00:00:00.000Z","cwd":"/"}"#,
+            "\n",
+            r#"{"type":"message","id":"a","parentId":null,"timestamp":"t","message":{"role":"user","content":"hi"}}"#,
+            "\n",
+            r#"{"type":"message","id":"b","parentId":"a","timestamp":"t","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"x":1}}]}}"#,
+            "\n",
+            r#"{"type":"message","id":"d","parentId":"b","timestamp":"t","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","content":[{"type":"text","text":"output-text"}]}}"#,
+        );
+        let got = Session::import_from_pi_jsonl(jsonl).unwrap();
+        assert_eq!(got.model_id, "");
+        assert_eq!(got.messages.len(), 2);
+        assert_eq!(got.messages[0].content.to_text(), "hi");
+        if let MessageContent::ToolCalls(tc) = &got.messages[1].content {
+            assert_eq!(tc.tool_results[0].call.name, "bash");
+            // No aichatOutput mirror -> text fallback.
+            assert_eq!(tc.tool_results[0].output, json!("output-text"));
+        } else {
+            panic!("expected ToolCalls message");
+        }
+    }
 }
 
 // --- pi JSONL conversion helpers -------------------------------------------
@@ -1184,9 +1600,9 @@ fn user_content_to_pi(content: &MessageContent) -> Value {
                         // Pi uses an embedded-data shape, not a URL ref.
                         // aichat already stores base64-encoded data URLs
                         // for local images, but external URLs would need
-                        // fetch-and-encode work we don't do here. Emit as
-                        // text so the message round-trips without lying
-                        // about its provenance.
+                        // fetch-and-encode work we don't do here. We carry the
+                        // original aichat URL in `aichatUrl` either way so the
+                        // import round-trip is lossless; pi reads `data`/`text`.
                         if let Some(rest) = image_url.url.strip_prefix("data:") {
                             if let Some((meta, b64)) = rest.split_once(',') {
                                 let mime = meta.split(';').next().unwrap_or("image/png");
@@ -1194,10 +1610,15 @@ fn user_content_to_pi(content: &MessageContent) -> Value {
                                     "type": "image",
                                     "data": b64,
                                     "mimeType": mime,
+                                    "aichatUrl": image_url.url,
                                 });
                             }
                         }
-                        json!({"type": "text", "text": format!("[image: {}]", image_url.url)})
+                        json!({
+                            "type": "text",
+                            "text": format!("[image: {}]", image_url.url),
+                            "aichatUrl": image_url.url,
+                        })
                     }
                 })
                 .collect();
@@ -1205,4 +1626,116 @@ fn user_content_to_pi(content: &MessageContent) -> Value {
         }
         MessageContent::ToolCalls(_) => json!(content.to_text()),
     }
+}
+
+/// Inverse of [`user_content_to_pi`]: reconstruct an aichat user-message
+/// `MessageContent` from pi's `content` value. A bare string is plain text; an
+/// array becomes text/image parts. Image blocks prefer the lossless `aichatUrl`
+/// mirror, falling back to rebuilding a `data:` URL from pi's `data`/`mimeType`.
+fn pi_content_to_user(content: &Value) -> MessageContent {
+    match content {
+        Value::String(s) => MessageContent::Text(s.clone()),
+        Value::Array(blocks) => {
+            let parts: Vec<MessageContentPart> = blocks
+                .iter()
+                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                    Some("text") => Some(MessageContentPart::Text {
+                        text: b.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+                    }),
+                    Some("image") => {
+                        let url = match b.get("aichatUrl").and_then(Value::as_str) {
+                            Some(u) => u.to_string(),
+                            None => {
+                                let data =
+                                    b.get("data").and_then(Value::as_str).unwrap_or("");
+                                let mime = b
+                                    .get("mimeType")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("image/png");
+                                format!("data:{mime};base64,{data}")
+                            }
+                        };
+                        Some(MessageContentPart::ImageUrl {
+                            image_url: ImageUrl { url },
+                        })
+                    }
+                    // A text block carrying `aichatUrl` is an external image
+                    // rendered as text on export; restore it as an image part.
+                    _ if b.get("aichatUrl").is_some() => {
+                        b.get("aichatUrl").and_then(Value::as_str).map(|u| {
+                            MessageContentPart::ImageUrl {
+                                image_url: ImageUrl { url: u.to_string() },
+                            }
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+            MessageContent::Array(parts)
+        }
+        _ => MessageContent::Text(String::new()),
+    }
+}
+
+/// Recover a tool-result output `Value` from a pi `toolResult` message body.
+/// Prefers the lossless `aichatOutput` mirror; falls back to joining the text
+/// content blocks (matching what a pi-native, non-aichat session would carry).
+fn pi_tool_output(msg: &Value) -> Value {
+    if let Some(v) = msg.get("aichatOutput") {
+        return v.clone();
+    }
+    let text = msg
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    Value::String(text)
+}
+
+/// Number of pi JSONL message entries a slice of aichat messages will export
+/// to. A `ToolCalls` message yields one assistant entry plus one entry per tool
+/// result; every other (non-system) message yields one. System messages are
+/// dropped by the exporter and so don't count. Used to record the compression
+/// boundary in the session header.
+fn pi_entry_count(msgs: &[Message]) -> i64 {
+    msgs.iter()
+        .filter(|m| !matches!(m.role, MessageRole::System))
+        .map(|m| match &m.content {
+            MessageContent::ToolCalls(tc) => 1 + tc.tool_results.len() as i64,
+            _ => 1,
+        })
+        .sum()
+}
+
+/// True when `content` is a pi v3 JSONL session file (first non-empty line is a
+/// JSON object whose `type` is `"session"`), distinguishing it from a legacy
+/// aichat YAML session at load time.
+fn looks_like_pi_jsonl(content: &str) -> bool {
+    content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .and_then(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|v| v.get("type").and_then(Value::as_str) == Some("session"))
+        .unwrap_or(false)
+}
+
+/// One-time stderr deprecation notice when a legacy YAML session is loaded.
+static YAML_DEPRECATION_WARNED: AtomicBool = AtomicBool::new(false);
+
+fn warn_legacy_yaml(path: &Path) {
+    if YAML_DEPRECATION_WARNED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    eprintln!(
+        "warning: loaded a legacy YAML session ('{}'). The YAML session format is deprecated \
+         in favor of pi JSONL; run `aichat --migrate-sessions` to convert your sessions. \
+         Saving this session will rewrite it as pi JSONL.",
+        path.display()
+    );
 }

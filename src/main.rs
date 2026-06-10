@@ -82,6 +82,14 @@ async fn async_main() -> Result<()> {
         process::exit(exit);
     }
 
+    // One-shot bulk migration of legacy YAML sessions to pi JSONL. Short-
+    // circuits before full config init for the same reason as the converter
+    // above: it only needs the sessions directory, not a live model client.
+    if cli.migrate_sessions {
+        let exit = run_migrate_sessions();
+        process::exit(exit);
+    }
+
     // MCP mode uses stdin as transport — don't consume it here. The memory
     // write/reflect subcommands (Phase 34C/D) likewise own stdin: the curator
     // reads accept/skip decisions and the Reflector reads a transcript from it.
@@ -754,6 +762,96 @@ fn resolve_session_source(src: &str) -> std::path::PathBuf {
         .or_else(|| dirs::config_dir().map(|p| p.join("aichat")))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     cfg_dir.join("sessions").join(format!("{src}.yaml"))
+}
+
+/// Resolve the sessions directory root the same way `resolve_session_source`
+/// does for bare names: `$AICHAT_SESSIONS_DIR`, else `<config dir>/sessions`.
+fn sessions_root() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("AICHAT_SESSIONS_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+    let cfg_dir = std::env::var_os("AICHAT_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| dirs::config_dir().map(|p| p.join("aichat")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    cfg_dir.join("sessions")
+}
+
+/// Collect every `*.yaml` file under `dir`, recursing into subdirectories
+/// (so the auto-named `_/` store is included).
+fn collect_yaml_sessions(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_yaml_sessions(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+            out.push(path);
+        }
+    }
+}
+
+/// One-shot bulk migration: convert every legacy `.yaml` session under the
+/// sessions directory to native pi `.jsonl`, removing the `.yaml` once the
+/// `.jsonl` is written. Parses each session straight from YAML (no model
+/// client needed) and writes through `Session::export_to_pi_jsonl`. Returns
+/// the process exit code: 0 on full success, 1 if any file failed.
+fn run_migrate_sessions() -> i32 {
+    let root = sessions_root();
+    if !root.exists() {
+        eprintln!("No sessions directory at '{}'; nothing to migrate.", root.display());
+        return 0;
+    }
+    let mut yamls = Vec::new();
+    collect_yaml_sessions(&root, &mut yamls);
+    if yamls.is_empty() {
+        eprintln!("No legacy YAML sessions under '{}'.", root.display());
+        return 0;
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let (mut ok, mut failed) = (0usize, 0usize);
+    for yaml_path in &yamls {
+        let jsonl_path = yaml_path.with_extension("jsonl");
+        match migrate_one_session(yaml_path, &jsonl_path, &cwd) {
+            Ok(()) => {
+                ok += 1;
+                eprintln!("migrated {} -> {}", yaml_path.display(), jsonl_path.display());
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("failed to migrate {}: {e}", yaml_path.display());
+            }
+        }
+    }
+    eprintln!("Migrated {ok} session(s); {failed} failed.");
+    if failed > 0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Convert a single YAML session file to pi JSONL and remove the source.
+fn migrate_one_session(
+    yaml_path: &std::path::Path,
+    jsonl_path: &std::path::Path,
+    cwd: &std::path::Path,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let yaml = std::fs::read_to_string(yaml_path)
+        .with_context(|| format!("read '{}'", yaml_path.display()))?;
+    let session: crate::config::Session =
+        serde_norway::from_str(&yaml).with_context(|| format!("parse '{}'", yaml_path.display()))?;
+    let mut buf: Vec<u8> = Vec::new();
+    session.export_to_pi_jsonl(cwd, &mut buf)?;
+    std::fs::write(jsonl_path, buf)
+        .with_context(|| format!("write '{}'", jsonl_path.display()))?;
+    std::fs::remove_file(yaml_path)
+        .with_context(|| format!("remove '{}'", yaml_path.display()))?;
+    Ok(())
 }
 
 /// Decision for which REPL to spawn. Pi is the default after the Phase 4
