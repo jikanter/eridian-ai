@@ -35,6 +35,12 @@ pub struct StartInfo {
     pub fixture_id: Option<String>,
     pub cwd: String,
     pub args: Vec<String>,
+    /// Phase 52D: the resolved entity's stable id (the cross-preset attribution
+    /// key). `None` when no entity resolved for the turn.
+    pub entity_id: Option<String>,
+    /// Phase 52D: the resolved facet token set actually used, from
+    /// `FacetSet::trace_tokens` (e.g. `["Act:referenced","Shape:owned"]`).
+    pub facets: Vec<String>,
 }
 
 /// One conversational turn's trace. Emits `session.start` on construction and
@@ -87,6 +93,8 @@ impl TraceSession {
             cwd: info.cwd,
             args: info.args,
             env_subset: redact::env_subset_from_process(),
+            entity_id: info.entity_id,
+            facets: info.facets,
         }));
 
         Ok(session)
@@ -387,6 +395,57 @@ mod tests {
             assert_eq!(e["seq"], i as u64);
             assert_eq!(e["session_id"], sid);
         }
+    }
+
+    #[test]
+    fn session_start_carries_entity_attribution() {
+        // Phase 52D: the keystone `session.start` carries `entity_id` and the
+        // resolved facet token set, so downstream attribution (Phase 49) can
+        // group trajectories by entity + capability without re-resolving.
+        let base = temp_base("entity-attr");
+        let layout = TraceLayout::new(&base);
+        let session = TraceSession::start(
+            &layout,
+            None,
+            StartInfo {
+                entity_id: Some("rust-reviewer".into()),
+                facets: vec!["Act:referenced".into(), "Shape:owned".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sid = session.session_id().to_string();
+        session.end(0, 0, 0, None);
+
+        let events = read_turn_events(&layout, &sid);
+        let start = events
+            .iter()
+            .find(|e| e["type"] == "session.start")
+            .unwrap();
+        assert_eq!(start["data"]["entity_id"], "rust-reviewer");
+        assert_eq!(
+            start["data"]["facets"],
+            serde_json::json!(["Act:referenced", "Shape:owned"])
+        );
+    }
+
+    #[test]
+    fn session_start_omits_entity_id_when_absent_and_facets_default_empty() {
+        // A bare turn (no resolved entity) still emits a well-formed
+        // `session.start`: `entity_id` null, `facets` an empty array.
+        let base = temp_base("entity-attr-empty");
+        let layout = TraceLayout::new(&base);
+        let session = TraceSession::start(&layout, None, StartInfo::default()).unwrap();
+        let sid = session.session_id().to_string();
+        session.end(0, 0, 0, None);
+
+        let events = read_turn_events(&layout, &sid);
+        let start = events
+            .iter()
+            .find(|e| e["type"] == "session.start")
+            .unwrap();
+        assert!(start["data"]["entity_id"].is_null());
+        assert_eq!(start["data"]["facets"], serde_json::json!([]));
     }
 
     #[test]

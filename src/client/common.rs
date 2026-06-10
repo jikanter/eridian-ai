@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::{
-    config::{Config, GlobalConfig, Input},
+    config::{Config, Entity, GlobalConfig, Input},
     function::{eval_tool_calls, FunctionDeclaration, ToolCall, ToolResult},
     render::render_stream,
     utils::*,
@@ -517,6 +517,13 @@ pub async fn call_react(
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
                 args: std::env::args().collect(),
+                // Phase 52D: attribute the turn to the resolved entity + the
+                // facet set actually used. `input.role()` is the resolved Role
+                // at the call_react keystone (for an agent, the synthesized
+                // role via `to_role()`), so its facets reflect what the request
+                // path used — the richer owned-facet view lands with 52C.
+                entity_id: Some(input.role().name().to_string()),
+                facets: input.role().facets().trace_tokens(),
             };
             crate::utils::trace_spec::wiring::start_turn(&cfg, info)
         });

@@ -289,6 +289,26 @@ impl FacetSet {
         self.entries.iter().copied()
     }
 
+    /// Phase 52D: the machine-readable, stable form the keystone trace carries
+    /// in `session.start.data.facets` — the GROUP BY key Phase 49 attribution
+    /// reads. Each `(family, ownership)` pair is one `Family:ownership` token
+    /// (ownership spelled out: `owned` / `referenced`), in the `entries`
+    /// BTreeSet's stable order. Unlike [`summary`](Self::summary), dual
+    /// ownership is **not** collapsed: a family present both ways yields two
+    /// tokens, so the ownership bit survives for downstream stratification.
+    pub fn trace_tokens(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .map(|(family, ownership)| {
+                let ownership = match ownership {
+                    FacetOwnership::Owned => "owned",
+                    FacetOwnership::Referenced => "referenced",
+                };
+                format!("{family}:{ownership}")
+            })
+            .collect()
+    }
+
     /// Phase 52B: a compact, stable one-line rendering for `--dry-run`, e.g.
     /// `Act(ref), Shape(owned)`. Families appear in closed-taxonomy order; a
     /// family present under both ownerships renders once as `(owned, ref)`.
@@ -5358,5 +5378,43 @@ pipeline:
         f.insert(Facet::Act, FacetOwnership::Referenced);
         f.insert(Facet::Act, FacetOwnership::Owned);
         assert_eq!(f.summary(), "Act(owned, ref)");
+    }
+
+    // Phase 52D: `trace_tokens` is the machine-readable, stable form the
+    // keystone trace (`session.start.data.facets`) carries — the GROUP BY key
+    // Phase 49 attribution reads. Unlike `summary()` (a display string), each
+    // (family, ownership) pair is one `Family:ownership` token, sorted, never
+    // collapsed — so consumers can group, diff, and hash without re-parsing.
+    #[test]
+    fn facetset_trace_tokens_empty_is_no_tokens() {
+        let role = Role::new("bare", "---\nmodel: gpt-4\n---\nHi.");
+        assert!(role.facets().trace_tokens().is_empty());
+    }
+
+    #[test]
+    fn facetset_trace_tokens_emits_family_ownership_pairs_sorted() {
+        // References Act (use_tools), owns Shape (output_schema). Tokens are
+        // sorted in closed-taxonomy order and spell ownership out in full.
+        let role = Role::new(
+            "mixed",
+            "---\nuse_tools: fs_read\noutput_schema:\n  type: object\n---\nP.",
+        );
+        assert_eq!(
+            role.facets().trace_tokens(),
+            vec!["Act:referenced".to_string(), "Shape:owned".to_string()]
+        );
+    }
+
+    #[test]
+    fn facetset_trace_tokens_keeps_dual_ownership_distinct() {
+        // A family present under both ownerships stays two tokens (owned before
+        // referenced) — never collapsed — so the ownership bit survives.
+        let mut f = FacetSet::new();
+        f.insert(Facet::Act, FacetOwnership::Referenced);
+        f.insert(Facet::Act, FacetOwnership::Owned);
+        assert_eq!(
+            f.trace_tokens(),
+            vec!["Act:owned".to_string(), "Act:referenced".to_string()]
+        );
     }
 }
