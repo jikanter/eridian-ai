@@ -27,20 +27,20 @@ src/config/remote.rs:14:use super::{RemoteConfig, RolePublicView};
 EntityRef gained a Remote variant. The address parser (Phase 19A) already accepted `remote:host/role` shapes; Phase 20 ships the classification + execution that follows from it.
 
 ```bash
-cargo test --bin aichat config::remote::tests 2>&1 | grep -E 'test result|test config::remote::' | head -12
+cargo test --bin aichat config::remote::tests 2>&1 | grep -E 'test result|test config::remote::' | sed -E 's/finished in [0-9.]+s/finished in 0.01s/; s/[0-9]+ filtered out; //' | sort | head -12
 ```
 
 ```output
-test config::remote::tests::short_host_trims_scheme_and_path ... ok
-test config::remote::tests::unnamed_target_with_dot_only_accepted ... ok
-test config::remote::tests::unnamed_host_port_target_synthesizes_http_url ... ok
-test config::remote::tests::whitespace_in_target_errors ... ok
-test config::remote::tests::unknown_bare_name_target_errors_with_hint ... ok
 test config::remote::tests::empty_endpoint_errors ... ok
 test config::remote::tests::named_target_endpoint_trailing_slash_stripped ... ok
-test config::remote::tests::resolves_named_target_without_api_key ... ok
 test config::remote::tests::resolves_named_target_with_api_key ... ok
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 478 filtered out; finished in 0.01s
+test config::remote::tests::resolves_named_target_without_api_key ... ok
+test config::remote::tests::short_host_trims_scheme_and_path ... ok
+test config::remote::tests::unknown_bare_name_target_errors_with_hint ... ok
+test config::remote::tests::unnamed_host_port_target_synthesizes_http_url ... ok
+test config::remote::tests::unnamed_target_with_dot_only_accepted ... ok
+test config::remote::tests::whitespace_in_target_errors ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; finished in 0.01s
 ```
 
 ```bash
@@ -48,16 +48,16 @@ grep -n '/v1/roles/\|/v1/pipelines\|/v1/batch\|/v1/models' src/serve.rs | head -
 ```
 
 ```output
-59:    println!("Models API:           http://{addr}/v1/models");
-190:        } else if path == "/v1/models" {
-194:        } else if let Some(rest) = path.strip_prefix("/v1/roles/") {
-195:            // Phase 17B: `/v1/roles/{name}/invoke` is matched ahead of the
-209:        } else if path == "/v1/pipelines/run" {
-211:        } else if path == "/v1/batch" {
-284:    /// Path-segment routing: `/v1/roles/` and `/v1/roles/foo/bar` fall through
-286:    /// with role names. The Phase 17B `/v1/roles/{name}/invoke` route is
-406:    /// Phase 17B: `POST /v1/roles/{name}/invoke` — dedicated role invocation.
-436:        // Path-segment sanity: `/v1/roles//invoke` and nested paths fall
+51:    println!("Models API:           http://{addr}/v1/models");
+311:        } else if path == "/v1/models" {
+315:        } else if let Some(rest) = path.strip_prefix("/v1/roles/") {
+316:            // Phase 17B: `/v1/roles/{name}/invoke` is matched ahead of the
+330:        } else if path == "/v1/pipelines/run" {
+332:        } else if path == "/v1/batch" {
+455:    /// Path-segment routing: `/v1/roles/` and `/v1/roles/foo/bar` fall through
+457:    /// with role names. The Phase 17B `/v1/roles/{name}/invoke` route is
+581:    /// Phase 17B: `POST /v1/roles/{name}/invoke` — dedicated role invocation.
+611:        // Path-segment sanity: `/v1/roles//invoke` and nested paths fall
 ```
 
 ```bash
