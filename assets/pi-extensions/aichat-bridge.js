@@ -257,6 +257,53 @@ function aichatBridge(pi) {
       );
     }
   });
+  pi.registerCommand("aichat-edit", {
+    description: "Edit an aichat file in pi's editor (config|role|rag-docs|agent-config)",
+    getArgumentCompletions: (prefix) => {
+      const choices = ["config", "role", "rag-docs", "agent-config"];
+      const filtered = choices.filter((c) => c.startsWith(prefix));
+      return filtered.length > 0 ? filtered.map((value) => ({ value, label: value })) : null;
+    },
+    handler: async (args, ctx) => {
+      const target = args.trim();
+      if (!target) {
+        ctx.ui.notify(
+          "Usage: /aichat-edit config|role|rag-docs|agent-config",
+          "warning"
+        );
+        return;
+      }
+      let current;
+      try {
+        current = await bridgeFetch(
+          `/v1/state/edit?target=${encodeURIComponent(target)}`,
+          { method: "GET" }
+        );
+      } catch (err) {
+        ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+        return;
+      }
+      const content = typeof current.content === "string" ? current.content : "";
+      const label = typeof current.label === "string" ? current.label : target;
+      const edited = await ctx.ui.editor(`Edit ${label}`, content);
+      if (edited === void 0) {
+        ctx.ui.notify("Edit cancelled", "info");
+        return;
+      }
+      if (edited === content) {
+        ctx.ui.notify("No changes", "info");
+        return;
+      }
+      await runWithFeedback(
+        ctx,
+        () => bridgeFetch("/v1/state/edit", {
+          method: "POST",
+          body: { target, content: edited }
+        }),
+        (result) => typeof result.info === "string" ? result.info : `Saved ${target}`
+      );
+    }
+  });
   if (process.env.ZED_BRIDGE_URL) {
     void (async () => {
       await bridgeFetch("/v1/state/subprocess", {

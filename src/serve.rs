@@ -1494,6 +1494,11 @@ impl Server {
             (&Method::POST, "/v1/state/agent") => self.state_agent(req).await,
             (&Method::POST, "/v1/state/exit-context") => self.state_exit_context(req).await,
             (&Method::POST, "/v1/state/macro") => self.state_macro(req).await,
+            // `.edit <target>` bridge: GET reads the current file text, POST
+            // persists an edited body and reloads the live context. Both ride
+            // the same path; the verb selects read vs. write.
+            (&Method::GET, "/v1/state/edit") => self.state_edit_read(req).await,
+            (&Method::POST, "/v1/state/edit") => self.state_edit_write(req).await,
             // Phase 53: read-only discovery surface. Behind the bridge token so
             // it shares the REPL's reuse/probe semantics, but it mutates
             // nothing — pure introspection of flags and embedded feature docs.
@@ -1508,7 +1513,8 @@ impl Server {
             | (_, "/v1/state/rag")
             | (_, "/v1/state/agent")
             | (_, "/v1/state/exit-context")
-            | (_, "/v1/state/macro") => {
+            | (_, "/v1/state/macro")
+            | (_, "/v1/state/edit") => {
                 bridge_status_response(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
             }
             _ => bridge_status_response(StatusCode::NOT_FOUND, "Not Found"),
@@ -1700,7 +1706,205 @@ impl Server {
             json!({ "ok": true, "kind": "macro", "name": body.name, "output": last }),
         ))
     }
+
+    /// `GET /v1/state/edit?target=config|role|rag-docs|agent-config` — return
+    /// the current on-disk text the legacy REPL would have opened in `$EDITOR`.
+    /// Pi's extension shows this in its native in-TUI editor and POSTs the
+    /// result back to `state_edit_write`. `session` is rejected (400): pi owns
+    /// that format. A missing active role/agent/RAG yields 409 Conflict.
+    async fn state_edit_read(
+        self: &Arc<Self>,
+        req: hyper::Request<Incoming>,
+    ) -> Result<AppResponse> {
+        let target = match query_param(&req, "target") {
+            Some(t) => t,
+            None => {
+                return bridge_status_response(
+                    StatusCode::BAD_REQUEST,
+                    "Missing 'target'. Expected one of: config, role, rag-docs, agent-config.",
+                )
+            }
+        };
+        let target = match EditTarget::parse(&target) {
+            Ok(t) => t,
+            Err(e) => return bridge_status_response(StatusCode::BAD_REQUEST, &e.to_string()),
+        };
+
+        let cfg = self.config.read();
+        let (content, source) = match target {
+            EditTarget::Config => {
+                let path = Config::config_file();
+                (std::fs::read_to_string(&path)?, path.display().to_string())
+            }
+            EditTarget::Role => {
+                let Some(role) = cfg.role.as_ref() else {
+                    return bridge_status_response(
+                        StatusCode::CONFLICT,
+                        "No active role to edit. Switch to one first with /role <name>.",
+                    );
+                };
+                let path = Config::role_file(role.name());
+                (std::fs::read_to_string(&path)?, path.display().to_string())
+            }
+            EditTarget::AgentConfig => {
+                let Some(agent) = cfg.agent.as_ref() else {
+                    return bridge_status_response(
+                        StatusCode::CONFLICT,
+                        "No active agent to edit. Bind one first with /agent <name>.",
+                    );
+                };
+                let path = Config::agent_config_file(agent.name());
+                // Mirror `edit_agent_config`: offer the example-pointer template
+                // when the agent has no config file yet, rather than erroring.
+                let content = if path.exists() {
+                    std::fs::read_to_string(&path)?
+                } else {
+                    AGENT_CONFIG_TEMPLATE.to_string()
+                };
+                (content, path.display().to_string())
+            }
+            EditTarget::RagDocs => {
+                let Some(rag) = cfg.rag.as_ref() else {
+                    return bridge_status_response(
+                        StatusCode::CONFLICT,
+                        "No active RAG to edit. Switch to one first with /rag <name>.",
+                    );
+                };
+                // One document path per line — the same shape `.edit rag-docs`
+                // wrote to its temp file in the legacy REPL.
+                (
+                    rag.document_paths().join("\n"),
+                    format!("RAG '{}' document paths", rag.name()),
+                )
+            }
+        };
+
+        Ok(json_response(
+            StatusCode::OK,
+            json!({
+                "ok": true,
+                "target": target.as_str(),
+                "label": target.label(),
+                "source": source,
+                "content": content,
+            }),
+        ))
+    }
+
+    /// `POST /v1/state/edit` body `{"target": "...", "content": "..."}` —
+    /// persist an edited body and apply the same reload the legacy `.edit`
+    /// command did: `role` reloads into the live context, `rag-docs` refreshes
+    /// the RAG, `config`/`agent-config` only write (they need a restart/reload
+    /// to take effect, surfaced in the `info` string).
+    async fn state_edit_write(
+        self: &Arc<Self>,
+        req: hyper::Request<Incoming>,
+    ) -> Result<AppResponse> {
+        #[derive(Deserialize)]
+        struct Body {
+            target: String,
+            content: String,
+        }
+        let body: Body = read_json_body(req).await?;
+        let target = match EditTarget::parse(&body.target) {
+            Ok(t) => t,
+            Err(e) => return bridge_status_response(StatusCode::BAD_REQUEST, &e.to_string()),
+        };
+
+        let info = match target {
+            EditTarget::Config => {
+                let path = Config::config_file();
+                std::fs::write(&path, &body.content)?;
+                format!(
+                    "Wrote {}. Restart aichat for config changes to take effect.",
+                    path.display()
+                )
+            }
+            EditTarget::Role => {
+                let name = match self.config.read().role.as_ref() {
+                    Some(role) => role.name().to_string(),
+                    None => {
+                        return bridge_status_response(
+                            StatusCode::CONFLICT,
+                            "No active role to edit. Switch to one first with /role <name>.",
+                        )
+                    }
+                };
+                let path = Config::role_file(&name);
+                ensure_parent_exists(&path)?;
+                std::fs::write(&path, &body.content)?;
+                // Reload the freshly written role into the live context, exactly
+                // as `.edit role` did via `use_role` after the editor closed.
+                self.config.write().use_role(&name)?;
+                format!("Saved and reloaded role '{name}'.")
+            }
+            EditTarget::AgentConfig => {
+                let name = match self.config.read().agent.as_ref() {
+                    Some(agent) => agent.name().to_string(),
+                    None => {
+                        return bridge_status_response(
+                            StatusCode::CONFLICT,
+                            "No active agent to edit. Bind one first with /agent <name>.",
+                        )
+                    }
+                };
+                let path = Config::agent_config_file(&name);
+                ensure_parent_exists(&path)?;
+                std::fs::write(&path, &body.content)?;
+                format!(
+                    "Wrote agent config for '{name}'. Reload the agent to apply changes."
+                )
+            }
+            EditTarget::RagDocs => {
+                let mut rag = match self.config.read().rag.clone() {
+                    Some(rag) => rag.as_ref().clone(),
+                    None => {
+                        return bridge_status_response(
+                            StatusCode::CONFLICT,
+                            "No active RAG to edit. Switch to one first with /rag <name>.",
+                        )
+                    }
+                };
+                // Parse the edited one-path-per-line body, dropping blanks —
+                // identical filtering to `edit_rag_docs`.
+                let new_paths: Vec<String> = body
+                    .content
+                    .split('\n')
+                    .filter_map(|v| {
+                        let v = v.trim();
+                        if v.is_empty() {
+                            None
+                        } else {
+                            Some(v.to_string())
+                        }
+                    })
+                    .collect();
+                if new_paths.is_empty() {
+                    return bridge_status_response(
+                        StatusCode::BAD_REQUEST,
+                        "No document paths provided.",
+                    );
+                }
+                let abort = create_abort_signal();
+                rag.refresh_document_paths(&new_paths, false, &self.config, abort)
+                    .await?;
+                self.config.write().rag = Some(Arc::new(rag));
+                format!("Refreshed {} RAG document path(s).", new_paths.len())
+            }
+        };
+
+        Ok(json_response(
+            StatusCode::OK,
+            json!({ "ok": true, "target": target.as_str(), "info": info }),
+        ))
+    }
 }
+
+/// Default body offered when `.edit agent-config` (or the bridge) opens an
+/// agent that has no `config.yaml` yet — a pointer to the upstream example,
+/// matching what `Config::edit_agent_config` seeds the file with.
+const AGENT_CONFIG_TEMPLATE: &str =
+    "# see https://github.com/sigoden/aichat/blob/main/config.agent.example.yaml\n";
 
 /// Read an optional query-string parameter from the request URI. Returns
 /// `None` if absent or empty. Trivial loop avoids pulling in another dep.
@@ -1782,6 +1986,62 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= x ^ y;
     }
     diff == 0
+}
+
+/// The `.edit <target>` surfaces the bridge re-exposes as `/aichat-edit`.
+///
+/// Mirrors aichat's legacy REPL `.edit` dot-command, minus `session`:
+/// pi owns the on-disk session format now (its native JSONL tree), so
+/// `.edit session` deliberately does *not* bridge to aichat's YAML session
+/// file. Users edit sessions through pi's own `/session` surface instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditTarget {
+    Config,
+    Role,
+    RagDocs,
+    AgentConfig,
+}
+
+impl EditTarget {
+    /// Parse a `target` string into a bridged edit surface. `session` is a
+    /// recognized-but-rejected target: the error names pi's native `/session`
+    /// so the REPL can redirect the user rather than silently 404.
+    fn parse(s: &str) -> Result<Self> {
+        match s {
+            "config" => Ok(Self::Config),
+            "role" => Ok(Self::Role),
+            "rag-docs" => Ok(Self::RagDocs),
+            "agent-config" => Ok(Self::AgentConfig),
+            "session" => bail!(
+                "`.edit session` is not bridged: pi owns the session format. \
+                 Edit sessions with pi's native /session instead."
+            ),
+            other => bail!(
+                "Unknown edit target '{other}'. Expected one of: \
+                 config, role, rag-docs, agent-config."
+            ),
+        }
+    }
+
+    /// Short human label used in the pi editor title (e.g. "aichat config").
+    fn label(self) -> &'static str {
+        match self {
+            Self::Config => "aichat config",
+            Self::Role => "active role",
+            Self::RagDocs => "RAG document paths",
+            Self::AgentConfig => "agent config",
+        }
+    }
+
+    /// Canonical query/POST string form, echoed back in responses.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Config => "config",
+            Self::Role => "role",
+            Self::RagDocs => "rag-docs",
+            Self::AgentConfig => "agent-config",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2521,5 +2781,36 @@ mod tests {
         assert_eq!(payload["choices"], json!([]));
         assert_eq!(payload["usage"]["total_tokens"], 17);
         assert_eq!(payload["usage"]["cost_usd"], 0.0001);
+    }
+
+    // ---- `.edit` bridge: EditTarget parsing ----
+
+    #[test]
+    fn edit_target_parses_the_four_bridged_targets() {
+        assert_eq!(EditTarget::parse("config").unwrap(), EditTarget::Config);
+        assert_eq!(EditTarget::parse("role").unwrap(), EditTarget::Role);
+        assert_eq!(EditTarget::parse("rag-docs").unwrap(), EditTarget::RagDocs);
+        assert_eq!(
+            EditTarget::parse("agent-config").unwrap(),
+            EditTarget::AgentConfig
+        );
+    }
+
+    #[test]
+    fn edit_target_session_is_deferred_to_pi_native() {
+        // Sessions are owned by pi's native session format; `.edit session`
+        // must not bridge to aichat's YAML. The error names the pi-native path.
+        let err = EditTarget::parse("session").unwrap_err().to_string();
+        assert!(err.contains("session"), "error should mention sessions: {err}");
+        assert!(
+            err.contains("/session") || err.to_lowercase().contains("pi"),
+            "error should point to pi-native session editing: {err}"
+        );
+    }
+
+    #[test]
+    fn edit_target_rejects_unknown() {
+        assert!(EditTarget::parse("bogus").is_err());
+        assert!(EditTarget::parse("").is_err());
     }
 }

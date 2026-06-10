@@ -78,7 +78,8 @@ Pi's own commands (`/model`, `/new`, `/fork`, `/clone`, `/compact`, `/copy`,
 | `.model <name>` | pi-native `/model` (Ctrl+P) | Pi's model picker lists **only aichat's models** — the launcher pins pi to them (see [Model pinning](#model-pinning)). Selecting one routes the turn through aichat. |
 | `.continue` / `.regenerate` | pi-native `/fork` | Pi's session-tree navigation subsumes both. |
 | `.copy` | pi-native `/copy` | |
-| `.edit role` / `.edit session` / `.edit config` / `.edit rag-docs` / `.edit agent-config` | not yet bridged | Edit the underlying YAML files directly for now. |
+| `.edit config` / `.edit role` / `.edit rag-docs` / `.edit agent-config` | `/aichat-edit <target>` | Opens the file in pi's native editor, then persists + reloads. See [`/aichat-edit`](#aichat-edit). |
+| `.edit session` | pi-native (`/session`) | Pi owns the session format, so sessions are edited through pi's own surface, not the bridge. |
 | `.save role` / `.save session` | not yet bridged | |
 | `.set <k> <v>` | not yet bridged | |
 | `.delete <kind>` | not yet bridged | |
@@ -92,8 +93,8 @@ Pi's own commands (`/model`, `/new`, `/fork`, `/clone`, `/compact`, `/copy`,
 
 "Not yet bridged" entries land in follow-up phases. The endpoints are
 already defined in `src/serve.rs` for `/role`, `/agent`, `/macro`, `/rag`,
-`/aichat-session`, `/info`, `/exit-context`; the others ride on the same HTTP
-contract once an extension command is registered.
+`/aichat-session`, `/info`, `/exit-context`, `/edit`; the others ride on the
+same HTTP contract once an extension command is registered.
 
 ### `/info`
 
@@ -107,6 +108,36 @@ contract once an extension command is registered.
 
 Equivalent to the legacy `.info` family. Output is the same export string
 the legacy REPL printed.
+
+### `/aichat-edit`
+
+```
+/aichat-edit config         # the aichat config.yaml
+/aichat-edit role           # the active role's file
+/aichat-edit rag-docs       # the active RAG's document paths (one per line)
+/aichat-edit agent-config   # the active agent's config.yaml
+```
+
+The legacy `.edit` family spawned `$EDITOR` on a YAML file. Pi owns the
+terminal, so `/aichat-edit` instead round-trips through **pi's own in-TUI
+editor**: it reads the current text from the bridge, opens it for editing, and
+POSTs the result back. Aichat then persists the file and applies the same
+reload the legacy command did:
+
+| Target | Reload behavior |
+|---|---|
+| `role` | Saved **and** reloaded into the live context immediately. |
+| `rag-docs` | Document paths refreshed (re-embeds changed docs). |
+| `config` | Written; restart aichat for changes to take effect. |
+| `agent-config` | Written; reload the agent to apply. |
+
+Editing requires an active context for the target: `/aichat-edit role` with no
+role active returns an error telling you to `/role <name>` first (likewise for
+`agent-config` and `rag-docs`). Cancelling pi's editor, or saving with no
+change, leaves everything untouched.
+
+`session` is **not** a target — pi owns the session format (its native JSONL
+tree), so sessions are edited through pi's built-in `/session`, not the bridge.
 
 ## Sessions: pi owns the format
 
