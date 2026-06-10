@@ -14,12 +14,12 @@
 //! 3. mints a per-launch bridge token (in-process server only) and exposes
 //!    the URL + token to the child via env vars (`AICHAT_BRIDGE_URL`,
 //!    `AICHAT_BRIDGE_TOKEN`),
-//! 4. stages the shipped TypeScript extension into `<cwd>/.pi/extensions/`
-//!    so pi auto-discovers the slash-command bridge,
-//! 5. pins pi to aichat's models: stages a throwaway pi agent dir whose
+//! 4. pins pi to aichat's models: stages a throwaway pi agent dir whose
 //!    `models.json` registers only the in-process aichat server as a provider
 //!    and points pi at it via `PI_CODING_AGENT_DIR`, so pi ignores its own
 //!    configured providers/models (opt out: `AICHAT_PI_NATIVE_MODELS=1`),
+//! 5. stages the shipped extension into that agent dir's `extensions/`
+//!    subdir, the only place pi 0.79.1 auto-discovers slash-command bridges,
 //! 6. execs `pi` with stdio inherited so the child owns the terminal,
 //! 7. on pi exit, removes the staged extension + agent dir (unless
 //!    `AICHAT_KEEP_PI_STAGE=1`) and signals the server to shut down (a
@@ -84,13 +84,6 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
         Err(_) => bail!("{PI_INSTALL_HINT}"),
     };
 
-    // Stage the bridge extension under the CWD's `.pi/extensions/` before
-    // exec'ing pi so pi's auto-discovery picks it up on startup. Project-
-    // scoped staging — rather than `~/.pi/agent/extensions/` — keeps two
-    // aichat invocations from racing on the same file and means a stray
-    // process never leaves a global extension behind.
-    let staging = StagedExtension::stage(std::env::current_dir()?.as_path())?;
-
     // Prefer an aichat server already listening on the conventional port
     // range: reusing it means one inference process instead of two, and the
     // user's live roles/sessions on that server stay addressable. Fall back
@@ -142,6 +135,17 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
             }
         }
     };
+
+    // Stage the bridge extension into the agent dir pi will actually read.
+    // pi auto-discovers extensions from `<PI_CODING_AGENT_DIR>/extensions/`;
+    // when we pin models that is our throwaway stage, otherwise it is pi's
+    // real agent dir. Staging anywhere else (e.g. `<cwd>/.pi/extensions/`) is
+    // silently ignored by pi and our slash-commands never register.
+    let agent_dir: PathBuf = match &agent_stage {
+        Some(staged) => staged.path.clone(),
+        None => pi_real_agent_dir(),
+    };
+    let staging = StagedExtension::stage(&agent_dir)?;
 
     info!("launching pi from {}", pi_bin.display());
 
@@ -283,8 +287,8 @@ async fn probe_existing_server() -> Option<String> {
 
 /// Handle for the staged extension file. Holds the path so cleanup can
 /// `remove_file` it on drop or explicit `.cleanup()`. We deliberately do
-/// not own the `.pi/` or `.pi/extensions/` directories: another tool may
-/// have its own extensions staged there too.
+/// not own the `extensions/` directory: another tool (or the user's own
+/// global config) may have extensions staged there too.
 struct StagedExtension {
     path: PathBuf,
     /// True when we actually wrote a file at `path` (vs. found one already
@@ -293,14 +297,18 @@ struct StagedExtension {
 }
 
 impl StagedExtension {
-    fn stage(cwd: &Path) -> Result<Self> {
+    /// Stage the bundled bridge into `<agent_dir>/extensions/`. pi 0.79.1
+    /// auto-discovers extensions from that subdir of its agent config dir
+    /// (`PI_CODING_AGENT_DIR`) — it does NOT scan `<cwd>/.pi/extensions/`, so
+    /// staging anywhere else means pi never registers our slash-commands.
+    fn stage(agent_dir: &Path) -> Result<Self> {
         let ext_bytes = match PiExtensionsAsset::get(STAGED_EXTENSION_NAME) {
             Some(f) => f.data,
             None => bail!(
                 "aichat was built without the pi extension bundle (assets/pi-extensions/{STAGED_EXTENSION_NAME})",
             ),
         };
-        let ext_dir = cwd.join(".pi").join("extensions");
+        let ext_dir = agent_dir.join("extensions");
         std::fs::create_dir_all(&ext_dir)
             .with_context(|| format!("failed to create {}", ext_dir.display()))?;
         let path = ext_dir.join(STAGED_EXTENSION_NAME);
@@ -323,13 +331,10 @@ impl StagedExtension {
             // Best-effort: a failure here means the next launch will see a
             // stale (but identical) file at the same path, which is fine.
             let _ = std::fs::remove_file(&self.path);
-            // Try to prune `.pi/extensions/` and `.pi/` if we left them
-            // empty. Ignore failures — another tool may share the dirs.
+            // Try to prune the `extensions/` dir if we left it empty. Ignore
+            // failures — another tool may share it.
             if let Some(parent) = self.path.parent() {
                 let _ = std::fs::remove_dir(parent);
-                if let Some(grandparent) = parent.parent() {
-                    let _ = std::fs::remove_dir(grandparent);
-                }
             }
         }
     }
@@ -678,24 +683,41 @@ mod tests {
     }
 
     #[test]
+    fn stage_writes_into_agent_dir_extensions_subdir() {
+        // pi 0.79.1 auto-discovers extensions from `<PI_CODING_AGENT_DIR>/
+        // extensions/`, NOT from `<cwd>/.pi/extensions/`. The bridge must land
+        // in the agent dir's extensions subdir or pi never registers our
+        // slash-commands.
+        let agent = tempfile::tempdir().unwrap();
+        let staged = StagedExtension::stage(agent.path()).unwrap();
+        let expected = agent.path().join("extensions").join(STAGED_EXTENSION_NAME);
+        assert_eq!(staged.path, expected);
+        assert!(expected.exists());
+        // The embedded bundle (with our slash-command registrations) was written.
+        assert!(std::fs::read_to_string(&expected)
+            .unwrap()
+            .contains("registerCommand"));
+    }
+
+    #[test]
     fn stage_and_cleanup_round_trip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let staged = StagedExtension::stage(tmp.path()).unwrap();
+        let agent = tempfile::tempdir().unwrap();
+        let staged = StagedExtension::stage(agent.path()).unwrap();
         assert!(staged.path.exists());
-        let parent = staged.path.parent().unwrap().to_path_buf();
+        let path = staged.path.clone();
         staged.cleanup();
-        assert!(!parent.join(STAGED_EXTENSION_NAME).exists());
+        assert!(!path.exists());
     }
 
     #[test]
     fn stage_respects_existing_user_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ext_dir = tmp.path().join(".pi").join("extensions");
+        let agent = tempfile::tempdir().unwrap();
+        let ext_dir = agent.path().join("extensions");
         std::fs::create_dir_all(&ext_dir).unwrap();
         let user_file = ext_dir.join(STAGED_EXTENSION_NAME);
         std::fs::write(&user_file, b"// user fork").unwrap();
 
-        let staged = StagedExtension::stage(tmp.path()).unwrap();
+        let staged = StagedExtension::stage(agent.path()).unwrap();
         // The user's content must still be there after our "stage" call.
         let after = std::fs::read_to_string(&user_file).unwrap();
         assert_eq!(after, "// user fork");
