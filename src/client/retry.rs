@@ -140,10 +140,34 @@ pub fn apply_session_header(builder: RequestBuilder, session_id: Option<String>)
     }
 }
 
+/// Phase 42E-1: recover the wire-true endpoint + serialized body from a builder
+/// before it is sent. Our request bodies are fully buffered JSON, so the clone
+/// and `as_bytes` always succeed; returns `None` only for the impossible
+/// non-buffered/un-cloneable case. Pure, so it is unit-testable without a server.
+pub fn wire_from_builder(builder: &RequestBuilder) -> Option<(String, Vec<u8>)> {
+    let req = builder.try_clone()?.build().ok()?;
+    let endpoint = req.url().to_string();
+    let body = req
+        .body()
+        .and_then(|b| b.as_bytes())
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default();
+    Some((endpoint, body))
+}
+
 /// Convenience: send using the process-wide retry config, stamping the trace
 /// correlation header for the active turn (if any).
 pub async fn send(builder: RequestBuilder) -> Result<reqwest::Response> {
-    let builder = apply_session_header(builder, crate::utils::trace_spec::wiring::current_session());
+    let session = crate::utils::trace_spec::wiring::current_session();
+    let builder = apply_session_header(builder, session.clone());
+    // Phase 42E-1: capture the real wire request for the active turn to emit as
+    // a wire-true `provider.request`. Guarded on an active turn so tracing-off
+    // (the default) pays nothing on the request hot path.
+    if session.is_some() {
+        if let Some((endpoint, body)) = wire_from_builder(&builder) {
+            crate::utils::trace_spec::wiring::capture_wire_request(endpoint, body);
+        }
+    }
     send_with_retry(builder, &global()).await
 }
 
@@ -158,6 +182,20 @@ mod tests {
         assert_eq!(c.initial_backoff_ms, 1000);
         assert_eq!(c.max_backoff_ms, 30_000);
         assert!((c.backoff_multiplier - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn wire_from_builder_extracts_endpoint_and_body() {
+        // Phase 42E-1: the wire-true request body + endpoint are recoverable
+        // from the builder *before* send, so `provider.request` can carry the
+        // real serialized payload instead of a pre-send stub.
+        let client = reqwest::Client::new();
+        let builder = client
+            .post("https://api.example.com/v1/messages")
+            .body(r#"{"model":"m","messages":[]}"#);
+        let (endpoint, body) = wire_from_builder(&builder).expect("buffered JSON body is extractable");
+        assert_eq!(endpoint, "https://api.example.com/v1/messages");
+        assert_eq!(body, br#"{"model":"m","messages":[]}"#);
     }
 
     #[test]

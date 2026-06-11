@@ -534,25 +534,39 @@ pub async fn call_react(
         std::collections::HashMap::new();
 
     loop {
-        // Phase 42D: provider.request before the call. The request body is the
-        // current input text (full wire-message capture is a future refinement
-        // that needs plumbing into call_chat_completions).
-        let spec_request_id = spec_session.as_ref().map(|s| {
-            let messages = serde_json::json!({ "text": input.text() });
-            s.provider_request(
-                client.name(),
-                &client.model().id(),
-                serde_json::json!({ "stream": input.stream() }),
-                &messages,
-                "",
-            )
-        });
-
         let step_result = if input.stream() {
             call_chat_completions_streaming(input, client, abort_signal.clone()).await
         } else {
             call_chat_completions(input, print_output, false, client, abort_signal.clone()).await
         };
+
+        // Phase 42E-1: emit provider.request *after* the call, from the request
+        // `retry::send` captured at the reqwest boundary — so messages_hash and
+        // endpoint reflect the real serialized wire body, not a pre-send stub.
+        // The streaming path bypasses retry::send (42E-3), so it has no capture
+        // and falls back to the input-text stub. Emitted before provider.response
+        // below, preserving the request→response seq order. On a failed call the
+        // request was still sent, so it is still emitted (then the error event).
+        let spec_request_id = spec_session.as_ref().map(|s| {
+            let (messages, endpoint) =
+                match crate::utils::trace_spec::wiring::take_wire_request() {
+                    Some(w) => (
+                        serde_json::from_slice(&w.body).unwrap_or_else(|_| {
+                            serde_json::json!({ "wire_body_bytes": w.body.len() })
+                        }),
+                        w.endpoint,
+                    ),
+                    None => (serde_json::json!({ "text": input.text() }), String::new()),
+                };
+            s.provider_request(
+                client.name(),
+                &client.model().id(),
+                serde_json::json!({ "stream": input.stream() }),
+                &messages,
+                &endpoint,
+            )
+        });
+
         let (text, tool_results, metrics) = match step_result {
             Ok(v) => v,
             Err(e) => {

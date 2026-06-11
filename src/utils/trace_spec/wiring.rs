@@ -56,6 +56,36 @@ pub fn current_session() -> Option<String> {
 /// Clear the active turn (called after `session.end`).
 pub fn clear_current_session() {
     *CURRENT_SESSION.write() = None;
+    // Drop any request captured but never emitted, so a failed turn cannot
+    // leak its wire bytes into the next turn's `provider.request`.
+    *CAPTURED_REQUEST.write() = None;
+}
+
+/// Phase 42E-1: a non-streaming provider request captured at the `reqwest`
+/// boundary — the real serialized body and endpoint, awaiting emission by the
+/// active trace turn as a wire-true `provider.request`.
+#[derive(Debug, Clone)]
+pub struct WireRequest {
+    pub endpoint: String,
+    pub body: Vec<u8>,
+}
+
+/// The most recent captured request, awaiting drain by `call_react`. Single
+/// slot: like [`CURRENT_SESSION`] it is sound for batch use, where a turn's
+/// provider calls are sequential and each is drained before the next is sent.
+static CAPTURED_REQUEST: LazyLock<RwLock<Option<WireRequest>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Record the request `send` is about to dispatch. Best-effort; only called
+/// while a trace turn is active.
+pub fn capture_wire_request(endpoint: String, body: Vec<u8>) {
+    *CAPTURED_REQUEST.write() = Some(WireRequest { endpoint, body });
+}
+
+/// Take and clear the captured request, if any. The active turn calls this
+/// right after a provider call returns to emit a wire-true `provider.request`.
+pub fn take_wire_request() -> Option<WireRequest> {
+    CAPTURED_REQUEST.write().take()
 }
 
 /// Best-effort start of a trace turn. Mints the [`TraceSession`], records the
@@ -107,6 +137,23 @@ mod tests {
     #[test]
     fn header_constant_is_stable() {
         assert_eq!(SESSION_HEADER, "X-Eridian-Session-Id");
+    }
+
+    // Phase 42E-1: the wire-capture slot holds the most recent non-streaming
+    // provider request (real serialized body + endpoint) until the active turn
+    // drains it to emit a wire-true `provider.request`. Batch-sequential, like
+    // CURRENT_SESSION.
+    #[test]
+    fn capture_and_take_wire_request_roundtrip() {
+        capture_wire_request(
+            "https://api.example.com/v1/chat".into(),
+            b"{\"model\":\"m\"}".to_vec(),
+        );
+        let taken = take_wire_request().expect("a captured request");
+        assert_eq!(taken.endpoint, "https://api.example.com/v1/chat");
+        assert_eq!(taken.body, b"{\"model\":\"m\"}");
+        // Draining clears the slot — the next turn must not re-read stale bytes.
+        assert!(take_wire_request().is_none());
     }
 
     // The current-session global is process-wide, so the lifecycle assertions

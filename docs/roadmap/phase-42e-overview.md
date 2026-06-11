@@ -1,6 +1,6 @@
 # Phase 42E — Transport-Boundary Capture : Overview — Epic 15 (Observability Keystone)
 
-**Status:** Planned (new — 2026-06-10) · **Owner:** aichat · **Horizon:** Next
+**Status:** In progress — 42E-1 shipped (2026-06-11); 42E-2/3 planned · **Owner:** aichat · **Horizon:** Next
 
 > **Goal.** Close the **intent-vs-wire fidelity gap** in the keystone trace. Phase 42D
 > emits `provider.request` / `provider.response` from `call_react`, reconstructed from
@@ -55,9 +55,33 @@ not the frames). Literal socket bytes would need a custom hyper connector/TLS ta
 
 | Item | Description | Status |
 |---|---|---|
-| 42E-1 | **Request capture at the `reqwest` boundary.** Capture the actual serialized request body + real endpoint + real sampling params at the single `send()` chokepoint (`src/client/retry.rs:146`, which already reaches `trace_spec::wiring` for the correlation header); feed the existing `TraceSender`. Redaction stays inline, before the blob store. Replaces the `{"text":…}` stub. | Planned |
+| 42E-1 | **Request capture at the `reqwest` boundary.** Capture the actual serialized request body + real endpoint at the single `send()` chokepoint (`src/client/retry.rs`); the active turn drains it to emit a wire-true `provider.request`. Redaction stays inline, before the blob store. Replaces the `{"text":…}` stub. | **Done** (aichat) |
 | 42E-2 | **Response + per-attempt capture.** Real status, wire `finish_reason`, raw response body, `request_body_hash` linkage; one `provider.request`/`provider.response`/`provider.retry` triple **per attempt** (retries currently invisible above `retry.rs`). | Planned |
-| 42E-3 | **Streaming chunk capture.** Wire the `OutputChunk` event: add a `TraceSession::output_chunk` emitter, call it per SSE frame on the streaming path with real inter-chunk timing. | Planned |
+| 42E-3 | **Streaming chunk capture.** Wire the `OutputChunk` event: add a `TraceSession::output_chunk` emitter, call it per SSE frame on the streaming path with real inter-chunk timing. Also closes the correlation-header gap (streaming bypasses `retry::send`). | Planned |
+
+### 42E-1 implementation note (shipped)
+
+- **Capture point.** `retry::send` (the single non-streaming chokepoint) recovers
+  the wire-true endpoint + serialized body via the pure `wire_from_builder`
+  helper (`try_clone().build()` → `url()` + `body().as_bytes()`) and stores it in
+  a per-turn slot (`trace_spec::wiring`: `capture_wire_request` / `take_wire_request`,
+  a `WireRequest { endpoint, body }`). **Guarded on an active trace turn**, so
+  tracing-off (the default) pays nothing on the hot path. `clear_current_session`
+  drops any undrained capture so a failed turn cannot leak bytes into the next.
+- **Emission moved after the call.** `call_react` now emits `provider.request`
+  *after* the provider call returns (still before `provider.response`, preserving
+  the request→response seq order), draining the slot so `messages_hash` and
+  `endpoint` reflect the real wire body. Single-writer / one-seq is unchanged —
+  only the *bytes* are captured at the wire; emission stays session-side.
+- **Streaming + failure paths.** The streaming path bypasses `retry::send`, so no
+  capture exists and `provider.request` falls back to the input-text stub (42E-3).
+  A failed non-streaming call still emits the (captured) request before the error
+  event — the request *was* sent.
+- **Verified.** `wire_from_builder_extracts_endpoint_and_body` (retry.rs) +
+  `capture_and_take_wire_request_roundtrip` (wiring.rs) unit tests; end-to-end
+  `--trace` run shows `endpoint: …/v1/chat/completions` and a 429-byte body blob
+  containing the real `{model, messages:[system,user]}` payload (was the
+  `{"text":…}` stub). 787 tests pass. No `schema_version` change.
 
 ## Dependencies
 
