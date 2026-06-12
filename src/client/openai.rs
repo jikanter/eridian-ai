@@ -149,10 +149,14 @@ pub async fn openai_chat_completions_streaming(
         }
         // Capture usage from final streaming chunk if available
         if let Some(usage) = data.get("usage") {
-            handler.set_usage(
+            // Phase 37A: OpenAI's `prompt_tokens` includes cached tokens; split
+            // into the full-price remainder + cache-read count.
+            let (input_tokens, cache_read_tokens) = split_cached_prompt(
                 usage["prompt_tokens"].as_u64(),
-                usage["completion_tokens"].as_u64(),
+                usage["prompt_tokens_details"]["cached_tokens"].as_u64(),
             );
+            handler.set_usage(input_tokens, usage["completion_tokens"].as_u64());
+            handler.set_cache_usage(cache_read_tokens, None);
         }
         if let (Some(function), index, id) = (
             data["choices"][0]["delta"]["tool_calls"][0]["function"].as_object(),
@@ -437,12 +441,20 @@ pub fn openai_extract_chat_completions(data: &Value) -> Result<ChatCompletionsOu
     } else {
         text.to_string()
     };
+    // Phase 37A: OpenAI's `prompt_tokens` includes cached tokens; split into
+    // the full-price remainder + cache-read count.
+    let (input_tokens, cache_read_tokens) = split_cached_prompt(
+        data["usage"]["prompt_tokens"].as_u64(),
+        data["usage"]["prompt_tokens_details"]["cached_tokens"].as_u64(),
+    );
     let output = ChatCompletionsOutput {
         text,
         tool_calls,
         id: data["id"].as_str().map(|v| v.to_string()),
-        input_tokens: data["usage"]["prompt_tokens"].as_u64(),
+        input_tokens,
         output_tokens: data["usage"]["completion_tokens"].as_u64(),
+        cache_read_tokens,
+        cache_write_tokens: None,
     };
     Ok(output)
 }
@@ -699,5 +711,37 @@ mod tests {
         let output = openai_extract_chat_completions(&data).expect("extract ok");
         assert_eq!(output.tool_calls.len(), 1);
         assert_eq!(output.tool_calls[0].arguments, json!({}));
+    }
+
+    #[test]
+    fn extract_splits_cached_tokens_out_of_prompt_tokens() {
+        // Phase 37A: OpenAI's prompt_tokens includes cached_tokens — the
+        // extractor reports the full-price remainder and the cache-read count.
+        let data = json!({
+            "id": "chatcmpl_cache",
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {
+                "prompt_tokens": 7856,
+                "completion_tokens": 727,
+                "prompt_tokens_details": {"cached_tokens": 6656}
+            }
+        });
+        let output = openai_extract_chat_completions(&data).expect("extract ok");
+        assert_eq!(output.input_tokens, Some(1200));
+        assert_eq!(output.cache_read_tokens, Some(6656));
+        assert_eq!(output.cache_write_tokens, None);
+    }
+
+    #[test]
+    fn extract_without_cache_details_is_unchanged() {
+        // No prompt_tokens_details → full prompt is full-price, no cache read.
+        let data = json!({
+            "id": "chatcmpl_nocache",
+            "choices": [{"message": {"content": "hi"}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 20}
+        });
+        let output = openai_extract_chat_completions(&data).expect("extract ok");
+        assert_eq!(output.input_tokens, Some(100));
+        assert_eq!(output.cache_read_tokens, None);
     }
 }

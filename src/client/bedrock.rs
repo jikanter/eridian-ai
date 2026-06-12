@@ -527,6 +527,9 @@ fn extract_chat_completions(data: &Value) -> Result<ChatCompletionsOutput> {
         id: None,
         input_tokens: data["usage"]["inputTokens"].as_u64(),
         output_tokens: data["usage"]["outputTokens"].as_u64(),
+        // Phase 37A: bedrock cache-token reporting is not wired yet.
+        cache_read_tokens: None,
+        cache_write_tokens: None,
     };
     Ok(output)
 }

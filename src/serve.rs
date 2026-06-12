@@ -2372,7 +2372,8 @@ fn build_usage_value(client: &dyn Client, input_tokens: u64, output_tokens: u64)
         "prompt_tokens": input_tokens,
         "completion_tokens": output_tokens,
         "total_tokens": input_tokens + output_tokens,
-        "cost_usd": compute_cost(client.model(), input_tokens, output_tokens),
+        // Phase 37A: the server path does not surface cache tokens yet (37D).
+        "cost_usd": compute_cost(client.model(), input_tokens, output_tokens, 0, 0),
     })
 }
 

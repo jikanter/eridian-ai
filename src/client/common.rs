@@ -325,6 +325,14 @@ pub struct ChatCompletionsOutput {
     pub id: Option<String>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
+    /// Phase 37A: prompt tokens served from a provider cache (cache-hit). A
+    /// subset accounting concept, not part of `input_tokens` — see the
+    /// `CallMetrics` doc for the full-price-remainder convention.
+    pub cache_read_tokens: Option<u64>,
+    /// Phase 37A: prompt tokens written to a provider cache (Anthropic
+    /// cache-creation). Always `None` for providers without an explicit
+    /// cache-write charge (OpenAI / Gemini).
+    pub cache_write_tokens: Option<u64>,
 }
 
 impl ChatCompletionsOutput {
@@ -338,8 +346,21 @@ impl ChatCompletionsOutput {
 
 #[derive(Debug, Clone, Default)]
 pub struct CallMetrics {
+    /// Full-price prompt tokens only (the uncached remainder). Cache-hit and
+    /// cache-write tokens are accounted separately below — the grand prompt
+    /// total is `input_tokens + cache_read_tokens + cache_write_tokens`. This
+    /// matches Anthropic's native `usage.input_tokens`; OpenAI/Gemini
+    /// extractors subtract their `cached_tokens` from `prompt_tokens` to fit
+    /// the same convention (Phase 37A).
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Phase 37A: prompt tokens served from cache, billed at the cache-read
+    /// multiplier (0.1x input by default). Additive to `input_tokens`.
+    pub cache_read_tokens: u64,
+    /// Phase 37A: prompt tokens written to cache (Anthropic cache-creation),
+    /// billed at the cache-write multiplier (1.25x input by default). Zero for
+    /// providers without an explicit cache-write charge.
+    pub cache_write_tokens: u64,
     pub cost_usd: f64,
     pub latency_ms: u64,
     pub model_id: String,
@@ -354,6 +375,8 @@ impl CallMetrics {
     pub fn merge(&mut self, other: &CallMetrics) {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_write_tokens += other.cache_write_tokens;
         self.cost_usd += other.cost_usd;
         self.latency_ms += other.latency_ms;
         self.turns += other.turns;
@@ -363,10 +386,55 @@ impl CallMetrics {
     }
 }
 
-pub fn compute_cost(model: &Model, input_tokens: u64, output_tokens: u64) -> f64 {
-    let ip = model.data().input_price.unwrap_or(0.0);
-    let op = model.data().output_price.unwrap_or(0.0);
-    (input_tokens as f64 * ip + output_tokens as f64 * op) / 1_000_000.0
+/// Phase 37A: normalize a provider whose `prompt_tokens` *includes* cached
+/// tokens (OpenAI, Gemini) into the full-price-remainder convention used by
+/// [`CallMetrics`]. Returns `(full_price_input, cache_read)` where
+/// `full_price_input = prompt_tokens - cached`. A `None` prompt count passes
+/// through unchanged; a `None`/absent cache count means zero cached tokens.
+pub fn split_cached_prompt(
+    prompt_tokens: Option<u64>,
+    cached_tokens: Option<u64>,
+) -> (Option<u64>, Option<u64>) {
+    match prompt_tokens {
+        Some(total) => {
+            let cached = cached_tokens.unwrap_or(0);
+            (Some(total.saturating_sub(cached)), cached_tokens)
+        }
+        None => (None, cached_tokens),
+    }
+}
+
+/// Default cache-read price multiplier (Anthropic / Gemini read discount).
+const DEFAULT_CACHE_READ_MULTIPLIER: f64 = 0.1;
+/// Default cache-write price multiplier (Anthropic 5-minute write premium).
+const DEFAULT_CACHE_WRITE_MULTIPLIER: f64 = 1.25;
+
+/// Phase 37A: cost with cache-token discounting.
+///
+/// `input_tokens` is the full-price (uncached) prompt remainder;
+/// `cache_read_tokens` / `cache_write_tokens` are additive and bill at their
+/// per-model multipliers (defaulting to Anthropic's 0.1x read / 1.25x write).
+pub fn compute_cost(
+    model: &Model,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+) -> f64 {
+    let data = model.data();
+    let ip = data.input_price.unwrap_or(0.0);
+    let op = data.output_price.unwrap_or(0.0);
+    let read_mult = data
+        .cache_read_price_multiplier
+        .unwrap_or(DEFAULT_CACHE_READ_MULTIPLIER);
+    let write_mult = data
+        .cache_write_price_multiplier
+        .unwrap_or(DEFAULT_CACHE_WRITE_MULTIPLIER);
+    (input_tokens as f64 * ip
+        + cache_read_tokens as f64 * ip * read_mult
+        + cache_write_tokens as f64 * ip * write_mult
+        + output_tokens as f64 * op)
+        / 1_000_000.0
 }
 
 #[derive(Debug)]
@@ -792,14 +860,20 @@ pub async fn call_chat_completions(
                 tool_calls,
                 input_tokens,
                 output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
                 ..
             } = ret;
             let it = input_tokens.unwrap_or(0);
             let ot = output_tokens.unwrap_or(0);
+            let cr = cache_read_tokens.unwrap_or(0);
+            let cw = cache_write_tokens.unwrap_or(0);
             let metrics = CallMetrics {
                 input_tokens: it,
                 output_tokens: ot,
-                cost_usd: compute_cost(client.model(), it, ot),
+                cache_read_tokens: cr,
+                cache_write_tokens: cw,
+                cost_usd: compute_cost(client.model(), it, ot, cr, cw),
                 latency_ms: start.elapsed().as_millis() as u64,
                 model_id: client.model().id(),
                 turns: 1,
@@ -841,13 +915,18 @@ pub async fn call_chat_completions_streaming(
 
     render_ret?;
 
-    let (text, tool_calls, input_tokens, output_tokens) = handler.take();
+    let (text, tool_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) =
+        handler.take();
     let it = input_tokens.unwrap_or(0);
     let ot = output_tokens.unwrap_or(0);
+    let cr = cache_read_tokens.unwrap_or(0);
+    let cw = cache_write_tokens.unwrap_or(0);
     let metrics = CallMetrics {
         input_tokens: it,
         output_tokens: ot,
-        cost_usd: compute_cost(client.model(), it, ot),
+        cache_read_tokens: cr,
+        cache_write_tokens: cw,
+        cost_usd: compute_cost(client.model(), it, ot, cr, cw),
         latency_ms: start.elapsed().as_millis() as u64,
         model_id: client.model().id(),
         turns: 1,
@@ -1084,6 +1163,7 @@ mod tests {
             model_id: "model-a".into(),
             turns: 1,
             cached: false,
+            ..Default::default()
         };
         let b = CallMetrics {
             input_tokens: 200,
@@ -1093,6 +1173,7 @@ mod tests {
             model_id: "model-b".into(),
             turns: 1,
             cached: false,
+            ..Default::default()
         };
         a.merge(&b);
         assert_eq!(a.input_tokens, 300);
@@ -1121,7 +1202,7 @@ mod tests {
         data.input_price = Some(5.0); // $5 per 1M tokens
         data.output_price = Some(15.0); // $15 per 1M tokens
 
-        let cost = compute_cost(&model, 1000, 500);
+        let cost = compute_cost(&model, 1000, 500, 0, 0);
         // (1000 * 5.0 + 500 * 15.0) / 1_000_000 = (5000 + 7500) / 1_000_000 = 0.0125
         assert!((cost - 0.0125).abs() < 1e-10);
     }
@@ -1129,7 +1210,82 @@ mod tests {
     #[test]
     fn test_compute_cost_no_prices() {
         let model = Model::new("test", "unknown-model");
-        let cost = compute_cost(&model, 1000, 500);
+        let cost = compute_cost(&model, 1000, 500, 0, 0);
         assert!((cost - 0.0).abs() < 1e-10);
+    }
+
+    // Phase 37A: cache accounting.
+
+    #[test]
+    fn test_call_metrics_merge_sums_cache_tokens() {
+        let mut a = CallMetrics {
+            cache_read_tokens: 100,
+            cache_write_tokens: 10,
+            ..Default::default()
+        };
+        let b = CallMetrics {
+            cache_read_tokens: 200,
+            cache_write_tokens: 5,
+            ..Default::default()
+        };
+        a.merge(&b);
+        assert_eq!(a.cache_read_tokens, 300);
+        assert_eq!(a.cache_write_tokens, 15);
+    }
+
+    #[test]
+    fn test_compute_cost_discounts_cache_read_tokens() {
+        // Anthropic-style: cache-read tokens bill at 0.1x the input price.
+        let mut model = Model::new("test", "claude-sonnet-4-6");
+        model.data_mut().input_price = Some(3.0); // $3 per 1M tokens
+
+        // 1000 full-price input + 1000 cache-read + 0 cache-write + 0 output.
+        let cost = compute_cost(&model, 1000, 0, 1000, 0);
+        // (1000 * 3.0 + 1000 * 3.0 * 0.1) / 1e6 = (3000 + 300) / 1e6 = 0.0033
+        assert!((cost - 0.0033).abs() < 1e-10, "cost = {cost}");
+    }
+
+    #[test]
+    fn test_compute_cost_charges_cache_write_tokens() {
+        // Anthropic-style: 5-minute cache-write tokens bill at 1.25x the input price.
+        let mut model = Model::new("test", "claude-sonnet-4-6");
+        model.data_mut().input_price = Some(3.0);
+
+        // 0 full-price input + 0 cache-read + 1000 cache-write + 0 output.
+        let cost = compute_cost(&model, 0, 0, 0, 1000);
+        // (1000 * 3.0 * 1.25) / 1e6 = 3750 / 1e6 = 0.00375
+        assert!((cost - 0.00375).abs() < 1e-10, "cost = {cost}");
+    }
+
+    #[test]
+    fn test_split_cached_prompt_subtracts_cached_from_total() {
+        // OpenAI/Gemini: prompt_tokens (total) includes cached tokens.
+        let (input, cache_read) = split_cached_prompt(Some(7856), Some(6656));
+        assert_eq!(input, Some(1200));
+        assert_eq!(cache_read, Some(6656));
+
+        // No cached tokens → full prompt is full-price, cache_read is 0/None.
+        let (input, cache_read) = split_cached_prompt(Some(1200), None);
+        assert_eq!(input, Some(1200));
+        assert_eq!(cache_read, None);
+
+        // Missing prompt count passes through untouched.
+        assert_eq!(split_cached_prompt(None, Some(5)), (None, Some(5)));
+
+        // Defensive: a cached count exceeding the total saturates at 0.
+        assert_eq!(split_cached_prompt(Some(100), Some(150)), (Some(0), Some(150)));
+    }
+
+    #[test]
+    fn test_compute_cost_honors_model_multiplier_overrides() {
+        // OpenAI-style read multiplier (0.5) overrides the Anthropic default.
+        let mut model = Model::new("test", "gpt-4o");
+        let data = model.data_mut();
+        data.input_price = Some(2.0);
+        data.cache_read_price_multiplier = Some(0.5);
+
+        let cost = compute_cost(&model, 0, 0, 1000, 0);
+        // (1000 * 2.0 * 0.5) / 1e6 = 0.001
+        assert!((cost - 0.001).abs() < 1e-10, "cost = {cost}");
     }
 }

@@ -171,6 +171,15 @@ pub async fn invoke(
             .get("output_tokens")
             .and_then(Value::as_u64)
             .unwrap_or(0),
+        // Phase 37A: propagate cache accounting from the remote verbatim.
+        cache_read_tokens: usage
+            .get("cache_read_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
+        cache_write_tokens: usage
+            .get("cache_write_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0),
         cost_usd: usage
             .get("cost_usd")
             .and_then(Value::as_f64)
