@@ -167,6 +167,11 @@ pub async fn claude_chat_completions_streaming(
                             usage["input_tokens"].as_u64(),
                             usage["output_tokens"].as_u64(),
                         );
+                        // Phase 37A: cache tokens are additive on Anthropic.
+                        handler.set_cache_usage(
+                            usage["cache_read_input_tokens"].as_u64(),
+                            usage["cache_creation_input_tokens"].as_u64(),
+                        );
                     }
                 }
             }
@@ -409,6 +414,10 @@ pub fn claude_extract_chat_completions(data: &Value) -> Result<ChatCompletionsOu
         id: data["id"].as_str().map(|v| v.to_string()),
         input_tokens: data["usage"]["input_tokens"].as_u64(),
         output_tokens: data["usage"]["output_tokens"].as_u64(),
+        // Phase 37A: Anthropic reports cache tokens additively — `input_tokens`
+        // is already the uncached remainder, so no subtraction is needed.
+        cache_read_tokens: data["usage"]["cache_read_input_tokens"].as_u64(),
+        cache_write_tokens: data["usage"]["cache_creation_input_tokens"].as_u64(),
     };
     Ok(output)
 }
@@ -558,5 +567,25 @@ mod tests {
         let out = claude_extract_chat_completions(&response).unwrap();
         assert_eq!(out.tool_calls.len(), 1);
         assert_eq!(out.tool_calls[0].name, "get_weather");
+    }
+
+    #[test]
+    fn extract_populates_cache_tokens_additively() {
+        // Phase 37A: Anthropic reports cache tokens alongside (not within)
+        // input_tokens — the extractor surfaces all three verbatim.
+        let response = json!({
+            "id": "msg_cache",
+            "content": [{"type": "text", "text": "hi"}],
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 727,
+                "cache_read_input_tokens": 6656,
+                "cache_creation_input_tokens": 40
+            }
+        });
+        let out = claude_extract_chat_completions(&response).unwrap();
+        assert_eq!(out.input_tokens, Some(1200));
+        assert_eq!(out.cache_read_tokens, Some(6656));
+        assert_eq!(out.cache_write_tokens, Some(40));
     }
 }

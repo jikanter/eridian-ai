@@ -317,6 +317,18 @@ pub struct ModelData {
     pub input_price: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_price: Option<f64>,
+    /// Phase 37A: per-token price multiplier for cache-read (cache-hit) prompt
+    /// tokens, relative to `input_price`. Defaults to 0.1 (Anthropic / Gemini
+    /// read discount) when unset; override per model (e.g. 0.5 for OpenAI).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_price_multiplier: Option<f64>,
+    /// Phase 37A: per-token price multiplier for cache-write (cache-creation)
+    /// prompt tokens, relative to `input_price`. Defaults to 1.25 (Anthropic
+    /// 5-minute write premium) when unset. Providers without a cache-write
+    /// charge (OpenAI / Gemini) never populate `cache_write_tokens`, so this is
+    /// inert for them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_price_multiplier: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub patch: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

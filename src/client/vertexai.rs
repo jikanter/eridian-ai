@@ -297,12 +297,20 @@ fn gemini_extract_chat_completions_text(data: &Value) -> Result<ChatCompletionsO
             bail!("Invalid response data: {data}");
         }
     }
+    // Phase 37A: Gemini's `promptTokenCount` includes cached tokens; split into
+    // the full-price remainder + cache-read count.
+    let (input_tokens, cache_read_tokens) = split_cached_prompt(
+        data["usageMetadata"]["promptTokenCount"].as_u64(),
+        data["usageMetadata"]["cachedContentTokenCount"].as_u64(),
+    );
     let output = ChatCompletionsOutput {
         text,
         tool_calls,
         id: None,
-        input_tokens: data["usageMetadata"]["promptTokenCount"].as_u64(),
+        input_tokens,
         output_tokens: data["usageMetadata"]["candidatesTokenCount"].as_u64(),
+        cache_read_tokens,
+        cache_write_tokens: None,
     };
     Ok(output)
 }

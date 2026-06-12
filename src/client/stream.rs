@@ -15,6 +15,8 @@ pub struct SseHandler {
     tool_calls: Vec<ToolCall>,
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    cache_read_tokens: Option<u64>,
+    cache_write_tokens: Option<u64>,
 }
 
 impl SseHandler {
@@ -26,6 +28,8 @@ impl SseHandler {
             tool_calls: Vec::new(),
             input_tokens: None,
             output_tokens: None,
+            cache_read_tokens: None,
+            cache_write_tokens: None,
         }
     }
 
@@ -89,15 +93,50 @@ impl SseHandler {
         }
     }
 
-    pub fn take(self) -> (String, Vec<ToolCall>, Option<u64>, Option<u64>) {
+    /// Phase 37A: cache-token usage captured from the provider's streaming
+    /// response. `cache_read_tokens` are cache hits; `cache_write_tokens` are
+    /// Anthropic cache-creation tokens (`None` for providers without one).
+    pub fn set_cache_usage(
+        &mut self,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
+    ) {
+        if cache_read_tokens.is_some() {
+            self.cache_read_tokens = cache_read_tokens;
+        }
+        if cache_write_tokens.is_some() {
+            self.cache_write_tokens = cache_write_tokens;
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub fn take(
+        self,
+    ) -> (
+        String,
+        Vec<ToolCall>,
+        Option<u64>,
+        Option<u64>,
+        Option<u64>,
+        Option<u64>,
+    ) {
         let Self {
             buffer,
             tool_calls,
             input_tokens,
             output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
             ..
         } = self;
-        (buffer, tool_calls, input_tokens, output_tokens)
+        (
+            buffer,
+            tool_calls,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        )
     }
 }
 
