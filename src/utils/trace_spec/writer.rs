@@ -360,6 +360,8 @@ mod tests {
             cwd: "/work".into(),
             args: vec!["aichat".into()],
             env_subset: Default::default(),
+            entity_id: None,
+            facets: Vec::new(),
         }));
         sender.emit(hb(1));
         sender.emit(EventKind::SessionEnd(SessionEnd {

@@ -35,6 +35,12 @@ pub struct StartInfo {
     pub fixture_id: Option<String>,
     pub cwd: String,
     pub args: Vec<String>,
+    /// Phase 52D: the resolved entity's stable id (the cross-preset attribution
+    /// key). `None` when no entity resolved for the turn.
+    pub entity_id: Option<String>,
+    /// Phase 52D: the resolved facet token set actually used, from
+    /// `FacetSet::trace_tokens` (e.g. `["Act:referenced","Shape:owned"]`).
+    pub facets: Vec<String>,
 }
 
 /// One conversational turn's trace. Emits `session.start` on construction and
@@ -87,6 +93,8 @@ impl TraceSession {
             cwd: info.cwd,
             args: info.args,
             env_subset: redact::env_subset_from_process(),
+            entity_id: info.entity_id,
+            facets: info.facets,
         }));
 
         Ok(session)
@@ -133,7 +141,9 @@ impl TraceSession {
 
     /// `provider.request` — the messages body is auth-stripped, stored, and
     /// referenced by a key-independent `messages_hash`. Returns the minted
-    /// `request_id` so the matching response can correlate.
+    /// `request_id` (so the matching response can correlate) and the
+    /// `messages_hash` (Phase 42E-2a: so `provider.response.request_body_hash`
+    /// can link back to this request's stored body).
     pub fn provider_request(
         &self,
         provider: &str,
@@ -141,7 +151,7 @@ impl TraceSession {
         params: Value,
         messages: &Value,
         endpoint: &str,
-    ) -> String {
+    ) -> (String, String) {
         let request_id = uuid::Uuid::new_v4().to_string();
         let mut redacted = messages.clone();
         redact::strip_auth_headers(&mut redacted);
@@ -153,11 +163,11 @@ impl TraceSession {
             provider: provider.to_string(),
             model: model.to_string(),
             params,
-            messages_hash,
+            messages_hash: messages_hash.clone(),
             request_body_bytes: body.len() as u64,
             endpoint: endpoint.to_string(),
         }));
-        request_id
+        (request_id, messages_hash)
     }
 
     /// `provider.response` — the response body is stored and referenced.
@@ -345,7 +355,7 @@ mod tests {
             "headers": {"Authorization": "Bearer sk-SECRET"},
             "messages": [{"role": "user", "content": "review this"}]
         });
-        let req_id = session.provider_request(
+        let (req_id, _messages_hash) = session.provider_request(
             "anthropic",
             "claude-opus-4-7",
             serde_json::json!({"temperature": 0.0}),
@@ -387,6 +397,57 @@ mod tests {
             assert_eq!(e["seq"], i as u64);
             assert_eq!(e["session_id"], sid);
         }
+    }
+
+    #[test]
+    fn session_start_carries_entity_attribution() {
+        // Phase 52D: the keystone `session.start` carries `entity_id` and the
+        // resolved facet token set, so downstream attribution (Phase 49) can
+        // group trajectories by entity + capability without re-resolving.
+        let base = temp_base("entity-attr");
+        let layout = TraceLayout::new(&base);
+        let session = TraceSession::start(
+            &layout,
+            None,
+            StartInfo {
+                entity_id: Some("rust-reviewer".into()),
+                facets: vec!["Act:referenced".into(), "Shape:owned".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let sid = session.session_id().to_string();
+        session.end(0, 0, 0, None);
+
+        let events = read_turn_events(&layout, &sid);
+        let start = events
+            .iter()
+            .find(|e| e["type"] == "session.start")
+            .unwrap();
+        assert_eq!(start["data"]["entity_id"], "rust-reviewer");
+        assert_eq!(
+            start["data"]["facets"],
+            serde_json::json!(["Act:referenced", "Shape:owned"])
+        );
+    }
+
+    #[test]
+    fn session_start_omits_entity_id_when_absent_and_facets_default_empty() {
+        // A bare turn (no resolved entity) still emits a well-formed
+        // `session.start`: `entity_id` null, `facets` an empty array.
+        let base = temp_base("entity-attr-empty");
+        let layout = TraceLayout::new(&base);
+        let session = TraceSession::start(&layout, None, StartInfo::default()).unwrap();
+        let sid = session.session_id().to_string();
+        session.end(0, 0, 0, None);
+
+        let events = read_turn_events(&layout, &sid);
+        let start = events
+            .iter()
+            .find(|e| e["type"] == "session.start")
+            .unwrap();
+        assert!(start["data"]["entity_id"].is_null());
+        assert_eq!(start["data"]["facets"], serde_json::json!([]));
     }
 
     #[test]

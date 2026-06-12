@@ -102,7 +102,9 @@ Emitted once at the start of a turn, before any other event.
     "env_subset": {
       "AICHAT_CONFIG_DIR": "/...",
       "OPENAI_API_BASE": "http://localhost:1234"
-    }
+    },
+    "entity_id": "rust-reviewer" | null,
+    "facets": ["Act:referenced", "Shape:owned"]
   }
 }
 ```
@@ -111,6 +113,23 @@ Emitted once at the start of a turn, before any other event.
   normal user invocations. Lets test consumers filter traces.
 - `env_subset` includes only env vars relevant to aichat behavior. See
   §6 for the allowlist. Values are redacted per §6.
+- `entity_id` (Phase 52D) is the resolved entity's stable, addressable id —
+  the cross-preset (Prompt/Role/Agent/Macro) attribution key Phase 49 reads.
+  `null` when no entity resolved. Distinct from `role`: `role` is the human
+  label, `entity_id` is the stable join key. At the `call_react` keystone the
+  resolved entity is the synthesized `Role` (`to_role()`); for an agent the
+  facets therefore reflect the resolved role, not the agent directory's owned
+  facets — the richer owned view lands with Phase 52C.
+- `facets` (Phase 52D) is the resolved facet token set actually used this turn,
+  each entry a `Family:ownership` token (`owned` / `referenced`) from the closed
+  six-family taxonomy (Know·Act·Shape·Govern·Compose·Judge — see
+  `entity-model.md` §4). Sorted and stable; a family present under both
+  ownerships yields two tokens. Empty array when the entity carries no facets.
+  This is a machine GROUP BY key, not a display string (cf. `--dry-run`'s
+  `Act(ref), Shape(owned)` rendering).
+- **Versioning:** `entity_id` and `facets` are **additive optional fields** per
+  §5, so `schema_version` stays `"0.1"`. Consumers predating Phase 52D ignore
+  them; consumers reading them MUST tolerate `facets: []` and `entity_id: null`.
 
 #### `session.end`
 

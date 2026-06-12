@@ -1,7 +1,7 @@
 use super::*;
 
 use crate::{
-    config::{Config, GlobalConfig, Input},
+    config::{Config, Entity, GlobalConfig, Input},
     function::{eval_tool_calls, FunctionDeclaration, ToolCall, ToolResult},
     render::render_stream,
     utils::*,
@@ -517,6 +517,13 @@ pub async fn call_react(
                     .map(|p| p.display().to_string())
                     .unwrap_or_default(),
                 args: std::env::args().collect(),
+                // Phase 52D: attribute the turn to the resolved entity + the
+                // facet set actually used. `input.role()` is the resolved Role
+                // at the call_react keystone (for an agent, the synthesized
+                // role via `to_role()`), so its facets reflect what the request
+                // path used — the richer owned-facet view lands with 52C.
+                entity_id: Some(input.role().name().to_string()),
+                facets: input.role().facets().trace_tokens(),
             };
             crate::utils::trace_spec::wiring::start_turn(&cfg, info)
         });
@@ -527,25 +534,53 @@ pub async fn call_react(
         std::collections::HashMap::new();
 
     loop {
-        // Phase 42D: provider.request before the call. The request body is the
-        // current input text (full wire-message capture is a future refinement
-        // that needs plumbing into call_chat_completions).
-        let spec_request_id = spec_session.as_ref().map(|s| {
-            let messages = serde_json::json!({ "text": input.text() });
-            s.provider_request(
-                client.name(),
-                &client.model().id(),
-                serde_json::json!({ "stream": input.stream() }),
-                &messages,
-                "",
-            )
-        });
-
         let step_result = if input.stream() {
             call_chat_completions_streaming(input, client, abort_signal.clone()).await
         } else {
             call_chat_completions(input, print_output, false, client, abort_signal.clone()).await
         };
+
+        // Phase 42E-1: emit provider.request *after* the call, from the request
+        // `retry::send` captured at the reqwest boundary — so messages_hash and
+        // endpoint reflect the real serialized wire body, not a pre-send stub.
+        // The streaming path bypasses retry::send (42E-3), so it has no capture
+        // and falls back to the input-text stub. Emitted before provider.response
+        // below, preserving the request→response seq order. On a failed call the
+        // request was still sent, so it is still emitted (then the error event).
+        let spec_request_id = spec_session.as_ref().map(|s| {
+            let (messages, endpoint) =
+                match crate::utils::trace_spec::wiring::take_wire_request() {
+                    Some(w) => (
+                        serde_json::from_slice(&w.body).unwrap_or_else(|_| {
+                            serde_json::json!({ "wire_body_bytes": w.body.len() })
+                        }),
+                        w.endpoint,
+                    ),
+                    None => (serde_json::json!({ "text": input.text() }), String::new()),
+                };
+            s.provider_request(
+                client.name(),
+                &client.model().id(),
+                serde_json::json!({ "stream": input.stream() }),
+                &messages,
+                &endpoint,
+            )
+        });
+
+        // Phase 42E-2a: surface each retry attempt captured inside retry::send,
+        // between the request and the response (the seq order they occurred in).
+        // Makes the retry layer observable — EVAL-001 §2.
+        if let (Some(s), Some((req_id, _))) = (spec_session.as_ref(), spec_request_id.as_ref()) {
+            for r in crate::utils::trace_spec::wiring::take_wire_retries() {
+                let (trigger, details) = match (r.status, &r.error) {
+                    (Some(code), _) => (format!("http_{code}"), format!("HTTP {code}")),
+                    (None, Some(err)) => ("transport_error".to_string(), err.clone()),
+                    _ => ("unknown".to_string(), String::new()),
+                };
+                s.provider_retry(req_id, r.attempt, &trigger, &details, r.backoff_ms, false);
+            }
+        }
+
         let (text, tool_results, metrics) = match step_result {
             Ok(v) => v,
             Err(e) => {
@@ -564,14 +599,22 @@ pub async fn call_react(
             }
         };
 
-        // Phase 42D: provider.response (status/body approximated from the
-        // returned text + metrics; finish_reason inferred from tool presence).
-        if let (Some(s), Some(req_id)) = (spec_session.as_ref(), spec_request_id.as_ref()) {
+        // Phase 42E-2a: provider.response carries the real HTTP status captured
+        // at retry::send and links request_body_hash back to the request blob.
+        // (Body is still the parsed text + finish_reason inferred — raw response
+        // bytes + wire finish_reason are 42E-2b.) Falls back to 200 on the
+        // streaming path, which has no capture.
+        if let (Some(s), Some((req_id, req_body_hash))) =
+            (spec_session.as_ref(), spec_request_id.as_ref())
+        {
             let finish_reason = if tool_results.is_empty() { "stop" } else { "tool_use" };
+            let status = crate::utils::trace_spec::wiring::take_wire_response()
+                .map(|r| r.status)
+                .unwrap_or(200);
             s.provider_response(
                 req_id,
-                "",
-                200,
+                req_body_hash,
+                status,
                 finish_reason,
                 metrics.input_tokens,
                 metrics.output_tokens,

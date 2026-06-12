@@ -17,7 +17,7 @@
 | 52A | **`RoleLike` → `Entity` trait** — rename + a `facets()` capability-introspection method (which families are present, owned vs referenced). No behavior change; `to_role()` stays the bridge. | **Done** (aichat) |
 | 52B | **Facet taxonomy in code + docs** — the closed family set (Know · Act · Shape · Govern · Compose · Judge); document the couplings (§7 of the design); surface facets in `--dry-run`. | **Done** (aichat) |
 | 52C | **Backing-aware uniform resolution** — collapse the variant-specific `SessionEntity` / `EntityRef` branches (`pipe.rs:517`, `config/mod.rs:1030`) onto the `Entity` trait; the **backing-gates-ownership** rule is the single resolution invariant. | Planned (aichat) |
-| 52D | **Trace entity attribution** — each invocation's keystone trace (Phase 42) carries `entity_id` + the *resolved facet set actually used*; the stable key Phase 49 attribution reads. | Planned (aichat) |
+| 52D | **Trace entity attribution** — each invocation's keystone trace (Phase 42) carries `entity_id` + the *resolved facet set actually used*; the stable key Phase 49 attribution reads. | **Done** (aichat) |
 
 ### 52A implementation note (shipped)
 
@@ -52,6 +52,34 @@
 - Coverage: `facetset_summary_*` unit tests (rendering, dual-ownership collapse,
   empty) + `tests/regression/phase-52b.sh` (the `--dry-run` line present for a
   mixed entity, omitted for a bare one).
+
+### 52D implementation note (shipped)
+
+- `FacetSet::trace_tokens() -> Vec<String>` (`src/config/role.rs`) is the
+  machine-readable sibling of 52B's `summary()`: each `(family, ownership)` pair
+  becomes one `Family:ownership` token (`owned` / `referenced`), in the `entries`
+  BTreeSet's stable order. **Dual ownership is not collapsed** — a family present
+  both ways yields two tokens — so the ownership bit survives as a downstream
+  stratification key. This is the GROUP BY key Phase 49 attribution reads, chosen
+  over a display string precisely so consumers group/diff/hash without re-parsing.
+- The keystone `session.start` payload (`event.rs` `SessionStart`, threaded via
+  `session.rs` `StartInfo`) gains two **additive optional** fields: `entity_id`
+  (the resolved entity's stable id, distinct from the human `role` label) and
+  `facets` (the `trace_tokens` set). Per SPEC-001 §5 these do **not** bump
+  `schema_version` (stays `"0.1"`); consumers tolerate `entity_id: null` /
+  `facets: []`.
+- Wired in `call_react` (`src/client/common.rs`) from `input.role().name()` +
+  `input.role().facets().trace_tokens()`. **Known limitation:** at the keystone
+  the resolved entity is the synthesized `Role` (`to_role()`), so for an agent
+  the facets reflect the resolved role, not the agent directory's *owned*
+  facets. That mislabel is deliberately **visible** (the ownership bit is kept)
+  and is closed by 52C's uniform resolution — 52D does not block on it.
+- Coverage: `facetset_trace_tokens_*` unit tests (sorted pairs, dual-ownership
+  kept distinct, empty) + `session_start_carries_entity_attribution` /
+  `session_start_omits_entity_id_when_absent_*` (`session.rs`) asserting the
+  field appears on / defaults cleanly off the emitted `session.start` line.
+- SPEC-001 §3.1 `session.start` block documents both fields + the additive-no-bump
+  versioning rule.
 
 ## Cross-repo seams
 

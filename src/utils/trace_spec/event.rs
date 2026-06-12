@@ -164,6 +164,14 @@ pub struct SessionStart {
     pub cwd: String,
     pub args: Vec<String>,
     pub env_subset: indexmap::IndexMap<String, String>,
+    /// Phase 52D: the resolved entity's stable, addressable id — the cross-preset
+    /// key Phase 49 attribution reads. `None` when no entity resolved. Additive
+    /// per SPEC-001 §5 (optional field → no `schema_version` bump).
+    pub entity_id: Option<String>,
+    /// Phase 52D: the resolved facet token set actually used this turn (e.g.
+    /// `["Act:referenced","Shape:owned"]`, from `FacetSet::trace_tokens`).
+    /// Empty when the entity carries no facets. Additive per SPEC-001 §5.
+    pub facets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -397,6 +405,8 @@ mod tests {
                 cwd: "/work".into(),
                 args: vec!["aichat".into(), "--role".into()],
                 env_subset: env,
+                entity_id: Some("rust-reviewer".into()),
+                facets: vec!["Act:referenced".into()],
             }),
         );
         let v = parse(&ev.to_line(0));
@@ -404,6 +414,8 @@ mod tests {
         assert_eq!(v["data"]["role"], "rust-reviewer");
         assert!(v["data"]["fixture_id"].is_null());
         assert_eq!(v["data"]["env_subset"]["HOME"], "/home/u");
+        assert_eq!(v["data"]["entity_id"], "rust-reviewer");
+        assert_eq!(v["data"]["facets"], serde_json::json!(["Act:referenced"]));
     }
 
     #[test]
