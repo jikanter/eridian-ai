@@ -11,6 +11,13 @@ repository = "https://github.com/sigoden/aichat"
 categories = ["command-line-utilities"]
 keywords = ["chatgpt", "llm", "cli", "ai", "repl"]
 
+# SPEC-002 §4: the `eridian-trace` reader crate is a workspace member. It is the
+# shared trace-parsing dependency for the Phase 43 test harness and the Phase 44
+# trace projections / training extraction. The root `aichat` package is the
+# implicit workspace root member.
+[workspace]
+members = ["crates/eridian-trace"]
+
 [dependencies]
 anyhow = "1.0.98"
 bytes = "1.11.1"
