@@ -567,6 +567,20 @@ pub async fn call_react(
             )
         });
 
+        // Phase 42E-2a: surface each retry attempt captured inside retry::send,
+        // between the request and the response (the seq order they occurred in).
+        // Makes the retry layer observable — EVAL-001 §2.
+        if let (Some(s), Some((req_id, _))) = (spec_session.as_ref(), spec_request_id.as_ref()) {
+            for r in crate::utils::trace_spec::wiring::take_wire_retries() {
+                let (trigger, details) = match (r.status, &r.error) {
+                    (Some(code), _) => (format!("http_{code}"), format!("HTTP {code}")),
+                    (None, Some(err)) => ("transport_error".to_string(), err.clone()),
+                    _ => ("unknown".to_string(), String::new()),
+                };
+                s.provider_retry(req_id, r.attempt, &trigger, &details, r.backoff_ms, false);
+            }
+        }
+
         let (text, tool_results, metrics) = match step_result {
             Ok(v) => v,
             Err(e) => {
@@ -585,14 +599,22 @@ pub async fn call_react(
             }
         };
 
-        // Phase 42D: provider.response (status/body approximated from the
-        // returned text + metrics; finish_reason inferred from tool presence).
-        if let (Some(s), Some(req_id)) = (spec_session.as_ref(), spec_request_id.as_ref()) {
+        // Phase 42E-2a: provider.response carries the real HTTP status captured
+        // at retry::send and links request_body_hash back to the request blob.
+        // (Body is still the parsed text + finish_reason inferred — raw response
+        // bytes + wire finish_reason are 42E-2b.) Falls back to 200 on the
+        // streaming path, which has no capture.
+        if let (Some(s), Some((req_id, req_body_hash))) =
+            (spec_session.as_ref(), spec_request_id.as_ref())
+        {
             let finish_reason = if tool_results.is_empty() { "stop" } else { "tool_use" };
+            let status = crate::utils::trace_spec::wiring::take_wire_response()
+                .map(|r| r.status)
+                .unwrap_or(200);
             s.provider_response(
                 req_id,
-                "",
-                200,
+                req_body_hash,
+                status,
                 finish_reason,
                 metrics.input_tokens,
                 metrics.output_tokens,

@@ -141,7 +141,9 @@ impl TraceSession {
 
     /// `provider.request` — the messages body is auth-stripped, stored, and
     /// referenced by a key-independent `messages_hash`. Returns the minted
-    /// `request_id` so the matching response can correlate.
+    /// `request_id` (so the matching response can correlate) and the
+    /// `messages_hash` (Phase 42E-2a: so `provider.response.request_body_hash`
+    /// can link back to this request's stored body).
     pub fn provider_request(
         &self,
         provider: &str,
@@ -149,7 +151,7 @@ impl TraceSession {
         params: Value,
         messages: &Value,
         endpoint: &str,
-    ) -> String {
+    ) -> (String, String) {
         let request_id = uuid::Uuid::new_v4().to_string();
         let mut redacted = messages.clone();
         redact::strip_auth_headers(&mut redacted);
@@ -161,11 +163,11 @@ impl TraceSession {
             provider: provider.to_string(),
             model: model.to_string(),
             params,
-            messages_hash,
+            messages_hash: messages_hash.clone(),
             request_body_bytes: body.len() as u64,
             endpoint: endpoint.to_string(),
         }));
-        request_id
+        (request_id, messages_hash)
     }
 
     /// `provider.response` — the response body is stored and referenced.
@@ -353,7 +355,7 @@ mod tests {
             "headers": {"Authorization": "Bearer sk-SECRET"},
             "messages": [{"role": "user", "content": "review this"}]
         });
-        let req_id = session.provider_request(
+        let (req_id, _messages_hash) = session.provider_request(
             "anthropic",
             "claude-opus-4-7",
             serde_json::json!({"temperature": 0.0}),

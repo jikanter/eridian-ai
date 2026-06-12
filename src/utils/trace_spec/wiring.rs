@@ -56,9 +56,11 @@ pub fn current_session() -> Option<String> {
 /// Clear the active turn (called after `session.end`).
 pub fn clear_current_session() {
     *CURRENT_SESSION.write() = None;
-    // Drop any request captured but never emitted, so a failed turn cannot
-    // leak its wire bytes into the next turn's `provider.request`.
+    // Drop any wire data captured but never emitted, so a failed turn cannot
+    // leak into the next turn's provider.* events.
     *CAPTURED_REQUEST.write() = None;
+    *CAPTURED_RESPONSE.write() = None;
+    CAPTURED_RETRIES.write().clear();
 }
 
 /// Phase 42E-1: a non-streaming provider request captured at the `reqwest`
@@ -86,6 +88,52 @@ pub fn capture_wire_request(endpoint: String, body: Vec<u8>) {
 /// right after a provider call returns to emit a wire-true `provider.request`.
 pub fn take_wire_request() -> Option<WireRequest> {
     CAPTURED_REQUEST.write().take()
+}
+
+/// Phase 42E-2a: the final HTTP status of a non-streaming provider call,
+/// captured at `retry::send` so `provider.response` carries the real status
+/// instead of a hardcoded `200`.
+#[derive(Debug, Clone)]
+pub struct WireResponse {
+    pub status: u16,
+}
+
+static CAPTURED_RESPONSE: LazyLock<RwLock<Option<WireResponse>>> =
+    LazyLock::new(|| RwLock::new(None));
+
+/// Record the final response status `send` observed.
+pub fn capture_wire_response(status: u16) {
+    *CAPTURED_RESPONSE.write() = Some(WireResponse { status });
+}
+
+/// Take and clear the captured response status.
+pub fn take_wire_response() -> Option<WireResponse> {
+    CAPTURED_RESPONSE.write().take()
+}
+
+/// Phase 42E-2a: one retry attempt observed inside `send_with_retry` — the
+/// signal EVAL-001 §2 names as the whole reason for a structured trace ("the
+/// retry layer emits no observable signal"). `status` is set for a retryable
+/// HTTP response; `error` for a transient transport error.
+#[derive(Debug, Clone)]
+pub struct WireRetry {
+    pub attempt: u32,
+    pub status: Option<u16>,
+    pub error: Option<String>,
+    pub backoff_ms: u64,
+}
+
+static CAPTURED_RETRIES: LazyLock<RwLock<Vec<WireRetry>>> =
+    LazyLock::new(|| RwLock::new(Vec::new()));
+
+/// Append a retry attempt observed during the active turn's provider call.
+pub fn capture_wire_retry(retry: WireRetry) {
+    CAPTURED_RETRIES.write().push(retry);
+}
+
+/// Take and clear all captured retries (one per attempt), in order.
+pub fn take_wire_retries() -> Vec<WireRetry> {
+    std::mem::take(&mut *CAPTURED_RETRIES.write())
 }
 
 /// Best-effort start of a trace turn. Mints the [`TraceSession`], records the
@@ -154,6 +202,31 @@ mod tests {
         assert_eq!(taken.body, b"{\"model\":\"m\"}");
         // Draining clears the slot — the next turn must not re-read stale bytes.
         assert!(take_wire_request().is_none());
+    }
+
+    // Phase 42E-2a: the response slot holds the final HTTP status; the retry
+    // queue holds one entry per retry attempt. Both drained by the active turn.
+    #[test]
+    fn capture_and_take_wire_response_status() {
+        capture_wire_response(503);
+        assert_eq!(take_wire_response().map(|r| r.status), Some(503));
+        assert!(take_wire_response().is_none());
+    }
+
+    #[test]
+    fn wire_retries_accumulate_in_order_then_drain() {
+        // Empty until something retries.
+        assert!(take_wire_retries().is_empty());
+        capture_wire_retry(WireRetry { attempt: 0, status: Some(503), error: None, backoff_ms: 1000 });
+        capture_wire_retry(WireRetry { attempt: 1, status: None, error: Some("timeout".into()), backoff_ms: 2000 });
+        let drained = take_wire_retries();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].attempt, 0);
+        assert_eq!(drained[0].status, Some(503));
+        assert_eq!(drained[1].error.as_deref(), Some("timeout"));
+        assert_eq!(drained[1].backoff_ms, 2000);
+        // Draining empties the queue.
+        assert!(take_wire_retries().is_empty());
     }
 
     // The current-session global is process-wide, so the lifecycle assertions

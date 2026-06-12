@@ -56,7 +56,8 @@ not the frames). Literal socket bytes would need a custom hyper connector/TLS ta
 | Item | Description | Status |
 |---|---|---|
 | 42E-1 | **Request capture at the `reqwest` boundary.** Capture the actual serialized request body + real endpoint at the single `send()` chokepoint (`src/client/retry.rs`); the active turn drains it to emit a wire-true `provider.request`. Redaction stays inline, before the blob store. Replaces the `{"text":…}` stub. | **Done** (aichat) |
-| 42E-2 | **Response + per-attempt capture.** Real status, wire `finish_reason`, raw response body, `request_body_hash` linkage; one `provider.request`/`provider.response`/`provider.retry` triple **per attempt** (retries currently invisible above `retry.rs`). | Planned |
+| 42E-2a | **Status + per-attempt + linkage.** Real HTTP status; one `provider.retry` per retry attempt (today retries above `retry.rs` are invisible — EVAL-001 §2's "the retry layer emits no observable signal"); `request_body_hash` linking `provider.response` to its request blob. All at the single `retry::send` chokepoint. | Planned |
+| 42E-2b | **Raw response body + wire `finish_reason`.** Capture the raw response bytes (not the parsed text) via a guarded Response-rebuild at `send`, and surface the provider's real `finish_reason`. Heavier: the body is consumed once per client (`res.json()`), so needs buffering/rebuild. | Planned |
 | 42E-3 | **Streaming chunk capture.** Wire the `OutputChunk` event: add a `TraceSession::output_chunk` emitter, call it per SSE frame on the streaming path with real inter-chunk timing. Also closes the correlation-header gap (streaming bypasses `retry::send`). | Planned |
 
 ### 42E-1 implementation note (shipped)

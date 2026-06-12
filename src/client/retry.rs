@@ -80,6 +80,10 @@ pub async fn send_with_retry(
     builder: RequestBuilder,
     cfg: &RetryConfig,
 ) -> Result<reqwest::Response> {
+    // Phase 42E-2a: when a trace turn is active, record the final status and one
+    // entry per retry attempt so the trace makes the retry layer observable
+    // (EVAL-001 §2). Guarded so tracing-off pays nothing.
+    let capture = crate::utils::trace_spec::wiring::current_session().is_some();
     let mut attempt: usize = 0;
     loop {
         let this = builder
@@ -89,9 +93,15 @@ pub async fn send_with_retry(
             Ok(res) => {
                 let status = res.status().as_u16();
                 if res.status().is_success() || !is_retryable_status(status) {
+                    if capture {
+                        crate::utils::trace_spec::wiring::capture_wire_response(status);
+                    }
                     return Ok(res);
                 }
                 if attempt >= cfg.max_retries {
+                    if capture {
+                        crate::utils::trace_spec::wiring::capture_wire_response(status);
+                    }
                     return Ok(res);
                 }
                 let retry_after = res
@@ -109,6 +119,16 @@ pub async fn send_with_retry(
                     delay,
                     status
                 );
+                if capture {
+                    crate::utils::trace_spec::wiring::capture_wire_retry(
+                        crate::utils::trace_spec::wiring::WireRetry {
+                            attempt: attempt as u32,
+                            status: Some(status),
+                            error: None,
+                            backoff_ms: delay.as_millis() as u64,
+                        },
+                    );
+                }
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
@@ -123,6 +143,16 @@ pub async fn send_with_retry(
                     cfg.max_retries,
                     delay
                 );
+                if capture {
+                    crate::utils::trace_spec::wiring::capture_wire_retry(
+                        crate::utils::trace_spec::wiring::WireRetry {
+                            attempt: attempt as u32,
+                            status: None,
+                            error: Some(e.to_string()),
+                            backoff_ms: delay.as_millis() as u64,
+                        },
+                    );
+                }
                 tokio::time::sleep(delay).await;
                 attempt += 1;
             }
