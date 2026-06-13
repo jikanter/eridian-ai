@@ -5,6 +5,7 @@ mod compare;
 mod config;
 mod context_budget;
 mod discovery;
+mod exec_pi;
 mod function;
 mod knowledge;
 mod mcp;
@@ -55,6 +56,22 @@ fn main() -> Result<()> {
 }
 
 async fn async_main() -> Result<()> {
+    // `--exec-pi` passthrough. When it is the *first* argument, every remaining
+    // argument is forwarded to `pi -p` after our customizations have loaded. We
+    // intercept before Cli::parse() because clap doesn't know the flag and the
+    // trailing args belong to pi, not aichat.
+    let raw_args: Vec<String> = env::args().skip(1).collect();
+    if let Some(pi_args) = exec_pi::exec_pi_args(&raw_args) {
+        // Load aichat's customizations first (info_flag skips the heavy MCP /
+        // client setup — we only want env + config side effects), then hand off
+        // to pi and propagate its exit status.
+        let _config = Config::init(WorkingMode::Cmd, true).await?;
+        let mut forwarded = vec!["-p".to_string()];
+        forwarded.extend(pi_args);
+        let code = run_command("pi", &forwarded, None)?;
+        process::exit(code);
+    }
+
     let cli = Cli::parse();
 
     // Phase 31E: validate a portable mcp.json declarations file. Runs before
