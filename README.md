@@ -20,6 +20,7 @@ inference, roles, agents, RAG, MCP, and macros.
 aichat                  # default: pi if on PATH, else built-in REPL with a note
 aichat --legacy-repl    # force the built-in Reedline REPL (no scheduled removal)
 aichat --pi-repl        # strict pi: error if pi not installed
+aichat --exec-pi <content> # pi batch pass-through
 ```
 
 Install pi with `curl -fsSL https://pi.dev/install.sh | sh` or
