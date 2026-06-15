@@ -667,18 +667,23 @@ pub async fn call_react(
             }
         };
 
-        // Phase 42E-2a: provider.response carries the real HTTP status captured
-        // at retry::send and links request_body_hash back to the request blob.
-        // (Body is still the parsed text + finish_reason inferred — raw response
-        // bytes + wire finish_reason are 42E-2b.) Falls back to 200 on the
-        // streaming path, which has no capture.
+        // Phase 42E-2a/2b: provider.response carries the real HTTP status and
+        // the raw response body captured at retry::send, with the provider's
+        // wire `finish_reason` parsed from those bytes; request_body_hash links
+        // back to the request blob. Falls back to status 200 + the parsed text +
+        // a tool-presence-inferred reason on the streaming path, which has no
+        // capture (42E-3).
         if let (Some(s), Some((req_id, req_body_hash))) =
             (spec_session.as_ref(), spec_request_id.as_ref())
         {
-            let finish_reason = if tool_results.is_empty() { "stop" } else { "tool_use" };
-            let status = crate::utils::trace_spec::wiring::take_wire_response()
-                .map(|r| r.status)
-                .unwrap_or(200);
+            let inferred = if tool_results.is_empty() { "stop" } else { "tool_use" };
+            let wire = crate::utils::trace_spec::wiring::take_wire_response();
+            let status = wire.as_ref().map(|r| r.status).unwrap_or(200);
+            let wire_finish = wire
+                .as_ref()
+                .and_then(|r| finish_reason_from_body(&r.body));
+            let finish_reason = wire_finish.as_deref().unwrap_or(inferred);
+            let response_body: &[u8] = wire.as_ref().map(|r| r.body.as_slice()).unwrap_or(text.as_bytes());
             s.provider_response(
                 req_id,
                 req_body_hash,
@@ -687,7 +692,7 @@ pub async fn call_react(
                 metrics.input_tokens,
                 metrics.output_tokens,
                 metrics.latency_ms.saturating_mul(1_000_000),
-                text.as_bytes(),
+                response_body,
             );
         }
 
@@ -1006,6 +1011,22 @@ pub fn catch_error(data: &Value, status: u16) -> Result<()> {
     bail!("Invalid response data: {data} (status: {status})");
 }
 
+/// Phase 42E-2b: recover the provider's real `finish_reason` from the captured
+/// raw response body, probing the known wire shapes (OpenAI/-compatible
+/// `choices[0].finish_reason`, Claude `stop_reason`, Gemini
+/// `candidates[0].finishReason`, Cohere top-level `finish_reason`). Returns
+/// `None` for a non-JSON body or one with no recognized reason field, so the
+/// caller can fall back to the inferred value.
+pub fn finish_reason_from_body(body: &[u8]) -> Option<String> {
+    let data: Value = serde_json::from_slice(body).ok()?;
+    data["choices"][0]["finish_reason"]
+        .as_str()
+        .or_else(|| data["stop_reason"].as_str())
+        .or_else(|| data["candidates"][0]["finishReason"].as_str())
+        .or_else(|| data["finish_reason"].as_str())
+        .map(str::to_string)
+}
+
 pub fn json_str_from_map<'a>(
     map: &'a serde_json::Map<String, Value>,
     field_name: &str,
@@ -1152,6 +1173,40 @@ fn prompt_input_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Phase 42E-2b: the wire `finish_reason` is recovered generically from the
+    // captured raw response body, so `provider.response` carries the provider's
+    // real reason instead of one inferred from tool presence.
+    #[test]
+    fn finish_reason_from_openai_shape() {
+        let body = br#"{"choices":[{"finish_reason":"tool_calls"}]}"#;
+        assert_eq!(finish_reason_from_body(body).as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn finish_reason_from_claude_shape() {
+        let body = br#"{"stop_reason":"end_turn","content":[]}"#;
+        assert_eq!(finish_reason_from_body(body).as_deref(), Some("end_turn"));
+    }
+
+    #[test]
+    fn finish_reason_from_gemini_shape() {
+        let body = br#"{"candidates":[{"finishReason":"STOP"}]}"#;
+        assert_eq!(finish_reason_from_body(body).as_deref(), Some("STOP"));
+    }
+
+    #[test]
+    fn finish_reason_from_cohere_top_level() {
+        let body = br#"{"finish_reason":"COMPLETE","text":"hi"}"#;
+        assert_eq!(finish_reason_from_body(body).as_deref(), Some("COMPLETE"));
+    }
+
+    #[test]
+    fn finish_reason_absent_or_garbage_is_none() {
+        assert_eq!(finish_reason_from_body(b"{\"text\":\"hi\"}"), None);
+        assert_eq!(finish_reason_from_body(b"not json"), None);
+        assert_eq!(finish_reason_from_body(b""), None);
+    }
 
     #[test]
     fn test_call_metrics_merge() {

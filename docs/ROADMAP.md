@@ -154,7 +154,7 @@ design doc; planned/new phases link the live doc.
 | 13 Pi as REPL Surface | 53 | aichat ↔ harness | Discovery surface (`/aichat-flags`, `/aichat-docs`) | **Done** | [features/discovery.md](features/discovery.md) |
 | 14 Memory Surface | 34 | aichat (↔ harness) | Auto-memory wiring | 34A–D **Done · archived** | [archive/phase-34-overview.md](roadmap/archive/phase-34-overview.md) |
 | 14 Memory Surface | 35 | cross-repo | Knowledge-MCP protocol | 35A–D **Planned** (Now) | [phase-35-overview.md](roadmap/phase-35-overview.md) |
-| **15 Observability Keystone** | 42 | aichat | Trace emission (SPEC-001) | 42A–D **Done** · 42E **Planned** (Next) | [phase-42-overview.md](roadmap/phase-42-overview.md) · [42E](roadmap/phase-42e-overview.md) |
+| **15 Observability Keystone** | 42 | aichat | Trace emission (SPEC-001) | 42A–D **Done** · 42E-1/2a/2b **Done**, 42E-3 **Planned** (Next) | [phase-42-overview.md](roadmap/phase-42-overview.md) · [42E](roadmap/phase-42e-overview.md) |
 | **15 Observability Keystone** | 43 | aichat | Test harness (SPEC-002) | 43A–D **Planned** (Next) | [phase-43-overview.md](roadmap/phase-43-overview.md) |
 | **15 Observability Keystone** | 44 | aichat | Trace projections & training extraction | 44A–D **Planned** (Next) | [phase-44-overview.md](roadmap/phase-44-overview.md) |
 | **16 Astrophage Substrate** | 45 | astrophage (aichat seam) | MVP: replay-core + cache gateway | 45A–D **Planned** (Next) | [phase-45-overview.md](roadmap/phase-45-overview.md) |

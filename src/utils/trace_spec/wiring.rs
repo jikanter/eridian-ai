@@ -90,20 +90,22 @@ pub fn take_wire_request() -> Option<WireRequest> {
     CAPTURED_REQUEST.write().take()
 }
 
-/// Phase 42E-2a: the final HTTP status of a non-streaming provider call,
-/// captured at `retry::send` so `provider.response` carries the real status
-/// instead of a hardcoded `200`.
+/// Phase 42E-2a/2b: the final HTTP status of a non-streaming provider call plus
+/// the raw response body, captured at `retry::send` so `provider.response`
+/// carries the real status (instead of a hardcoded `200`) and the raw wire
+/// bytes (instead of the parsed assistant text).
 #[derive(Debug, Clone)]
 pub struct WireResponse {
     pub status: u16,
+    pub body: Vec<u8>,
 }
 
 static CAPTURED_RESPONSE: LazyLock<RwLock<Option<WireResponse>>> =
     LazyLock::new(|| RwLock::new(None));
 
-/// Record the final response status `send` observed.
-pub fn capture_wire_response(status: u16) {
-    *CAPTURED_RESPONSE.write() = Some(WireResponse { status });
+/// Record the final response status and raw body `send` observed.
+pub fn capture_wire_response(status: u16, body: Vec<u8>) {
+    *CAPTURED_RESPONSE.write() = Some(WireResponse { status, body });
 }
 
 /// Take and clear the captured response status.
@@ -207,9 +209,11 @@ mod tests {
     // Phase 42E-2a: the response slot holds the final HTTP status; the retry
     // queue holds one entry per retry attempt. Both drained by the active turn.
     #[test]
-    fn capture_and_take_wire_response_status() {
-        capture_wire_response(503);
-        assert_eq!(take_wire_response().map(|r| r.status), Some(503));
+    fn capture_and_take_wire_response_status_and_body() {
+        capture_wire_response(503, br#"{"stop_reason":"end_turn"}"#.to_vec());
+        let taken = take_wire_response().expect("a captured response");
+        assert_eq!(taken.status, 503);
+        assert_eq!(taken.body, br#"{"stop_reason":"end_turn"}"#);
         assert!(take_wire_response().is_none());
     }
 
