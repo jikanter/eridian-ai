@@ -1148,6 +1148,13 @@ impl Entity for Session {
         // synthesizes from its own state (prompt, use_tools, schemas, hooks).
         self.to_role().facets()
     }
+
+    fn backing(&self) -> Backing {
+        // A session reports the facets of the file-shaped role it synthesizes
+        // via `to_role()`, so its backing is File — owned executable/stateful
+        // facets flatten to references in that synthesis.
+        Backing::File
+    }
 }
 
 #[derive(Debug, Clone, Default)]
