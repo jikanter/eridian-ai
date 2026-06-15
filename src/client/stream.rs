@@ -39,6 +39,16 @@ impl SseHandler {
             return Ok(());
         }
         self.buffer.push_str(text);
+        // Phase 42E-3: capture each streaming frame with its real arrival time
+        // so the active trace turn can emit a wire-true `output.chunk` carrying
+        // real inter-chunk timing. Guarded on an active turn (no id clone), so
+        // tracing-off (the default) pays nothing on the SSE hot path.
+        if crate::utils::trace_spec::wiring::is_session_active() {
+            crate::utils::trace_spec::wiring::capture_wire_chunk(
+                text.to_string(),
+                crate::utils::trace_spec::event::now_ns(),
+            );
+        }
         let ret = self
             .sender
             .send(SseEvent::Text(text.to_string()))
@@ -157,6 +167,14 @@ pub async fn sse_stream<F>(builder: RequestBuilder, mut handle: F) -> Result<()>
 where
     F: FnMut(SseMmessage) -> Result<bool>,
 {
+    // Phase 42E-3: the SSE path builds its `EventSource` directly and bypasses
+    // `retry::send`, so stamp the `X-Eridian-Session-Id` correlation header
+    // here too (non-SSE streaming providers already get it via retry::send).
+    // No-op when no trace turn is active.
+    let builder = super::retry::apply_session_header(
+        builder,
+        crate::utils::trace_spec::wiring::current_session(),
+    );
     let mut es = builder.eventsource()?;
     while let Some(event) = es.next().await {
         match event {

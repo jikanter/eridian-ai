@@ -18,8 +18,9 @@ use serde_json::Value;
 
 use super::blob::{self, BlobStore};
 use super::event::{
-    self, ErrorEvent, EventKind, OutputFinal, ProviderRequest, ProviderResponse, ProviderRetry,
-    RoleApplied, SessionEnd, SessionStart, SystemPromptBuilt, ToolExecuted, ToolRequested,
+    self, ErrorEvent, EventKind, OutputChunk, OutputFinal, ProviderRequest, ProviderResponse,
+    ProviderRetry, RoleApplied, SessionEnd, SessionStart, SystemPromptBuilt, ToolExecuted,
+    ToolRequested,
 };
 use super::layout::{append_manifest, TraceLayout};
 use super::redact;
@@ -262,6 +263,31 @@ impl TraceSession {
         }));
     }
 
+    /// `output.chunk` — Phase 42E-3. One streaming frame: the decoded text
+    /// delta, correlated to its `provider.request` by `request_id`. `ts_ns` is
+    /// the frame's real arrival time, captured at the SSE boundary and stamped
+    /// on the envelope, so inter-chunk timing survives even though emission is
+    /// session-side after the stream drains (preserving seq order vs
+    /// `provider.response`). Small deltas stay inline (not blob-offloaded).
+    pub fn output_chunk(
+        &self,
+        request_id: &str,
+        chunk_index: u64,
+        content: &str,
+        delta_tokens: u64,
+        ts_ns: u64,
+    ) {
+        self.sender.emit_at(
+            EventKind::OutputChunk(OutputChunk {
+                request_id: request_id.to_string(),
+                chunk_index,
+                content: content.to_string(),
+                delta_tokens,
+            }),
+            ts_ns,
+        );
+    }
+
     /// `output.final` — the assistant's final text goes to the blob store.
     pub fn output_final(&self, content: &str, tokens_out: u64) {
         let content_hash = self.put_blob(content.as_bytes());
@@ -396,6 +422,51 @@ mod tests {
         for (i, e) in events.iter().enumerate() {
             assert_eq!(e["seq"], i as u64);
             assert_eq!(e["session_id"], sid);
+        }
+    }
+
+    #[test]
+    fn output_chunks_emit_in_order_with_real_arrival_ts() {
+        // Phase 42E-3: a streaming turn emits one output.chunk per frame,
+        // after provider.response and before output.final, each carrying its
+        // captured arrival ts_ns (not the drain time) so inter-chunk timing
+        // survives. seq stays monotonic.
+        let base = temp_base("output-chunks");
+        let layout = TraceLayout::new(&base);
+        let session = TraceSession::start(&layout, None, StartInfo::default()).unwrap();
+        let sid = session.session_id().to_string();
+
+        session.provider_response("req-1", "sha256:req", 200, "stop", 10, 5, 1_000, b"{}");
+        session.output_chunk("req-1", 0, "Hel", 0, 111);
+        session.output_chunk("req-1", 1, "lo", 0, 222);
+        session.output_final("Hello", 5);
+        session.end(0, 10, 5, None);
+
+        let events = read_turn_events(&layout, &sid);
+        let types: Vec<&str> = events.iter().map(|e| e["type"].as_str().unwrap()).collect();
+        assert_eq!(
+            types,
+            vec![
+                "session.start",
+                "provider.response",
+                "output.chunk",
+                "output.chunk",
+                "output.final",
+                "session.end",
+            ]
+        );
+        let chunks: Vec<&serde_json::Value> =
+            events.iter().filter(|e| e["type"] == "output.chunk").collect();
+        assert_eq!(chunks[0]["data"]["request_id"], "req-1");
+        assert_eq!(chunks[0]["data"]["chunk_index"], 0);
+        assert_eq!(chunks[0]["data"]["content"], "Hel");
+        assert_eq!(chunks[0]["ts_ns"], 111u64);
+        assert_eq!(chunks[1]["data"]["chunk_index"], 1);
+        assert_eq!(chunks[1]["data"]["content"], "lo");
+        assert_eq!(chunks[1]["ts_ns"], 222u64);
+        // seq strictly monotonic across the whole turn.
+        for (i, e) in events.iter().enumerate() {
+            assert_eq!(e["seq"], i as u64);
         }
     }
 
