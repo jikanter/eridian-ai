@@ -73,6 +73,35 @@ fn is_retryable_reqwest_error(e: &reqwest::Error) -> bool {
     e.is_timeout() || e.is_connect()
 }
 
+/// Phase 42E-2b: on a capture turn, buffer the raw response body into the wire
+/// slot (so `provider.response` carries the real wire bytes + status) and hand
+/// the caller a faithful rebuilt `Response` it can still consume. reqwest does
+/// not allow re-reading a streamed body, so we read it once and reconstruct.
+/// Status and headers are preserved.
+async fn capture_and_rebuild(res: reqwest::Response) -> Result<reqwest::Response> {
+    let status = res.status();
+    let headers = res.headers().clone();
+    let body = res.bytes().await?;
+    crate::utils::trace_spec::wiring::capture_wire_response(status.as_u16(), body.to_vec());
+    let mut builder = http::Response::builder().status(status);
+    if let Some(dst) = builder.headers_mut() {
+        *dst = headers;
+    }
+    let rebuilt = builder.body(body).map_err(anyhow::Error::new)?;
+    Ok(reqwest::Response::from(rebuilt))
+}
+
+/// Return the response to the caller, buffering+rebuilding it first when a
+/// trace turn is active. Off the trace path (the default) this is a pass-through
+/// that never touches the body — zero cost on the request hot path.
+async fn finalize_response(res: reqwest::Response, capture: bool) -> Result<reqwest::Response> {
+    if capture {
+        capture_and_rebuild(res).await
+    } else {
+        Ok(res)
+    }
+}
+
 /// Send the request with retry. Consumes the builder; clones internally per
 /// attempt via `try_clone`. All our request bodies are fully buffered JSON so
 /// cloning always succeeds — the Err branch is a guard for the impossible.
@@ -93,16 +122,10 @@ pub async fn send_with_retry(
             Ok(res) => {
                 let status = res.status().as_u16();
                 if res.status().is_success() || !is_retryable_status(status) {
-                    if capture {
-                        crate::utils::trace_spec::wiring::capture_wire_response(status);
-                    }
-                    return Ok(res);
+                    return finalize_response(res, capture).await;
                 }
                 if attempt >= cfg.max_retries {
-                    if capture {
-                        crate::utils::trace_spec::wiring::capture_wire_response(status);
-                    }
-                    return Ok(res);
+                    return finalize_response(res, capture).await;
                 }
                 let retry_after = res
                     .headers()
@@ -212,6 +235,78 @@ mod tests {
         assert_eq!(c.initial_backoff_ms, 1000);
         assert_eq!(c.max_backoff_ms, 30_000);
         assert!((c.backoff_multiplier - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn capture_and_rebuild_buffers_body_and_preserves_response() {
+        // Phase 42E-2b: on a capture turn, `send` buffers the raw response body
+        // into the wire slot, then hands the client a faithful rebuilt
+        // `Response` it can still `.json()`. Status + bytes survive the rebuild.
+        let raw = br#"{"stop_reason":"end_turn","content":[]}"#;
+        let http_res = http::Response::builder()
+            .status(503)
+            .header("content-type", "application/json")
+            .body(raw.to_vec())
+            .unwrap();
+        let res = reqwest::Response::from(http_res);
+
+        let rebuilt = capture_and_rebuild(res).await.expect("rebuild succeeds");
+
+        // The raw wire bytes + real status landed in the capture slot.
+        let captured =
+            crate::utils::trace_spec::wiring::take_wire_response().expect("a captured response");
+        assert_eq!(captured.status, 503);
+        assert_eq!(captured.body, raw);
+
+        // The client still sees the same status and body on the rebuilt response.
+        assert_eq!(rebuilt.status().as_u16(), 503);
+        let body = rebuilt.bytes().await.unwrap();
+        assert_eq!(&body[..], raw);
+    }
+
+    #[tokio::test]
+    async fn capture_and_rebuild_round_trips_a_real_streamed_response() {
+        // Phase 42E-2b: the unit test above builds a Response by hand; this one
+        // proves the buffer+rebuild also survives a genuine streamed body off a
+        // real socket — the path `retry::send` actually drives — and that the
+        // wire `finish_reason` is recoverable from the captured bytes.
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = r#"{"choices":[{"finish_reason":"stop","message":{"content":"hi"}}]}"#;
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await; // drain the request line/headers
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            sock.write_all(resp.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+
+        let res = reqwest::Client::new()
+            .get(format!("http://{addr}/"))
+            .send()
+            .await
+            .unwrap();
+        let rebuilt = capture_and_rebuild(res).await.expect("rebuild succeeds");
+
+        let captured =
+            crate::utils::trace_spec::wiring::take_wire_response().expect("a captured response");
+        assert_eq!(captured.status, 200);
+        assert_eq!(captured.body, body.as_bytes());
+        assert_eq!(
+            super::super::common::finish_reason_from_body(&captured.body).as_deref(),
+            Some("stop"),
+        );
+
+        // The rebuilt response is still fully parseable by the provider client.
+        let v: serde_json::Value = rebuilt.json().await.unwrap();
+        assert_eq!(v["choices"][0]["finish_reason"], "stop");
+        server.await.unwrap();
     }
 
     #[test]

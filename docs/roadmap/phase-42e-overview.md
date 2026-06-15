@@ -1,6 +1,6 @@
 # Phase 42E — Transport-Boundary Capture : Overview — Epic 15 (Observability Keystone)
 
-**Status:** In progress — 42E-1 shipped (2026-06-11); 42E-2/3 planned · **Owner:** aichat · **Horizon:** Next
+**Status:** In progress — 42E-1 shipped (2026-06-11), 42E-2a shipped (2026-06-11), 42E-2b shipped (2026-06-15); 42E-3 planned · **Owner:** aichat · **Horizon:** Next
 
 > **Goal.** Close the **intent-vs-wire fidelity gap** in the keystone trace. Phase 42D
 > emits `provider.request` / `provider.response` from `call_react`, reconstructed from
@@ -56,8 +56,8 @@ not the frames). Literal socket bytes would need a custom hyper connector/TLS ta
 | Item | Description | Status |
 |---|---|---|
 | 42E-1 | **Request capture at the `reqwest` boundary.** Capture the actual serialized request body + real endpoint at the single `send()` chokepoint (`src/client/retry.rs`); the active turn drains it to emit a wire-true `provider.request`. Redaction stays inline, before the blob store. Replaces the `{"text":…}` stub. | **Done** (aichat) |
-| 42E-2a | **Status + per-attempt + linkage.** Real HTTP status; one `provider.retry` per retry attempt (today retries above `retry.rs` are invisible — EVAL-001 §2's "the retry layer emits no observable signal"); `request_body_hash` linking `provider.response` to its request blob. All at the single `retry::send` chokepoint. | Planned |
-| 42E-2b | **Raw response body + wire `finish_reason`.** Capture the raw response bytes (not the parsed text) via a guarded Response-rebuild at `send`, and surface the provider's real `finish_reason`. Heavier: the body is consumed once per client (`res.json()`), so needs buffering/rebuild. | Planned |
+| 42E-2a | **Status + per-attempt + linkage.** Real HTTP status; one `provider.retry` per retry attempt (today retries above `retry.rs` are invisible — EVAL-001 §2's "the retry layer emits no observable signal"); `request_body_hash` linking `provider.response` to its request blob. All at the single `retry::send` chokepoint. | **Done** (aichat) |
+| 42E-2b | **Raw response body + wire `finish_reason`.** Capture the raw response bytes (not the parsed text) via a guarded Response-rebuild at `send`, and surface the provider's real `finish_reason`. Heavier: the body is consumed once per client (`res.json()`), so needs buffering/rebuild. | **Done** (aichat) |
 | 42E-3 | **Streaming chunk capture.** Wire the `OutputChunk` event: add a `TraceSession::output_chunk` emitter, call it per SSE frame on the streaming path with real inter-chunk timing. Also closes the correlation-header gap (streaming bypasses `retry::send`). | Planned |
 
 ### 42E-1 implementation note (shipped)
@@ -83,6 +83,33 @@ not the frames). Literal socket bytes would need a custom hyper connector/TLS ta
   `--trace` run shows `endpoint: …/v1/chat/completions` and a 429-byte body blob
   containing the real `{model, messages:[system,user]}` payload (was the
   `{"text":…}` stub). 787 tests pass. No `schema_version` change.
+
+### 42E-2b implementation note (shipped)
+
+- **Raw-body capture at the `send` chokepoint.** When a trace turn is active,
+  `retry::send_with_retry` routes the returned `reqwest::Response` through
+  `finalize_response` → `capture_and_rebuild` (`src/client/retry.rs`): it reads
+  the body once (`res.bytes()`), stores `(status, body)` in the wire slot
+  (`WireResponse` now carries `body: Vec<u8>`), and **rebuilds an equivalent
+  `Response`** (status + headers preserved) so the per-provider `.json()` still
+  works — reqwest cannot re-read a consumed body. **Guarded on an active turn**,
+  so tracing-off (the default) is a pass-through that never touches the body —
+  zero hot-path cost (acceptance crit 5).
+- **Wire `finish_reason`, parsed generically.** `finish_reason_from_body`
+  (`src/client/common.rs`) probes the known wire shapes — OpenAI/-compatible
+  `choices[0].finish_reason`, Claude `stop_reason`, Gemini
+  `candidates[0].finishReason`, Cohere top-level `finish_reason` — so no
+  per-provider extract function had to change. `call_react` now emits
+  `provider.response` with the captured **raw bytes** as `response_body` (was
+  `text.as_bytes()`) and the **wire** `finish_reason`, falling back to the
+  inferred reason + parsed text only on the streaming path (no capture; 42E-3).
+- **Verified.** Unit: `finish_reason_from_body` over all four wire shapes +
+  garbage; `capture_and_rebuild` round-trips a hand-built and a **real
+  streamed** socket response (status + raw bytes survive, rebuilt response still
+  `.json()`-parses); `WireResponse` body slot roundtrip. 811 tests pass, stable
+  across repeated runs. No `schema_version` change (crit 6) — existing
+  `provider.response` fields now carry truthful values. e2e provider-event
+  assertions land with the Phase 43 harness (as for 42E-1).
 
 ## Dependencies
 
