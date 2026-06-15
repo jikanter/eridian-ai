@@ -1,6 +1,6 @@
 # Phase 42E — Transport-Boundary Capture : Overview — Epic 15 (Observability Keystone)
 
-**Status:** In progress — 42E-1 shipped (2026-06-11), 42E-2a shipped (2026-06-11), 42E-2b shipped (2026-06-15); 42E-3 planned · **Owner:** aichat · **Horizon:** Next
+**Status:** Complete — 42E-1 shipped (2026-06-11), 42E-2a shipped (2026-06-11), 42E-2b shipped (2026-06-15), 42E-3 shipped (2026-06-15) · **Owner:** aichat · **Horizon:** Next
 
 > **Goal.** Close the **intent-vs-wire fidelity gap** in the keystone trace. Phase 42D
 > emits `provider.request` / `provider.response` from `call_react`, reconstructed from
@@ -58,7 +58,7 @@ not the frames). Literal socket bytes would need a custom hyper connector/TLS ta
 | 42E-1 | **Request capture at the `reqwest` boundary.** Capture the actual serialized request body + real endpoint at the single `send()` chokepoint (`src/client/retry.rs`); the active turn drains it to emit a wire-true `provider.request`. Redaction stays inline, before the blob store. Replaces the `{"text":…}` stub. | **Done** (aichat) |
 | 42E-2a | **Status + per-attempt + linkage.** Real HTTP status; one `provider.retry` per retry attempt (today retries above `retry.rs` are invisible — EVAL-001 §2's "the retry layer emits no observable signal"); `request_body_hash` linking `provider.response` to its request blob. All at the single `retry::send` chokepoint. | **Done** (aichat) |
 | 42E-2b | **Raw response body + wire `finish_reason`.** Capture the raw response bytes (not the parsed text) via a guarded Response-rebuild at `send`, and surface the provider's real `finish_reason`. Heavier: the body is consumed once per client (`res.json()`), so needs buffering/rebuild. | **Done** (aichat) |
-| 42E-3 | **Streaming chunk capture.** Wire the `OutputChunk` event: add a `TraceSession::output_chunk` emitter, call it per SSE frame on the streaming path with real inter-chunk timing. Also closes the correlation-header gap (streaming bypasses `retry::send`). | Planned |
+| 42E-3 | **Streaming chunk capture.** Wire the `OutputChunk` event: add a `TraceSession::output_chunk` emitter, call it per SSE frame on the streaming path with real inter-chunk timing. Also closes the correlation-header gap (streaming bypasses `retry::send`). | **Done** (aichat) |
 
 ### 42E-1 implementation note (shipped)
 
@@ -110,6 +110,42 @@ not the frames). Literal socket bytes would need a custom hyper connector/TLS ta
   across repeated runs. No `schema_version` change (crit 6) — existing
   `provider.response` fields now carry truthful values. e2e provider-event
   assertions land with the Phase 43 harness (as for 42E-1).
+
+### 42E-3 implementation note (shipped)
+
+- **Capture at the SSE boundary.** `SseHandler::text` (`src/client/stream.rs`),
+  the single frame sink every streaming provider funnels deltas through
+  (claude/openai/cohere via `sse_stream`; gemini/bedrock via their own loops),
+  captures each decoded text delta with its real arrival `now_ns()` into a
+  per-turn wire slot (`trace_spec::wiring`: `WireChunk { content, at_ns }`,
+  `capture_wire_chunk` / `take_wire_chunks`). **Guarded on an active turn** via
+  the new non-allocating `wiring::is_session_active()` (no id clone per frame),
+  so tracing-off (the default) pays nothing on the SSE hot path (crit 5).
+  `clear_current_session` drops any undrained frames so a failed turn cannot
+  leak chunks into the next.
+- **Emission stays session-side, timing preserved.** `call_react` drains the
+  slot **after** `provider.response` (lifecycle order request → response →
+  chunks → final), emitting one `output.chunk` per frame via the new
+  `TraceSession::output_chunk`. Because emission is deferred to keep `seq`
+  monotonic against `provider.response`, each chunk carries its captured
+  arrival timestamp through the new `TraceSender::emit_at(kind, ts_ns)` — so the
+  envelope `ts_ns` is the real frame-arrival time, not the drain time, and
+  inter-chunk timing survives (crit 4). `delta_tokens` is `0`: SSE text deltas
+  carry no reliable per-frame token count. Non-streaming calls capture no
+  frames, so the drain is an empty no-op.
+- **Correlation-header gap closed.** `sse_stream` builds its `EventSource`
+  directly and bypasses `retry::send`, so it now stamps `X-Eridian-Session-Id`
+  itself via `retry::apply_session_header` before `.eventsource()` (the non-SSE
+  streaming providers already get it through `retry::send`). No-op off the trace
+  path.
+- **Verified.** Unit: `emit_at_stamps_explicit_ts_ns` (writer),
+  `wire_chunks_accumulate_in_order_then_drain` (wiring),
+  `output_chunks_emit_in_order_with_real_arrival_ts` (session: asserts the
+  request → response → chunk → chunk → final ordering, monotonic `seq`, and that
+  each chunk's envelope `ts_ns` equals the captured arrival time). 814 tests
+  pass. No `schema_version` change (crit 6) — `output.chunk` + `ts_ns` already
+  existed; 42E-3 fills them with truthful streaming values. e2e provider-event
+  assertions land with the Phase 43 harness (as for 42E-1/2b).
 
 ## Dependencies
 

@@ -109,12 +109,23 @@ pub struct TraceSender {
 impl TraceSender {
     /// Build a [`PendingEvent`] for `kind` and enqueue it without blocking. A
     /// full or disconnected channel drops the event and bumps `dropped_count`.
+    /// `ts_ns` is captured now (producer-side, SPEC-001 §8.2).
     pub fn emit(&self, kind: EventKind) {
-        let ev = PendingEvent::new(
-            self.session_id.to_string(),
-            self.parent_session_id.as_ref().map(|p| p.to_string()),
+        self.emit_at(kind, super::event::now_ns());
+    }
+
+    /// Like [`emit`](Self::emit) but stamps an explicit `ts_ns`. Phase 42E-3:
+    /// streaming `output.chunk` frames are captured at their real arrival time
+    /// but emitted session-side after the stream drains (to keep seq order
+    /// relative to `provider.response`), so they must carry the arrival
+    /// timestamp rather than the drain time.
+    pub fn emit_at(&self, kind: EventKind, ts_ns: u64) {
+        let ev = PendingEvent {
+            session_id: self.session_id.to_string(),
+            parent_session_id: self.parent_session_id.as_ref().map(|p| p.to_string()),
+            ts_ns,
             kind,
-        );
+        };
         match self.tx.try_send(ev) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
@@ -343,6 +354,20 @@ mod tests {
         sender.emit(hb(2)); // dropped
         sender.emit(hb(3)); // dropped
         assert_eq!(sender.dropped_count(), 2);
+    }
+
+    #[test]
+    fn emit_at_stamps_explicit_ts_ns() {
+        // Phase 42E-3: chunks emitted session-side after a stream must carry
+        // their real arrival ts_ns, not the drain time. emit_at honors it.
+        let buf = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let (sender, handle) = spawn_to_writer(SharedBuf(Arc::clone(&buf)), "S".into(), None);
+        sender.emit_at(hb(7), 123_456_789);
+        drop(sender);
+        handle.shutdown();
+        let lines = parse_lines(&buf.lock());
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["ts_ns"], 123_456_789u64);
     }
 
     #[test]

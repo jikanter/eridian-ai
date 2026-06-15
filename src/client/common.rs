@@ -696,6 +696,21 @@ pub async fn call_react(
             );
         }
 
+        // Phase 42E-3: emit one output.chunk per captured SSE frame, in arrival
+        // order, each carrying its real arrival ts_ns (envelope timing). Drained
+        // after provider.response so the lifecycle reads request → response →
+        // chunks → final. Streaming-only: a non-streaming call captures no
+        // frames, so the drain is empty and this is a no-op. delta_tokens is 0 —
+        // SSE text deltas carry no reliable per-frame token count.
+        if let (Some(s), Some((req_id, _))) = (spec_session.as_ref(), spec_request_id.as_ref()) {
+            for (i, c) in crate::utils::trace_spec::wiring::take_wire_chunks()
+                .into_iter()
+                .enumerate()
+            {
+                s.output_chunk(req_id, i as u64, &c.content, 0, c.at_ns);
+            }
+        }
+
         // Trace: emit request info
         if let Some(ref mut t) = tracer {
             let tool_names: Vec<String> = tool_results.iter().map(|r| r.call.name.clone()).collect();

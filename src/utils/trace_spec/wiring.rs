@@ -53,6 +53,13 @@ pub fn current_session() -> Option<String> {
     CURRENT_SESSION.read().clone()
 }
 
+/// Whether a trace turn is active, without cloning the id. Phase 42E-3: the
+/// SSE frame hot path (`SseHandler::text`) checks this per chunk, so it must
+/// not allocate when tracing is off (the default).
+pub fn is_session_active() -> bool {
+    CURRENT_SESSION.read().is_some()
+}
+
 /// Clear the active turn (called after `session.end`).
 pub fn clear_current_session() {
     *CURRENT_SESSION.write() = None;
@@ -61,6 +68,7 @@ pub fn clear_current_session() {
     *CAPTURED_REQUEST.write() = None;
     *CAPTURED_RESPONSE.write() = None;
     CAPTURED_RETRIES.write().clear();
+    CAPTURED_CHUNKS.write().clear();
 }
 
 /// Phase 42E-1: a non-streaming provider request captured at the `reqwest`
@@ -136,6 +144,29 @@ pub fn capture_wire_retry(retry: WireRetry) {
 /// Take and clear all captured retries (one per attempt), in order.
 pub fn take_wire_retries() -> Vec<WireRetry> {
     std::mem::take(&mut *CAPTURED_RETRIES.write())
+}
+
+/// Phase 42E-3: one streaming output frame captured at the SSE boundary — the
+/// decoded text delta and the wall-clock ns it arrived. The active turn drains
+/// these to emit wire-true `output.chunk` events whose envelope `ts_ns` carries
+/// real inter-chunk timing. Captured in `SseHandler::text`; drained per provider
+/// call in `call_react`.
+#[derive(Debug, Clone)]
+pub struct WireChunk {
+    pub content: String,
+    pub at_ns: u64,
+}
+
+static CAPTURED_CHUNKS: LazyLock<RwLock<Vec<WireChunk>>> = LazyLock::new(|| RwLock::new(Vec::new()));
+
+/// Append a streaming frame observed during the active turn's provider call.
+pub fn capture_wire_chunk(content: String, at_ns: u64) {
+    CAPTURED_CHUNKS.write().push(WireChunk { content, at_ns });
+}
+
+/// Take and clear all captured chunks (one per frame), in arrival order.
+pub fn take_wire_chunks() -> Vec<WireChunk> {
+    std::mem::take(&mut *CAPTURED_CHUNKS.write())
 }
 
 /// Best-effort start of a trace turn. Mints the [`TraceSession`], records the
@@ -231,6 +262,23 @@ mod tests {
         assert_eq!(drained[1].backoff_ms, 2000);
         // Draining empties the queue.
         assert!(take_wire_retries().is_empty());
+    }
+
+    // Phase 42E-3: streaming frames accumulate in arrival order with their
+    // capture timestamps, then drain once for the active turn's output.chunk
+    // emission. Own slot, independent of CURRENT_SESSION.
+    #[test]
+    fn wire_chunks_accumulate_in_order_then_drain() {
+        assert!(take_wire_chunks().is_empty());
+        capture_wire_chunk("Hel".into(), 100);
+        capture_wire_chunk("lo".into(), 250);
+        let drained = take_wire_chunks();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].content, "Hel");
+        assert_eq!(drained[0].at_ns, 100);
+        assert_eq!(drained[1].content, "lo");
+        assert_eq!(drained[1].at_ns, 250);
+        assert!(take_wire_chunks().is_empty());
     }
 
     // The current-session global is process-wide, so the lifecycle assertions
