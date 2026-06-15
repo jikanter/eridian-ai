@@ -253,6 +253,27 @@ impl FunctionDeclaration {
 pub const TOOL_SEARCH_NAME: &str = "tool_search";
 pub const SEARCH_KNOWLEDGE_NAME: &str = "search_knowledge";
 
+/// Phase 28B: name of the synthetic `finish` tool. The model calls it to end
+/// the react loop cleanly with an explicit final answer; `call_react` detects
+/// the call by this name and terminates.
+pub const FINISH_NAME: &str = "finish";
+
+/// Phase 28B: append the synthetic `finish` tool when the role configured a
+/// bounded react loop (`react_max_steps`), giving the model an explicit clean
+/// exit. No-op when the cap is unset, no tools are active, or `finish` is
+/// already present — so default tool turns are unchanged (token-conscious).
+pub fn maybe_inject_finish(
+    functions: &mut Vec<FunctionDeclaration>,
+    react_max_steps: Option<usize>,
+) {
+    if react_max_steps.is_some()
+        && !functions.is_empty()
+        && !functions.iter().any(|f| f.name == FINISH_NAME)
+    {
+        functions.push(FunctionDeclaration::finish());
+    }
+}
+
 impl FunctionDeclaration {
     /// Creates the tool_search meta-function for deferred tool loading.
     pub fn tool_search() -> Self {
@@ -298,6 +319,30 @@ impl FunctionDeclaration {
                     }
                 },
                 "required": ["query"]
+            }),
+            agent: false,
+            source: ToolSource::default(),
+            examples: None,
+            timeout: None,
+        }
+    }
+
+    /// Phase 28B: synthetic `finish` tool. Injected when the role sets
+    /// `react_max_steps`. The model calls it to terminate the react loop
+    /// explicitly, passing its final answer as `summary`.
+    pub fn finish() -> Self {
+        Self {
+            name: FINISH_NAME.to_string(),
+            description: "Finish the task and return the final answer. Call this when you have completed all work and have nothing more to do. Pass your complete final answer as `summary`.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "The complete final answer to return to the user."
+                    }
+                },
+                "required": ["summary"]
             }),
             agent: false,
             source: ToolSource::default(),
@@ -353,6 +398,19 @@ impl ToolCall {
         // Phase 26E: Handle search_knowledge synthetic tool.
         if self.name == SEARCH_KNOWLEDGE_NAME {
             return self.eval_search_knowledge(config);
+        }
+
+        // Phase 28B: synthetic `finish` tool — explicit clean termination of
+        // the react loop. Echoes the `summary` argument as output;
+        // `call_react` detects the call by name and stops the loop.
+        if self.name == FINISH_NAME {
+            let summary = self
+                .arguments
+                .get("summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            return Ok(json!({ "output": summary }));
         }
 
         // Phase 31A: route MCP-sourced tools through the connection pool.
@@ -900,4 +958,50 @@ fn polyfill_cmd_name<T: AsRef<Path>>(cmd_name: &str, bin_dir: &[T]) -> String {
         }
     }
     cmd_name
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- Phase 28B: synthetic `finish` tool ----
+
+    #[test]
+    fn finish_declaration_has_name_and_summary_param() {
+        let decl = FunctionDeclaration::finish();
+        assert_eq!(decl.name, FINISH_NAME);
+        assert!(!decl.agent);
+        let props = &decl.parameters["properties"];
+        assert!(props.get("summary").is_some(), "expected a `summary` param");
+    }
+
+    #[test]
+    fn maybe_inject_finish_appends_when_react_cap_set() {
+        let mut fns = vec![FunctionDeclaration::tool_search()];
+        maybe_inject_finish(&mut fns, Some(5));
+        assert!(fns.iter().any(|f| f.name == FINISH_NAME));
+    }
+
+    #[test]
+    fn maybe_inject_finish_noop_when_cap_unset() {
+        // Default turns (no react_max_steps) must be unchanged — token-conscious.
+        let mut fns = vec![FunctionDeclaration::tool_search()];
+        maybe_inject_finish(&mut fns, None);
+        assert!(!fns.iter().any(|f| f.name == FINISH_NAME));
+    }
+
+    #[test]
+    fn maybe_inject_finish_noop_when_no_tools() {
+        // A bounded react loop with no tools has no loop to finish.
+        let mut fns: Vec<FunctionDeclaration> = vec![];
+        maybe_inject_finish(&mut fns, Some(3));
+        assert!(fns.is_empty());
+    }
+
+    #[test]
+    fn maybe_inject_finish_idempotent() {
+        let mut fns = vec![FunctionDeclaration::finish()];
+        maybe_inject_finish(&mut fns, Some(5));
+        assert_eq!(fns.iter().filter(|f| f.name == FINISH_NAME).count(), 1);
+    }
 }

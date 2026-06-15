@@ -2691,6 +2691,10 @@ impl Config {
                     functions.push(FunctionDeclaration::search_knowledge());
                 }
             }
+
+            // Phase 28B: expose the synthetic `finish` tool for explicit clean
+            // termination when the role configured a bounded react loop.
+            crate::function::maybe_inject_finish(&mut functions, role.react_max_steps());
         };
         if functions.is_empty() {
             None
@@ -3605,6 +3609,17 @@ impl WorkingMode {
     }
 }
 
+/// Phase 28C: substitute `%%` with the previous step's AI output for inline
+/// use in plain-text macro prompts. Dot commands (e.g. `.file %%`) keep their
+/// REPL-level path meaning, so they are left untouched. An empty `prev_output`
+/// (the first step, before any AI turn) is also a no-op.
+fn substitute_prev_output(command: &str, prev_output: &str) -> String {
+    if prev_output.is_empty() || command.trim_start().starts_with('.') {
+        return command.to_string();
+    }
+    command.replace("%%", prev_output)
+}
+
 #[async_recursion::async_recursion]
 pub async fn macro_execute(
     config: &GlobalConfig,
@@ -3636,13 +3651,9 @@ pub async fn macro_execute(
     config.write().macro_flag = true;
     let mut prev_output = String::new();
     for step in &macro_value.steps {
-        let mut command = Macro::interpolate_command(step, &variables);
-        // Phase 28C: substitute `%%` with the previous step's AI output for
-        // inline use in plain-text prompts. Skip dot commands so existing
-        // path-style usages like `.file %%` keep their REPL-level meaning.
-        if !prev_output.is_empty() && !command.trim_start().starts_with('.') {
-            command = command.replace("%%", &prev_output);
-        }
+        let command = Macro::interpolate_command(step, &variables);
+        // Phase 28C: substitute `%%` with the previous step's AI output.
+        let command = substitute_prev_output(&command, &prev_output);
         println!(">> {}", multiline_text(&command));
         run_repl_command(&config, abort_signal.clone(), &command).await?;
         if let Some(last_message) = config.read().last_message.as_ref() {
@@ -3982,6 +3993,45 @@ mod tests {
                 ("BAZ".to_string(), "qux".to_string()),
             ]
         );
+    }
+
+    // ---- Phase 28C: %% macro output chaining (substitute_prev_output) ----
+
+    #[test]
+    fn macro_chain_substitutes_double_percent_with_prev_output() {
+        assert_eq!(
+            substitute_prev_output("summarize: %%", "hello world"),
+            "summarize: hello world"
+        );
+    }
+
+    #[test]
+    fn macro_chain_replaces_every_occurrence() {
+        assert_eq!(
+            substitute_prev_output("%% and again %%", "X"),
+            "X and again X"
+        );
+    }
+
+    #[test]
+    fn macro_chain_first_step_empty_prev_is_noop() {
+        // No previous output yet (first step): leave `%%` untouched.
+        assert_eq!(substitute_prev_output("echo %%", ""), "echo %%");
+    }
+
+    #[test]
+    fn macro_chain_skips_dot_commands() {
+        // Dot commands keep their REPL path-style meaning (e.g. `.file %%`).
+        assert_eq!(substitute_prev_output(".file %%", "out"), ".file %%");
+        assert_eq!(
+            substitute_prev_output("   .edit role %%", "out"),
+            "   .edit role %%"
+        );
+    }
+
+    #[test]
+    fn macro_chain_no_marker_is_unchanged() {
+        assert_eq!(substitute_prev_output("plain command", "out"), "plain command");
     }
 
     // ---- Phase 36: PartialConfig / apply_partial / is_path_descendant ----
