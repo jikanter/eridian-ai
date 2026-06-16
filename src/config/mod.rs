@@ -218,6 +218,10 @@ pub struct Config {
     pub function_calling: bool,
     pub mapping_tools: IndexMap<String, String>,
     pub use_tools: Option<String>,
+    /// Phase 28A: maximum agent-as-tool delegation depth (agents calling
+    /// agents). `None` ⇒ `DEFAULT_REACT_MAX_DEPTH` (3). Guards against runaway
+    /// recursive delegation.
+    pub react_max_depth: Option<usize>,
 
     pub repl_prelude: Option<String>,
     pub cmd_prelude: Option<String>,
@@ -330,6 +334,10 @@ pub struct Config {
     pub pipeline_emits_envelope: bool,
     #[serde(skip)]
     pub macro_flag: bool,
+    /// Phase 28A: current agent-as-tool delegation depth. 0 at the top level,
+    /// incremented for each nested sub-agent. Runtime-only; never persisted.
+    #[serde(skip)]
+    pub agent_depth: usize,
     #[serde(skip)]
     pub info_flag: bool,
     #[serde(skip)]
@@ -543,6 +551,10 @@ pub fn is_path_descendant(parent: &Path, child: &Path) -> bool {
 }
 
 /// State for deferred tool loading (Phase 1C).
+/// Phase 28A: default maximum agent-as-tool delegation depth when
+/// `react_max_depth` is unset. Bounds recursive agent→agent calls.
+pub const DEFAULT_REACT_MAX_DEPTH: usize = 3;
+
 /// When more than DEFERRED_TOOL_THRESHOLD tools are selected,
 /// we inject a tool_search meta-function instead of all schemas.
 #[derive(Debug, Clone)]
@@ -602,6 +614,7 @@ impl Default for Config {
             function_calling: true,
             mapping_tools: Default::default(),
             use_tools: None,
+            react_max_depth: None,
 
             repl_prelude: None,
             cmd_prelude: None,
@@ -654,6 +667,7 @@ impl Default for Config {
             output_format: None,
             pipeline_emits_envelope: false,
             macro_flag: false,
+            agent_depth: 0,
             info_flag: false,
             agent_variables: None,
             role_variables: None,
@@ -2580,6 +2594,9 @@ impl Config {
                     .iter()
                     .map(|v| v.name.to_string())
                     .collect();
+                // Phase 28A: known agents, so `use_tools` entries that name an
+                // agent expose it as a callable tool (agent-as-tool).
+                let agent_names: HashSet<String> = list_agents().into_iter().collect();
                 let mut pipeline_functions: Vec<FunctionDeclaration> = vec![];
                 if use_tools == "all" {
                     tool_names.extend(declaration_names);
@@ -2615,6 +2632,7 @@ impl Config {
                             tool_names.insert(item.to_string());
                         } else {
                             // Phase 2A: Check if it's a pipeline role
+                            let mut handled = false;
                             if let Ok(pipeline_role) = self.retrieve_role(item) {
                                 if pipeline_role.is_pipeline() {
                                     pipeline_functions.push(FunctionDeclaration {
@@ -2635,7 +2653,15 @@ impl Config {
                                         examples: pipeline_role.examples().map(|e| e.to_vec()),
                                         timeout: None,
                                     });
+                                    handled = true;
                                 }
+                            }
+                            // Phase 28A: agent-as-tool — a known agent name in
+                            // use_tools becomes a delegated tool the model can
+                            // call. Skipped if it was a pipeline role above.
+                            if !handled && agent_names.contains(item) {
+                                pipeline_functions
+                                    .push(FunctionDeclaration::agent_as_tool(item, ""));
                             }
                         }
                     }
@@ -4032,6 +4058,39 @@ mod tests {
     #[test]
     fn macro_chain_no_marker_is_unchanged() {
         assert_eq!(substitute_prev_output("plain command", "out"), "plain command");
+    }
+
+    // ---- Phase 28A: agent-as-tool surfaces in select_functions ----
+
+    #[test]
+    fn select_functions_injects_agent_named_in_use_tools() {
+        // An agent listed in `use_tools` must surface as a callable tool
+        // declaration so the model can delegate to it (agent-as-tool).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("agents.txt"), "echo-agent\n").unwrap();
+        // FIXME: env access assumed single-threaded (mirrors the memory tests).
+        unsafe {
+            std::env::set_var(crate::utils::get_env_name("functions_dir"), dir.path());
+        }
+
+        let config = Config::default();
+        let role = Role::new("delegator", "---\nuse_tools: echo-agent\n---\nDelegate work.");
+        let funcs = config.select_functions(&role).unwrap_or_default();
+
+        unsafe {
+            std::env::remove_var(crate::utils::get_env_name("functions_dir"));
+        }
+
+        let agent_decl = funcs.iter().find(|f| f.name == "echo-agent");
+        assert!(
+            agent_decl.is_some(),
+            "agent should surface as a tool, got: {:?}",
+            funcs.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert!(
+            agent_decl.unwrap().agent,
+            "agent-as-tool declaration must be flagged agent=true"
+        );
     }
 
     // ---- Phase 36: PartialConfig / apply_partial / is_path_descendant ----

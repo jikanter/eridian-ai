@@ -1,6 +1,6 @@
 # Phase 28: Entity Evolution — Agent Composability
 
-**Status:** Planned
+**Status:** Done (28A/28B/28C shipped 2026-06-15)
 **Epic:** 10 — Entity Evolution & Agent Dynamism
 **Design:** [epic-10.md](../analysis/epic-10.md)
 
@@ -12,9 +12,9 @@
 
 | Item | Status | Notes |
 |---|---|---|
-| 28A. Agent-as-tool | — | Agents callable through `ToolCall::eval()` dispatch. When tool name matches a known agent, init agent, run `call_react`, return output as `ToolResult`. Recursion prevention via `depth` parameter (max 3). Token isolation: sub-agent gets its own context window. Extend `tool_search` to include agents in discoverable index. ~150 lines. |
-| 28B. Configurable react loop | — | Expose `react_max_steps:` in role/agent frontmatter (default 10). Add synthetic `finish` tool for explicit clean termination. ~40 lines. |
-| 28C. Macro output chaining | — | `%%` variable in macro steps resolves to previous step's output. Reads `config.last_message` between steps. ~20 lines. |
+| 28A. Agent-as-tool | **Done** | Agents callable through `ToolCall::eval()` dispatch (`check_agent`/`eval_agent`). A known agent name matched → cloned-config sub-agent runs `call_react` in its own context window, output returned as `ToolResult`. Recursion bounded by `agent_depth` vs `react_max_depth` (config, default 3). A real function wins a name collision (`is_agent_tool`). `select_functions` emits `agent_as_tool` declarations for agents in `use_tools`. `tool_search` agent indexing deferred (agents discoverable via `use_tools` today). |
+| 28B. Configurable react loop | **Done** | `react_max_steps:` role/agent frontmatter caps the loop (fallback `MAX_REACT_STEPS` = 10). Synthetic `finish` tool injected only when `react_max_steps` is set (`maybe_inject_finish`); `call_react` terminates on it via `finish_summary`. |
+| 28C. Macro output chaining | **Done** | `%%` in macro steps resolves to the previous step's AI output (`substitute_prev_output`, reads `config.last_message`); dot commands skipped. Logic was live pre-phase; now unit-tested. |
 
 > **Moved to Epic 6 Phase 19:** Unified entity resolution (→19B), agent-in-pipeline (→19C), agent MCP binding (→19D).
 

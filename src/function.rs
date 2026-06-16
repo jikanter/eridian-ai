@@ -1,5 +1,5 @@
 use crate::{
-    config::{Agent, Config, GlobalConfig},
+    config::{Agent, Config, GlobalConfig, Input},
     utils::*,
 };
 
@@ -258,6 +258,24 @@ pub const SEARCH_KNOWLEDGE_NAME: &str = "search_knowledge";
 /// the call by this name and terminates.
 pub const FINISH_NAME: &str = "finish";
 
+/// Phase 28A: true when `depth` has reached the delegation cap and a further
+/// agent-as-tool call must be refused.
+pub fn agent_depth_exceeded(depth: usize, max_depth: usize) -> bool {
+    depth >= max_depth
+}
+
+/// Phase 28A: decide whether `name` should dispatch as an agent-as-tool call.
+/// A real function always wins a name collision — agent-as-tool must never
+/// hijack an existing tool — so the name must be a known agent AND not a known
+/// function.
+pub fn is_agent_tool(
+    name: &str,
+    agents: &HashSet<String>,
+    functions: &HashSet<String>,
+) -> bool {
+    agents.contains(name) && !functions.contains(name)
+}
+
 /// Phase 28B: append the synthetic `finish` tool when the role configured a
 /// bounded react loop (`react_max_steps`), giving the model an explicit clean
 /// exit. No-op when the cap is unset, no tools are active, or `finish` is
@@ -321,6 +339,37 @@ impl FunctionDeclaration {
                 "required": ["query"]
             }),
             agent: false,
+            source: ToolSource::default(),
+            examples: None,
+            timeout: None,
+        }
+    }
+
+    /// Phase 28A: declaration exposing an agent as a callable tool. The model
+    /// delegates a task by calling it with a single `input` string; the
+    /// sub-agent runs in its own context window (token isolation) and returns
+    /// its final output. `agent` is set so the agent path's tool merge treats
+    /// it correctly.
+    pub fn agent_as_tool(name: &str, description: &str) -> Self {
+        let description = if description.is_empty() {
+            format!("Delegate a task to the `{name}` agent. It runs autonomously in its own context and returns a final answer.")
+        } else {
+            format!("{description} (Delegate a task to the `{name}` agent; it runs in its own context and returns a final answer.)")
+        };
+        Self {
+            name: name.to_string(),
+            description,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "The task or question to delegate to the agent. Be self-contained: the agent does not see this conversation."
+                    }
+                },
+                "required": ["input"]
+            }),
+            agent: true,
             source: ToolSource::default(),
             examples: None,
             timeout: None,
@@ -432,6 +481,13 @@ impl ToolCall {
             return self.eval_pipeline_role(config, &pipeline_stages).await;
         }
 
+        // Phase 28A: agent-as-tool. When the tool name matches a known agent
+        // (and not a real function), run it as a delegated sub-agent with its
+        // own context window and bounded recursion depth.
+        if let Some(agent_name) = self.check_agent(config) {
+            return self.eval_agent(config, &agent_name).await;
+        }
+
         let (call_name, cmd_name, mut cmd_args, envs) = match &config.read().agent {
             Some(agent) => self.extract_call_config_from_agent(config, agent)?,
             None => self.extract_call_config_from_config(config)?,
@@ -530,6 +586,79 @@ impl ToolCall {
             crate::pipe::run_pipeline_role(config, nodes, &input_text).await?;
 
         Ok(json!({"output": result}))
+    }
+
+    /// Phase 28A: resolve this tool call to a known agent, if any. Returns the
+    /// agent name when the call should dispatch as an agent-as-tool delegation.
+    /// A real function with the same name always wins (no hijacking).
+    fn check_agent(&self, config: &GlobalConfig) -> Option<String> {
+        let functions: HashSet<String> = config
+            .read()
+            .functions
+            .declarations()
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        let agents: HashSet<String> = crate::config::list_agents().into_iter().collect();
+        if is_agent_tool(&self.name, &agents, &functions) {
+            Some(self.name.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Phase 28A: run a known agent as a delegated sub-agent (agent-as-tool).
+    /// The sub-agent executes in a *cloned* config with its own context window —
+    /// the parent's messages are never passed, only the `input` argument — and
+    /// at an incremented delegation depth, bounded by `react_max_depth`.
+    async fn eval_agent(&self, config: &GlobalConfig, agent_name: &str) -> Result<Value> {
+        // Recursion guard: refuse to delegate past the configured depth.
+        let depth = config.read().agent_depth;
+        let max_depth = config
+            .read()
+            .react_max_depth
+            .unwrap_or(crate::config::DEFAULT_REACT_MAX_DEPTH);
+        if agent_depth_exceeded(depth, max_depth) {
+            return Ok(json!({
+                "output": format!(
+                    "[TOOL_ERROR] Agent delegation depth exceeded (max {max_depth}). \
+                     Complete the task without delegating to another agent."
+                )
+            }));
+        }
+
+        let input_text = self
+            .arguments
+            .get("input")
+            .and_then(|v| v.as_str())
+            .or_else(|| self.arguments.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if *IS_STDOUT_TERMINAL {
+            println!("{}", dimmed_text(&format!("Call agent {agent_name}")));
+        }
+
+        // Token isolation: clone the config, strip the parent's role/session/
+        // agent/rag so `use_agent` can bind the sub-agent cleanly, and bump the
+        // delegation depth. The sub-agent's only input is this call's `input`.
+        let mut sub = config.read().clone();
+        sub.role = None;
+        sub.session = None;
+        sub.agent = None;
+        sub.rag = None;
+        sub.agent_depth = depth + 1;
+        let sub = std::sync::Arc::new(parking_lot::RwLock::new(sub));
+
+        let abort_signal = create_abort_signal();
+        Config::use_agent(&sub, agent_name, None, abort_signal.clone()).await?;
+
+        let mut input = Input::from_str(&sub, &input_text, None);
+        let client = input.create_client()?;
+        let (output, _tool_results, _metrics) =
+            crate::client::call_react(&mut input, client.as_ref(), abort_signal).await?;
+
+        Ok(json!({ "output": output }))
     }
 
     /// Phase 26E: handle `search_knowledge` synthetic tool calls. Resolves
@@ -1003,5 +1132,46 @@ mod tests {
         let mut fns = vec![FunctionDeclaration::finish()];
         maybe_inject_finish(&mut fns, Some(5));
         assert_eq!(fns.iter().filter(|f| f.name == FINISH_NAME).count(), 1);
+    }
+
+    // ---- Phase 28A: agent-as-tool ----
+
+    #[test]
+    fn agent_as_tool_declaration_has_input_param_and_agent_flag() {
+        let decl = FunctionDeclaration::agent_as_tool("code-reviewer", "Reviews code");
+        assert_eq!(decl.name, "code-reviewer");
+        assert!(decl.agent, "agent-as-tool declarations are flagged agent=true");
+        assert!(decl.description.contains("Reviews code"));
+        let props = &decl.parameters["properties"];
+        assert!(props.get("input").is_some(), "expected an `input` param");
+        assert_eq!(decl.parameters["required"][0], "input");
+    }
+
+    #[test]
+    fn agent_depth_exceeded_at_or_above_max() {
+        assert!(!agent_depth_exceeded(0, 3));
+        assert!(!agent_depth_exceeded(2, 3));
+        assert!(agent_depth_exceeded(3, 3));
+        assert!(agent_depth_exceeded(4, 3));
+    }
+
+    #[test]
+    fn is_agent_tool_matches_known_agent_not_function() {
+        let agents: HashSet<String> = ["reviewer".to_string()].into_iter().collect();
+        let functions: HashSet<String> = ["fs_read".to_string()].into_iter().collect();
+        assert!(is_agent_tool("reviewer", &agents, &functions));
+        // A real function name with the same string is never shadowed.
+        assert!(!is_agent_tool("fs_read", &agents, &functions));
+        // Unknown name.
+        assert!(!is_agent_tool("nope", &agents, &functions));
+    }
+
+    #[test]
+    fn is_agent_tool_function_wins_over_agent_name_collision() {
+        // If a name is both a function and an agent, the function takes
+        // precedence (agent-as-tool must not hijack a real tool).
+        let agents: HashSet<String> = ["dup".to_string()].into_iter().collect();
+        let functions: HashSet<String> = ["dup".to_string()].into_iter().collect();
+        assert!(!is_agent_tool("dup", &agents, &functions));
     }
 }

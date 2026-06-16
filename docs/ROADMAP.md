@@ -145,7 +145,7 @@ design doc; planned/new phases link the live doc.
 | 9 Knowledge Evolution | 26 | aichat | Knowledge query | **Done · archived** | [archive/phase-26-knowledge-query.md](roadmap/archive/phase-26-knowledge-query.md) |
 | 9 Knowledge Evolution | 27 | aichat | Evolution, attribution & trace | **Done · archived** | [archive/phase-27-knowledge-evolution.md](roadmap/archive/phase-27-knowledge-evolution.md) |
 | 10 Entity Evolution | 52 | aichat | Entity model formalization (Epic 10 foundation) | 52A–D **Done** | [phase-52-overview.md](roadmap/phase-52-overview.md) |
-| 10 Entity Evolution | 28 | aichat ↔ llm-functions | Agent composability | 28A–C **Planned** (Next) | [phase-28-overview.md](roadmap/phase-28-overview.md) |
+| 10 Entity Evolution | 28 | aichat ↔ llm-functions | Agent composability | 28A–C **Done** | [phase-28-overview.md](roadmap/phase-28-overview.md) |
 | 10 Entity Evolution | 29 | aichat ↔ llm-functions | Agent dynamism | 29A/B **Planned** (Next) | [phase-29-overview.md](roadmap/phase-29-overview.md) |
 | 10 Entity Evolution | 49 | aichat ↔ llm-functions ↔ harness | Agent memory federation | 49A–C **Planned** (Next) | [phase-49-overview.md](roadmap/phase-49-overview.md) |
 | 11 Bridge Retirement | 31 | cross-repo | MCP pool hardening | 31A–E **Done · archived** | [archive/phase-31-overview.md](roadmap/archive/phase-31-overview.md) |
