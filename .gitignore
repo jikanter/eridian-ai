@@ -106,3 +106,4 @@ http-client.private.env.json
 
 # let individuals make their own
 .zed/settings.json
+node_modules/

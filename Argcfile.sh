@@ -29,7 +29,7 @@ test-no-config() {
 
 # @cmd Test function calling
 # @option -m --model[?`_choice_model`]
-# @option -p --preset[=weather|multi-weathers]
+# @option -p --preset[=weather|multi-weathers|]
 # @flag -S --no-stream
 # @arg text~
 test-function-calling() {
@@ -54,6 +54,65 @@ test-function-calling() {
     fi
     cargo run -- "${args[@]}" "$text"
 }
+
+# @cmd Test explicit function calling
+# @option -m --model[?`_choice_model`]
+# @option -p --preset[=weather|multi-weathers|]
+# @flag -S --no-stream
+# @arg text~
+test-explicit-function-calling() {
+    args=(--role %functions%)
+    if [[ -n "$argc_model"  ]]; then
+      args+=("--model" "$argc_model")
+    fi
+    if [[ -n "$argc_no_stream" ]]; then
+        args+=("-S")
+    fi
+    if [[ -z "$argc_text" ]]; then
+        case "$argc_preset" in
+        multi-weathers)
+            text="use a tool to figure out what the weather is in London and Paris."
+            ;;
+        weather|*)
+            text="Use a tool to figure out what the weather is in London"
+            ;;
+        esac
+    else
+        text="${argc_text[*]}"
+    fi
+    cargo run -- "${args[@]}" "$text"
+}
+
+
+# @cmd Test function calling with a single tool loaded
+# @option -m --model[?`_choice_model`]
+# @option -p --preset[=weather|multi-weathers|]
+# @flag -S --no-stream
+# @arg text~
+test-explicit-function-calling-one-tool() {
+    args=(--role "%one-function%")
+    if [[ -n "$argc_model"  ]]; then
+      args+=("--model" "$argc_model")
+    fi
+    if [[ -n "$argc_no_stream" ]]; then
+        args+=("-S")
+    fi
+    if [[ -z "$argc_text" ]]; then
+        case "$argc_preset" in
+        multi-weathers)
+            text="use a tool to figure out what the weather is in London and Paris."
+            ;;
+        weather|*)
+            text="Use a tool to figure out what the weather is in London"
+            ;;
+        esac
+    else
+        text="${argc_text[*]}"
+    fi
+    cargo run -- "${args[@]}" "$text"
+}
+
+
 
 # @cmd Test clients
 # @arg clients+[`_choice_client`]

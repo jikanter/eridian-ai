@@ -6,6 +6,7 @@
       <sourceFolder url="file://$MODULE_DIR$/tests" isTestSource="true" />
       <sourceFolder url="file://$MODULE_DIR$/.claude/worktrees/mcp-consumption/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/.claude/worktrees/mcp-consumption/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/eridian-trace/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/.claude/worktrees" />
       <excludeFolder url="file://$MODULE_DIR$/.claude/worktrees/mcp-consumption/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />

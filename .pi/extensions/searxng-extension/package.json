@@ -1,0 +1,10 @@
+{
+  "name": "pi-extension-searxng",
+  "version": "0.1.0",
+  "dependencies": {
+    "typebox": "^1.1.39"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
