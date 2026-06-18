@@ -598,8 +598,12 @@ impl ToolCall {
             active_names.push(f.name.clone());
         }
 
-        // Also check mapping_tools for group matches
-        let mapping_tools = &config.read().mapping_tools;
+        // Also check mapping_tools for group matches.
+        // Clone to drop the read guard before acquiring the write lock below;
+        // binding `&config.read().mapping_tools` would extend the read guard's
+        // lifetime to end of scope and self-deadlock at `config.write()`
+        // (parking_lot RwLock is not re-entrant).
+        let mapping_tools = config.read().mapping_tools.clone();
         for (group, tools) in mapping_tools.iter() {
             if group.to_lowercase().contains(&query) {
                 for tool_name in tools.split(',').map(|s| s.trim()) {
