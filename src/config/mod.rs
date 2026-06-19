@@ -218,6 +218,10 @@ pub struct Config {
     pub function_calling: bool,
     pub mapping_tools: IndexMap<String, String>,
     pub use_tools: Option<String>,
+    /// Phase 28A: maximum agent-as-tool delegation depth (agents calling
+    /// agents). `None` ⇒ `DEFAULT_REACT_MAX_DEPTH` (3). Guards against runaway
+    /// recursive delegation.
+    pub react_max_depth: Option<usize>,
 
     pub repl_prelude: Option<String>,
     pub cmd_prelude: Option<String>,
@@ -330,6 +334,10 @@ pub struct Config {
     pub pipeline_emits_envelope: bool,
     #[serde(skip)]
     pub macro_flag: bool,
+    /// Phase 28A: current agent-as-tool delegation depth. 0 at the top level,
+    /// incremented for each nested sub-agent. Runtime-only; never persisted.
+    #[serde(skip)]
+    pub agent_depth: usize,
     #[serde(skip)]
     pub info_flag: bool,
     #[serde(skip)]
@@ -543,6 +551,10 @@ pub fn is_path_descendant(parent: &Path, child: &Path) -> bool {
 }
 
 /// State for deferred tool loading (Phase 1C).
+/// Phase 28A: default maximum agent-as-tool delegation depth when
+/// `react_max_depth` is unset. Bounds recursive agent→agent calls.
+pub const DEFAULT_REACT_MAX_DEPTH: usize = 3;
+
 /// When more than DEFERRED_TOOL_THRESHOLD tools are selected,
 /// we inject a tool_search meta-function instead of all schemas.
 #[derive(Debug, Clone)]
@@ -602,6 +614,7 @@ impl Default for Config {
             function_calling: true,
             mapping_tools: Default::default(),
             use_tools: None,
+            react_max_depth: None,
 
             repl_prelude: None,
             cmd_prelude: None,
@@ -654,6 +667,7 @@ impl Default for Config {
             output_format: None,
             pipeline_emits_envelope: false,
             macro_flag: false,
+            agent_depth: 0,
             info_flag: false,
             agent_variables: None,
             role_variables: None,
@@ -2580,6 +2594,9 @@ impl Config {
                     .iter()
                     .map(|v| v.name.to_string())
                     .collect();
+                // Phase 28A: known agents, so `use_tools` entries that name an
+                // agent expose it as a callable tool (agent-as-tool).
+                let agent_names: HashSet<String> = list_agents().into_iter().collect();
                 let mut pipeline_functions: Vec<FunctionDeclaration> = vec![];
                 if use_tools == "all" {
                     tool_names.extend(declaration_names);
@@ -2615,6 +2632,7 @@ impl Config {
                             tool_names.insert(item.to_string());
                         } else {
                             // Phase 2A: Check if it's a pipeline role
+                            let mut handled = false;
                             if let Ok(pipeline_role) = self.retrieve_role(item) {
                                 if pipeline_role.is_pipeline() {
                                     pipeline_functions.push(FunctionDeclaration {
@@ -2635,7 +2653,15 @@ impl Config {
                                         examples: pipeline_role.examples().map(|e| e.to_vec()),
                                         timeout: None,
                                     });
+                                    handled = true;
                                 }
+                            }
+                            // Phase 28A: agent-as-tool — a known agent name in
+                            // use_tools becomes a delegated tool the model can
+                            // call. Skipped if it was a pipeline role above.
+                            if !handled && agent_names.contains(item) {
+                                pipeline_functions
+                                    .push(FunctionDeclaration::agent_as_tool(item, ""));
                             }
                         }
                     }
@@ -2691,6 +2717,10 @@ impl Config {
                     functions.push(FunctionDeclaration::search_knowledge());
                 }
             }
+
+            // Phase 28B: expose the synthetic `finish` tool for explicit clean
+            // termination when the role configured a bounded react loop.
+            crate::function::maybe_inject_finish(&mut functions, role.react_max_steps());
         };
         if functions.is_empty() {
             None
@@ -3605,6 +3635,17 @@ impl WorkingMode {
     }
 }
 
+/// Phase 28C: substitute `%%` with the previous step's AI output for inline
+/// use in plain-text macro prompts. Dot commands (e.g. `.file %%`) keep their
+/// REPL-level path meaning, so they are left untouched. An empty `prev_output`
+/// (the first step, before any AI turn) is also a no-op.
+fn substitute_prev_output(command: &str, prev_output: &str) -> String {
+    if prev_output.is_empty() || command.trim_start().starts_with('.') {
+        return command.to_string();
+    }
+    command.replace("%%", prev_output)
+}
+
 #[async_recursion::async_recursion]
 pub async fn macro_execute(
     config: &GlobalConfig,
@@ -3636,13 +3677,9 @@ pub async fn macro_execute(
     config.write().macro_flag = true;
     let mut prev_output = String::new();
     for step in &macro_value.steps {
-        let mut command = Macro::interpolate_command(step, &variables);
-        // Phase 28C: substitute `%%` with the previous step's AI output for
-        // inline use in plain-text prompts. Skip dot commands so existing
-        // path-style usages like `.file %%` keep their REPL-level meaning.
-        if !prev_output.is_empty() && !command.trim_start().starts_with('.') {
-            command = command.replace("%%", &prev_output);
-        }
+        let command = Macro::interpolate_command(step, &variables);
+        // Phase 28C: substitute `%%` with the previous step's AI output.
+        let command = substitute_prev_output(&command, &prev_output);
         println!(">> {}", multiline_text(&command));
         run_repl_command(&config, abort_signal.clone(), &command).await?;
         if let Some(last_message) = config.read().last_message.as_ref() {
@@ -3981,6 +4018,78 @@ mod tests {
                 ("FOO".to_string(), "bar".to_string()),
                 ("BAZ".to_string(), "qux".to_string()),
             ]
+        );
+    }
+
+    // ---- Phase 28C: %% macro output chaining (substitute_prev_output) ----
+
+    #[test]
+    fn macro_chain_substitutes_double_percent_with_prev_output() {
+        assert_eq!(
+            substitute_prev_output("summarize: %%", "hello world"),
+            "summarize: hello world"
+        );
+    }
+
+    #[test]
+    fn macro_chain_replaces_every_occurrence() {
+        assert_eq!(
+            substitute_prev_output("%% and again %%", "X"),
+            "X and again X"
+        );
+    }
+
+    #[test]
+    fn macro_chain_first_step_empty_prev_is_noop() {
+        // No previous output yet (first step): leave `%%` untouched.
+        assert_eq!(substitute_prev_output("echo %%", ""), "echo %%");
+    }
+
+    #[test]
+    fn macro_chain_skips_dot_commands() {
+        // Dot commands keep their REPL path-style meaning (e.g. `.file %%`).
+        assert_eq!(substitute_prev_output(".file %%", "out"), ".file %%");
+        assert_eq!(
+            substitute_prev_output("   .edit role %%", "out"),
+            "   .edit role %%"
+        );
+    }
+
+    #[test]
+    fn macro_chain_no_marker_is_unchanged() {
+        assert_eq!(substitute_prev_output("plain command", "out"), "plain command");
+    }
+
+    // ---- Phase 28A: agent-as-tool surfaces in select_functions ----
+
+    #[test]
+    fn select_functions_injects_agent_named_in_use_tools() {
+        // An agent listed in `use_tools` must surface as a callable tool
+        // declaration so the model can delegate to it (agent-as-tool).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("agents.txt"), "echo-agent\n").unwrap();
+        // FIXME: env access assumed single-threaded (mirrors the memory tests).
+        unsafe {
+            std::env::set_var(crate::utils::get_env_name("functions_dir"), dir.path());
+        }
+
+        let config = Config::default();
+        let role = Role::new("delegator", "---\nuse_tools: echo-agent\n---\nDelegate work.");
+        let funcs = config.select_functions(&role).unwrap_or_default();
+
+        unsafe {
+            std::env::remove_var(crate::utils::get_env_name("functions_dir"));
+        }
+
+        let agent_decl = funcs.iter().find(|f| f.name == "echo-agent");
+        assert!(
+            agent_decl.is_some(),
+            "agent should surface as a tool, got: {:?}",
+            funcs.iter().map(|f| &f.name).collect::<Vec<_>>()
+        );
+        assert!(
+            agent_decl.unwrap().agent,
+            "agent-as-tool declaration must be flagged agent=true"
         );
     }
 

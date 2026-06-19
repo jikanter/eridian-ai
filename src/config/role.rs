@@ -467,6 +467,11 @@ pub struct Role {
     #[serde(skip_serializing_if = "Option::is_none")]
     save_to: Option<String>,
 
+    // Phase 28B: configurable react loop cap. `None` ⇒ call_react applies its
+    // MAX_REACT_STEPS default (10). Overrides the per-turn tool-calling budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    react_max_steps: Option<usize>,
+
     // Phase 9C: Schema validation retry loop
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_retries: Option<usize>,
@@ -1822,6 +1827,10 @@ impl Role {
                                 // Phase 6B: Lifecycle hooks
                                 "pipe_to" => role.pipe_to = value.as_str().map(|v| v.to_string()),
                                 "save_to" => role.save_to = value.as_str().map(|v| v.to_string()),
+                                // Phase 28B: configurable react loop cap
+                                "react_max_steps" => {
+                                    role.react_max_steps = value.as_u64().map(|v| v as usize)
+                                }
                                 // Phase 9C: Schema validation retry loop
                                 "schema_retries" => {
                                     role.schema_retries = value.as_u64().map(|v| v as usize)
@@ -1963,6 +1972,9 @@ impl Role {
         }
         if let Some(save_to) = &self.save_to {
             meta.insert("save_to".into(), Value::String(save_to.clone()));
+        }
+        if let Some(n) = self.react_max_steps {
+            meta.insert("react_max_steps".into(), serde_json::json!(n));
         }
         if let Some(n) = self.schema_retries {
             meta.insert("schema_retries".into(), serde_json::json!(n));
@@ -2233,6 +2245,13 @@ impl Role {
 
     pub fn save_to(&self) -> Option<&str> {
         self.save_to.as_deref()
+    }
+
+    /// Phase 28B: per-turn react-loop step cap. `None` means unset — `call_react`
+    /// applies its `MAX_REACT_STEPS` default (10). `Some(n)` caps the loop at n
+    /// tool-calling iterations for this role/agent.
+    pub fn react_max_steps(&self) -> Option<usize> {
+        self.react_max_steps
     }
 
     /// Phase 9C: Maximum number of schema validation retries on output failure.
@@ -4509,6 +4528,36 @@ Context: {{ctx}}."#;
         let result = validate_schema_detailed("output", &schema, raw).unwrap();
         assert!(result.is_ok());
         assert_eq!(result.raw_text, raw.trim());
+    }
+
+    // ---- Phase 28B: configurable react loop (react_max_steps) ----
+
+    #[test]
+    fn test_react_max_steps_default_none() {
+        // No frontmatter field -> None, call_react applies MAX_REACT_STEPS (10).
+        let content = "---\nmodel: gpt-4\n---\nPrompt.";
+        let role = Role::new("no-react-cap", content);
+        assert_eq!(role.react_max_steps(), None);
+    }
+
+    #[test]
+    fn test_react_max_steps_parsed_from_frontmatter() {
+        let content = r#"---
+react_max_steps: 3
+---
+Prompt."#;
+        let role = Role::new("capped", content);
+        assert_eq!(role.react_max_steps(), Some(3));
+    }
+
+    #[test]
+    fn test_react_max_steps_in_export() {
+        let content = r#"---
+react_max_steps: 5
+---
+Prompt."#;
+        let role = Role::new("export-cap", content);
+        assert!(role.export().contains("react_max_steps"));
     }
 
     // ---- Phase 9C: Schema validation retry loop ----

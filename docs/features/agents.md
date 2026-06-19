@@ -81,6 +81,57 @@ Or via CLI:
 aichat --agent coder "How do I use traits?"
 ```
 
+## Agents as tools (composability)
+
+An agent can be called as a **tool** by a role or by another agent. List the
+agent's name in `use_tools`, and the model can delegate a self-contained task to
+it:
+
+```yaml
+---
+react_max_steps: 6
+use_tools: code-reviewer
+---
+You triage pull requests. Delegate code review to the `code-reviewer` agent.
+```
+
+When the model calls `code-reviewer`, the sub-agent runs in its **own context
+window** — the parent's conversation is never passed, only the `input` argument
+you give it. This token isolation is the cost advantage over stuffing everything
+into one monolithic prompt. The sub-agent returns its final answer as the tool
+result.
+
+**Recursion is bounded.** Agents calling agents are capped at `react_max_depth`
+(default `3`), set in `config.yaml`:
+
+```yaml
+react_max_depth: 3
+```
+
+Past the cap, a further delegation returns a tool error instead of recursing, so
+a delegation cycle cannot run away.
+
+A real function always wins a name collision: if a tool and an agent share a
+name, the function is called — agent-as-tool never hijacks an existing tool.
+
+## Bounding the agent loop
+
+Two role/agent frontmatter knobs shape the tool-calling (ReAct) loop:
+
+- **`react_max_steps:`** caps how many tool-calling iterations a single turn may
+  run (default `10`). Lower it for cheap, bounded agents:
+
+  ```yaml
+  ---
+  react_max_steps: 4
+  ---
+  ```
+
+- **`finish` tool.** When `react_max_steps` is set, a synthetic `finish` tool is
+  exposed so the model can end the turn explicitly with its final answer (passed
+  as `summary`) instead of relying on an empty tool-call turn. It is *not* added
+  to ordinary tool turns, so default behavior and token usage are unchanged.
+
 See also: [Macros](./macros.md), [Knowledge](./knowledge.md)
 
 

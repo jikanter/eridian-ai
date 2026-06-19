@@ -552,7 +552,9 @@ pub async fn call_react(
     let mut total_text = String::new();
     let mut cumulative_metrics = CallMetrics::default();
     let mut step = 0;
-    let mut max_steps = MAX_REACT_STEPS;
+    // Phase 28B: the role/agent may cap the react loop via `react_max_steps:`.
+    // Unset falls back to the MAX_REACT_STEPS default (10).
+    let mut max_steps = input.role().react_max_steps().unwrap_or(MAX_REACT_STEPS);
     let has_structured_output = input.role().has_output_schema()
         || input.has_structured_output_format();
     let print_output = !has_structured_output;
@@ -729,7 +731,18 @@ pub async fn call_react(
             total_text.push('\n');
         }
         total_text.push_str(&text);
-        if tool_results.is_empty() {
+        // Phase 28B: an explicit `finish` tool call terminates the loop cleanly,
+        // appending its summary (the model's final answer) to the output.
+        let finish = finish_summary(&tool_results);
+        if let Some(summary) = &finish {
+            if !summary.is_empty() {
+                if !total_text.is_empty() {
+                    total_text.push('\n');
+                }
+                total_text.push_str(summary);
+            }
+        }
+        if tool_results.is_empty() || finish.is_some() {
             cumulative_metrics.turns = (step + 1).min(u32::MAX as usize) as u32;
             if let Some(ref t) = tracer {
                 t.emit_summary(&cumulative_metrics);
@@ -800,6 +813,22 @@ pub async fn call_react(
         }
         *input = input.clone().merge_tool_results(text, tool_results);
     }
+}
+
+/// Phase 28B: if the model invoked the synthetic `finish` tool, return its
+/// summary (the explicit final answer). `None` when no finish call is present,
+/// so the loop only terminates early on a real finish call.
+fn finish_summary(tool_results: &[ToolResult]) -> Option<String> {
+    tool_results
+        .iter()
+        .find(|r| r.call.name == crate::function::FINISH_NAME)
+        .map(|r| {
+            r.output
+                .get("output")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
 }
 
 /// Check tool results for repeated failures. Annotate results with retry warnings
@@ -1188,6 +1217,35 @@ fn prompt_input_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- Phase 28B: finish_summary (explicit react-loop termination) ----
+
+    #[test]
+    fn finish_summary_extracts_summary_from_finish_call() {
+        let r = ToolResult::new(
+            ToolCall::new(crate::function::FINISH_NAME.to_string(), json!({}), None),
+            json!({ "output": "all done" }),
+        );
+        assert_eq!(finish_summary(&[r]).as_deref(), Some("all done"));
+    }
+
+    #[test]
+    fn finish_summary_none_without_finish_call() {
+        let r = ToolResult::new(
+            ToolCall::new("fs_read".to_string(), json!({}), None),
+            json!({ "output": "file contents" }),
+        );
+        assert!(finish_summary(&[r]).is_none());
+    }
+
+    #[test]
+    fn finish_summary_empty_string_when_summary_missing() {
+        let r = ToolResult::new(
+            ToolCall::new(crate::function::FINISH_NAME.to_string(), json!({}), None),
+            json!({}),
+        );
+        assert_eq!(finish_summary(&[r]).as_deref(), Some(""));
+    }
 
     // Phase 42E-2b: the wire `finish_reason` is recovered generically from the
     // captured raw response body, so `provider.response` carries the provider's
