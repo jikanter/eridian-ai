@@ -44,6 +44,9 @@ stub_pi() {
   printf 'AICHAT_BRIDGE_URL=%s\n' "\$AICHAT_BRIDGE_URL"
   printf 'AICHAT_BRIDGE_TOKEN=%s\n' "\$AICHAT_BRIDGE_TOKEN"
 } >"$observed"
+# Record argv aichat invoked pi with (one arg per line) so tests can assert
+# the launcher passes session-continuation flags like --continue.
+printf '%s\n' "\$@" >"$observed.args"
 exit $code
 STUB
   chmod +x "$stubdir/pi"
@@ -100,6 +103,24 @@ STUB
   [[ "$bridge_url" =~ ^http://127\.0\.0\.1:[0-9]+$ ]]
   port="${bridge_url##*:}"
   [ "$port" -ge 1024 ]
+}
+
+@test "pi-launch: aichat launches pi with --continue so command history persists" {
+  # Pi has no standalone command-history file: the REPL's up-arrow editor
+  # history is rebuilt from a *resumed* session. A bare launch starts a fresh
+  # empty session, so aichat must pass --continue to carry command history
+  # across REPL launches.
+  observed="$BATS_TEST_TMPDIR/observed-env"
+  stub_pi 0 "$observed"
+
+  run env -i \
+    HOME="$HOME" \
+    AICHAT_CONFIG_DIR="$cfg" \
+    PATH="$PI_STUB_PATH:/usr/bin:/bin" \
+    "$AICHAT_BIN" --pi-repl
+  [ "$status" -eq 0 ]
+  [ -f "$observed.args" ]
+  grep -qx -- '--continue' "$observed.args"
 }
 
 @test "pi-launch: aichat propagates non-zero pi exit status" {

@@ -87,8 +87,13 @@ fn strip_code_fences(text: &str) -> String {
     trimmed.to_string()
 }
 
+#[cfg(debug_assertions)]
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-DEBUG");
+#[cfg(not(debug_assertions))]
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = VERSION, about, long_about = None)]
 pub struct Cli {
     /// Select a LLM model
     #[clap(short, long)]
@@ -137,7 +142,7 @@ pub struct Cli {
     /// Force the built-in Reedline REPL even when `AICHAT_REPL=pi` would
     /// otherwise route through pi. Reserved for the cutover window so users
     /// can fall back to the legacy surface during the deprecation period.
-    #[clap(long, conflicts_with = "pi_repl")]
+    #[clap(long, visible_alias="raw-repl", conflicts_with = "pi_repl")]
     pub legacy_repl: bool,
     /// Convert an aichat session file to pi's JSONL session-tree format
     /// and write the result to stdout (or to --out PATH). Accepts either

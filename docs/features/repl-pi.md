@@ -159,6 +159,16 @@ store is persistent (it outlives the throwaway agent stage), so pi's `/resume`
 list carries across launches within this store. Point a launch at a different
 store — e.g. per-project history — by exporting `AICHAT_PI_SESSIONS_DIR`.
 
+### Command history carries across launches
+
+aichat launches `pi` with `--continue`, so each REPL session resumes the most
+recent session for the current directory. Pi keeps no standalone
+command-history file — its up-arrow editor history is rebuilt from the resumed
+session's messages — so without `--continue` every launch would start empty.
+With it, your command history (and prior conversation) is there when you
+reopen the REPL from the same directory. The first launch in a directory has
+nothing to resume and starts fresh; switch sessions any time with `/resume`.
+
 In **native** mode (`AICHAT_PI_NATIVE_MODELS=1`), aichat does not stage an
 agent dir at all: pi reads and writes its own device-wide
 `~/.pi/agent/sessions/` store (and its own models). Use this when you want one
