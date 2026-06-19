@@ -446,6 +446,11 @@ impl Entity for Agent {
         }
         facets
     }
+
+    fn backing(&self) -> Backing {
+        // An agent is a directory: it may own executable/stateful facets.
+        Backing::Directory
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]

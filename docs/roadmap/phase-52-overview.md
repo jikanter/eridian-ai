@@ -16,7 +16,7 @@
 |---|---|---|
 | 52A | **`RoleLike` → `Entity` trait** — rename + a `facets()` capability-introspection method (which families are present, owned vs referenced). No behavior change; `to_role()` stays the bridge. | **Done** (aichat) |
 | 52B | **Facet taxonomy in code + docs** — the closed family set (Know · Act · Shape · Govern · Compose · Judge); document the couplings (§7 of the design); surface facets in `--dry-run`. | **Done** (aichat) |
-| 52C | **Backing-aware uniform resolution** — collapse the variant-specific `SessionEntity` / `EntityRef` branches (`pipe.rs:517`, `config/mod.rs:1030`) onto the `Entity` trait; the **backing-gates-ownership** rule is the single resolution invariant. | Planned (aichat) |
+| 52C | **Backing-aware uniform resolution** — collapse the variant-specific `SessionEntity` / `EntityRef` branches (`pipe.rs:517`, `config/mod.rs:1030`) onto the `Entity` trait; the **backing-gates-ownership** rule is the single resolution invariant. | **Done** (aichat) |
 | 52D | **Trace entity attribution** — each invocation's keystone trace (Phase 42) carries `entity_id` + the *resolved facet set actually used*; the stable key Phase 49 attribution reads. | **Done** (aichat) |
 
 ### 52A implementation note (shipped)
@@ -80,6 +80,39 @@
   field appears on / defaults cleanly off the emitted `session.start` line.
 - SPEC-001 §3.1 `session.start` block documents both fields + the additive-no-bump
   versioning rule.
+
+### 52C implementation note (shipped)
+
+- New `Backing` enum (`src/config/role.rs`) — `Ephemeral` / `File` /
+  `Directory` / `Remote` — with `Backing::can_own(facet)` encoding §5.2: a
+  `File` backing may own declarative facets but only *reference* the
+  executable/stateful ones (`Act`, `Know`); `Directory` owns anything;
+  `Ephemeral`/`Remote` own nothing locally. `Entity::backing()` is implemented
+  for `Role` (`File`), `Agent` (`Directory`), and `Session` (`File`, since it
+  reports the facets of the file-shaped role it synthesizes via `to_role()`).
+- **The single resolution invariant** is `enforce_backing_gates_ownership(&dyn
+  Entity)` — it runs `FacetSet::backing_violation(backing)` and errors naming
+  the offending facet if an entity reports an *owned* facet its backing cannot
+  own. Real role/agent authoring can never produce a violation (the `facets()`
+  impls already obey §5.2), so the gate is defensive: it makes the invariant the
+  code enforces, not just the code happens to satisfy.
+- **Resolution now dispatches through the trait, not the preset.** In
+  `src/pipe.rs`, the `EntityRef::Role` and `EntityRef::Agent` arms of
+  `resolve_stage_entity` both flow through one `resolve_local_entity(&dyn
+  Entity)` helper (enforce invariant → `to_role()`); construction still differs
+  by backing (sync `retrieve_role` vs async `Agent::init`) but resolution is
+  uniform. In `src/config/mod.rs`, the repeated session → agent → role
+  precedence chain is collapsed onto a single `active_entity() -> Option<&dyn
+  Entity>` accessor (immutable sibling of `role_like_mut`); `current_model` and
+  `extract_role` now dispatch through it instead of re-branching on the variant.
+- **No behavior change** for any real entity: the `Remote` resolution arm and
+  the no-entity default branch are untouched, and `to_role()` semantics are
+  preserved. No authoring-format change, no CLI surface change — like 52A there
+  is no showboat demo.
+- Coverage: `backing_*` / `facetset_backing_violation_*` /
+  `enforce_backing_gates_ownership_accepts_real_role` unit tests
+  (`src/config/role.rs`) — 7 new, plus the full suite green
+  across the resolution refactor.
 
 ## Cross-repo seams
 

@@ -17,7 +17,7 @@ pub use self::role::{
     read_role_raw_metadata, render_forked_role, run_lifecycle_hooks, validate_schema,
     validate_schema_detailed, validate_schema_traced, KnowledgeBinding, MergeStrategy,
     ParallelNode, PipelineNode, Role, RoleExample, Entity,
-    Facet, FacetOwnership, FacetSet,
+    Backing, Facet, FacetOwnership, FacetSet, enforce_backing_gates_ownership,
     evaluate_metrics, sanitize_role_name,
     RolePipelineStage, RolePublicView, SwitchNode, CODE_ROLE, CREATE_TITLE_ROLE,
     EXPLAIN_SHELL_ROLE, SHELL_ROLE,
@@ -1050,14 +1050,25 @@ impl Config {
     }
 
     pub fn current_model(&self) -> &Model {
+        self.active_entity()
+            .map(|entity| entity.model())
+            .unwrap_or(&self.model)
+    }
+
+    /// Phase 52C: the active entity, selected by the session → agent → role
+    /// precedence, returned as a `&dyn Entity` so callers dispatch through the
+    /// trait instead of branching on the concrete preset. The immutable sibling
+    /// of [`role_like_mut`](Self::role_like_mut). `None` when only loose config
+    /// fields are set (no resolved entity yet).
+    pub fn active_entity(&self) -> Option<&dyn Entity> {
         if let Some(session) = self.session.as_ref() {
-            session.model()
+            Some(session)
         } else if let Some(agent) = self.agent.as_ref() {
-            agent.model()
+            Some(agent)
         } else if let Some(role) = self.role.as_ref() {
-            role.model()
+            Some(role)
         } else {
-            &self.model
+            None
         }
     }
 
@@ -1074,12 +1085,8 @@ impl Config {
     }
 
     pub fn extract_role(&self) -> Role {
-        if let Some(session) = self.session.as_ref() {
-            session.to_role()
-        } else if let Some(agent) = self.agent.as_ref() {
-            agent.to_role()
-        } else if let Some(role) = self.role.as_ref() {
-            role.clone()
+        if let Some(entity) = self.active_entity() {
+            entity.to_role()
         } else {
             let mut role = Role::default();
             role.batch_set(

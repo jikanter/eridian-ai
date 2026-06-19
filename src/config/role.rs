@@ -240,6 +240,39 @@ pub enum FacetOwnership {
     Referenced,
 }
 
+/// Phase 52C: the storage that backs an entity. Backing is what *gates
+/// ownership* (§5.2): a facet that needs executable code or mutable state can
+/// only be **owned** by a directory; declarative facets fit in a file. This is
+/// the single resolution invariant — every preset's backing is fixed
+/// (Prompt → ephemeral, Role → file, Agent → directory, remote → far side).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Backing {
+    /// A literal prompt with no file (`aichat "text"`); owns nothing.
+    Ephemeral,
+    /// A single role file (`roles/name.md`); owns declarative facets only.
+    File,
+    /// An agent directory (`agents/name/`); may own executable/stateful facets.
+    Directory,
+    /// Owned on the far side, referenced here by address (Epic 6/20).
+    Remote,
+}
+
+impl Backing {
+    /// Whether this backing may *own* (not merely reference) the given facet,
+    /// per §5.2. Executable/stateful families (Act, Know) require a directory;
+    /// declarative families fit in a file. Ephemeral and remote backings own
+    /// nothing locally.
+    pub fn can_own(self, facet: Facet) -> bool {
+        match self {
+            Backing::Ephemeral | Backing::Remote => false,
+            Backing::Directory => true,
+            // A file role can own its declarative facets but only *reference*
+            // the executable/stateful ones.
+            Backing::File => !matches!(facet, Facet::Act | Facet::Know),
+        }
+    }
+}
+
 /// Phase 52A: the result of [`Entity::facets`] — the set of facet families an
 /// entity carries, each tagged owned or referenced. A single family may appear
 /// under both ownerships (e.g. an agent that *owns* its tools yet *references*
@@ -309,6 +342,18 @@ impl FacetSet {
             .collect()
     }
 
+    /// Phase 52C: the first facet whose *owned* presence is illegal under
+    /// `backing` (§5.2), or `None` when the set is consistent with its backing.
+    /// Referenced facets are backing-independent and never flagged. This is the
+    /// check `enforce_backing_gates_ownership` runs at resolution.
+    pub fn backing_violation(&self, backing: Backing) -> Option<Facet> {
+        self.entries
+            .iter()
+            .filter(|(_, ownership)| *ownership == FacetOwnership::Owned)
+            .map(|(family, _)| *family)
+            .find(|family| !backing.can_own(*family))
+    }
+
     /// Phase 52B: a compact, stable one-line rendering for `--dry-run`, e.g.
     /// `Act(ref), Shape(owned)`. Families appear in closed-taxonomy order; a
     /// family present under both ownerships renders once as `(owned, ref)`.
@@ -350,6 +395,31 @@ pub trait Entity {
     // Consumed by 52B (`--dry-run`), 52C (resolution), 52D (trace).
     #[allow(dead_code)]
     fn facets(&self) -> FacetSet;
+
+    /// Phase 52C: the storage that backs this entity. Backing gates *ownership*
+    /// (§5.2); pairing it with [`facets`](Entity::facets) is the single
+    /// resolution invariant `enforce_backing_gates_ownership` checks.
+    #[allow(dead_code)]
+    fn backing(&self) -> Backing;
+}
+
+/// Phase 52C: the **single resolution invariant** — an entity's reported facets
+/// must be ownable under its backing (§5.2). Resolution runs this on every
+/// locally-resolved entity so the runtime can dispatch through the `Entity`
+/// trait without branching on the concrete preset: a file-backed role can never
+/// *own* an executable/stateful facet, an agent directory can. Returns an error
+/// naming the offending facet when the invariant is broken.
+#[allow(dead_code)]
+pub fn enforce_backing_gates_ownership(entity: &dyn Entity) -> Result<()> {
+    let backing = entity.backing();
+    if let Some(facet) = entity.facets().backing_violation(backing) {
+        anyhow::bail!(
+            "entity '{}' has a {backing:?} backing but owns the {facet} facet, \
+             which requires a directory backing (§5.2 backing-gates-ownership)",
+            entity.to_role().name(),
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -2475,6 +2545,11 @@ impl Entity for Role {
             facets.insert(Facet::Judge, Owned);
         }
         facets
+    }
+
+    fn backing(&self) -> Backing {
+        // A role is a single file: it owns declarative facets only.
+        Backing::File
     }
 }
 
@@ -5416,5 +5491,78 @@ pipeline:
             f.trace_tokens(),
             vec!["Act:owned".to_string(), "Act:referenced".to_string()]
         );
+    }
+
+    // Phase 52C: backing-gates-ownership as the single resolution invariant.
+
+    #[test]
+    fn backing_file_cannot_own_executable_or_stateful_facets() {
+        // §5.2: a file backing may *own* declarative facets but only
+        // *reference* the executable/stateful ones (Act, Know).
+        assert!(!Backing::File.can_own(Facet::Act));
+        assert!(!Backing::File.can_own(Facet::Know));
+        assert!(Backing::File.can_own(Facet::Shape));
+        assert!(Backing::File.can_own(Facet::Compose));
+        assert!(Backing::File.can_own(Facet::Judge));
+        assert!(Backing::File.can_own(Facet::Govern));
+    }
+
+    #[test]
+    fn backing_directory_can_own_every_facet() {
+        for facet in [
+            Facet::Know,
+            Facet::Act,
+            Facet::Shape,
+            Facet::Govern,
+            Facet::Compose,
+            Facet::Judge,
+        ] {
+            assert!(Backing::Directory.can_own(facet), "directory must own {facet}");
+        }
+    }
+
+    #[test]
+    fn backing_ephemeral_and_remote_own_nothing_locally() {
+        for facet in [Facet::Know, Facet::Act, Facet::Shape, Facet::Compose] {
+            assert!(!Backing::Ephemeral.can_own(facet));
+            assert!(!Backing::Remote.can_own(facet));
+        }
+    }
+
+    #[test]
+    fn role_is_file_backed() {
+        let role = Role::new("r", "---\nuse_tools: fs_read\n---\nP.");
+        assert_eq!(role.backing(), Backing::File);
+    }
+
+    #[test]
+    fn facetset_backing_violation_flags_owned_act_on_file() {
+        let mut owned = FacetSet::new();
+        owned.insert(Facet::Act, FacetOwnership::Owned);
+        assert_eq!(owned.backing_violation(Backing::File), Some(Facet::Act));
+
+        // The same family merely *referenced* is legal on a file backing.
+        let mut referenced = FacetSet::new();
+        referenced.insert(Facet::Act, FacetOwnership::Referenced);
+        assert_eq!(referenced.backing_violation(Backing::File), None);
+    }
+
+    #[test]
+    fn facetset_backing_violation_allows_owned_act_on_directory() {
+        let mut owned = FacetSet::new();
+        owned.insert(Facet::Act, FacetOwnership::Owned);
+        owned.insert(Facet::Know, FacetOwnership::Owned);
+        assert_eq!(owned.backing_violation(Backing::Directory), None);
+    }
+
+    #[test]
+    fn enforce_backing_gates_ownership_accepts_real_role() {
+        // A role that references Act and owns Shape is consistent with its
+        // file backing — resolution must not reject it.
+        let role = Role::new(
+            "mixed",
+            "---\nuse_tools: fs_read\noutput_schema:\n  type: object\n---\nP.",
+        );
+        assert!(enforce_backing_gates_ownership(&role).is_ok());
     }
 }

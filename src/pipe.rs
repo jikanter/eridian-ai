@@ -4,9 +4,9 @@ use crate::client::{
     call_chat_completions, call_chat_completions_streaming, call_react, CallMetrics,
 };
 use crate::config::{
-    pipeline_stage_admissible, run_lifecycle_hooks, validate_schema_traced, Agent, Config,
-    EntityRef, GlobalConfig, Input, MergeStrategy, ParallelNode, PartialConfig, PipelineNode, Role,
-    Entity, RolePipelineStage, SwitchNode,
+    enforce_backing_gates_ownership, pipeline_stage_admissible, run_lifecycle_hooks,
+    validate_schema_traced, Agent, Config, EntityRef, GlobalConfig, Input, MergeStrategy,
+    ParallelNode, PartialConfig, PipelineNode, Role, Entity, RolePipelineStage, SwitchNode,
 };
 use crate::utils::*;
 
@@ -494,6 +494,17 @@ enum StageTarget {
 ///   in the prompt unrendered.
 /// - Agent RAG is loaded only if a pre-built RAG file exists. There is no
 ///   interactive "init RAG?" prompt in the pipeline path.
+/// Phase 52C: resolve a locally-backed entity to its `Role` through the
+/// `Entity` trait. Both the role and agent arms of `resolve_stage_entity` flow
+/// through here, so the Role-vs-Agent preset is no longer branched on for
+/// resolution — construction differs by backing, resolution is uniform. The
+/// backing-gates-ownership invariant (§5.2) is enforced here, once, as the
+/// single resolution gate before the entity flattens to a `Role`.
+fn resolve_local_entity(entity: &dyn Entity) -> Result<Role> {
+    enforce_backing_gates_ownership(entity)?;
+    Ok(entity.to_role())
+}
+
 async fn resolve_stage_entity(
     config: &GlobalConfig,
     raw_name: &str,
@@ -509,13 +520,13 @@ async fn resolve_stage_entity(
             let r = config.read().retrieve_role(&name).with_context(|| {
                 format!("Failed to load role '{name}' for pipeline stage")
             })?;
-            Ok(StageTarget::Local(r))
+            Ok(StageTarget::Local(resolve_local_entity(&r)?))
         }
         EntityRef::Agent(name) => {
             let agent = Agent::init(config, &name, abort_signal)
                 .await
                 .with_context(|| format!("Failed to load agent '{name}' for pipeline stage"))?;
-            Ok(StageTarget::Local(agent.to_role()))
+            Ok(StageTarget::Local(resolve_local_entity(&agent)?))
         }
         EntityRef::Remote { target, role } => {
             // Phase 20D: turn the parsed target+role into a concrete
