@@ -5,7 +5,7 @@ AIchat is a command-line swiss army knife for ai applications.
 <brief:generated>
 # Briefing: Eridian - Your Alien AI Assistant
 
-**Stack:** Rust 1.95.0, Cargo, Bash, argc, llm-functions, python3.13, nodejs, pi, brief, astrophage
+**Stack:** Rust 1.95.0, Cargo, Bash, argc, llm-functions, python3.13, nodejs, pi, brief, astrophage, javascript
 
 ## Reference Context
 
@@ -21,7 +21,7 @@ Read these files for background before starting work:
 ## Deliverable
 
 <deliverable>
-A multi-tool for integrated interactions with AI models.A useful set of extensions to the pi harness for interaction with the tool.User documentation in docs/features
+A multi-tool for integrated interactions with AI models.A useful set of extensions to the pi harness for interaction with the tool.User documentation in docs/featuresAn innovative ways to integrate structured ai workflows
 </deliverable>
 
 ## Hard
