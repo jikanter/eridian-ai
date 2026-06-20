@@ -194,6 +194,10 @@ pub struct Config {
     pub top_p: Option<f64>,
 
     pub dry_run: bool,
+    /// QoL: print the assembled context with a per-section token breakdown and
+    /// exit before any provider call. Set from CLI `--explain-context`.
+    #[serde(default)]
+    pub explain_context: bool,
     /// Phase 10B: bypass the pipeline stage output cache. Set from CLI `--no-cache`.
     #[serde(default)]
     pub no_cache: bool,
@@ -600,6 +604,7 @@ impl Default for Config {
             top_p: None,
 
             dry_run: false,
+            explain_context: false,
             no_cache: false,
             cache_ttl_secs: default_cache_ttl_secs(),
             retry: RetryConfig::default(),

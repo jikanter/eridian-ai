@@ -87,8 +87,13 @@ fn strip_code_fences(text: &str) -> String {
     trimmed.to_string()
 }
 
+#[cfg(debug_assertions)]
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "-DEBUG");
+#[cfg(not(debug_assertions))]
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = VERSION, about, long_about = None)]
 pub struct Cli {
     /// Select a LLM model
     #[clap(short, long)]
@@ -137,7 +142,7 @@ pub struct Cli {
     /// Force the built-in Reedline REPL even when `AICHAT_REPL=pi` would
     /// otherwise route through pi. Reserved for the cutover window so users
     /// can fall back to the legacy surface during the deprecation period.
-    #[clap(long, conflicts_with = "pi_repl")]
+    #[clap(long, visible_alias="raw-repl", conflicts_with = "pi_repl")]
     pub legacy_repl: bool,
     /// Convert an aichat session file to pi's JSONL session-tree format
     /// and write the result to stdout (or to --out PATH). Accepts either
@@ -248,6 +253,22 @@ pub struct Cli {
     /// Display the message without sending it
     #[clap(long)]
     pub dry_run: bool,
+    /// Print the assembled context (system prompt, injected memory, user turn,
+    /// tool schemas) with a per-section token breakdown, then exit without
+    /// calling the model. A richer dry-run for context engineering. Pair with
+    /// `-o json` for machine consumption.
+    #[clap(long = "explain-context")]
+    pub explain_context: bool,
+    /// Install the external companion tools aichat leans on (uv, showboat, pi),
+    /// skipping any already on PATH. Pair with `--dry-run` to preview the plan
+    /// without running any installer.
+    #[clap(long = "install-deps")]
+    pub install_deps: bool,
+    /// Ask a model to find the showboat demo under docs/demos/ that best matches
+    /// FEATURE and print its path. Pair with `--dry-run` to print the prompt
+    /// instead of calling the model.
+    #[clap(long = "demo", value_name = "FEATURE")]
+    pub demo: Option<String>,
     /// Display information
     #[clap(long)]
     pub info: bool,

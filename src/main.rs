@@ -2,11 +2,14 @@ mod cache;
 mod cli;
 mod client;
 mod compare;
+mod demo;
 mod config;
 mod context_budget;
 mod discovery;
 mod exec_pi;
+mod explain;
 mod function;
+mod install_deps;
 mod knowledge;
 mod mcp;
 mod memory;
@@ -124,6 +127,7 @@ async fn async_main() -> Result<()> {
         WorkingMode::Cmd
     };
     let info_flag = cli.info
+        || cli.install_deps
         || cli.sync_models
         || cli.list_models
         || cli.list_roles
@@ -177,6 +181,9 @@ fn apply_runtime_flags(config: &GlobalConfig, cli: &Cli) {
     }
     if cli.dry_run {
         config.write().dry_run = true;
+    }
+    if cli.explain_context {
+        config.write().explain_context = true;
     }
     // Phase 34C: opt-in session-exit Reflector trigger. Also honour the env var
     // AICHAT_MEMORY_REFLECT_ON_EXIT so it can be set without a CLI flag.
@@ -309,6 +316,12 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
     // `--pipe --dry-run` and `--pipe --trace` were silently dropped.
     apply_runtime_flags(&config, &cli);
 
+    // QoL: `--install-deps` installs the companion tools (uv, showboat, pi) and
+    // exits. No model or input needed; respects `--dry-run` to preview the plan.
+    if cli.install_deps {
+        return run_install_deps(&config);
+    }
+
     // Phase 23B: `--compare ROLE1 ROLE2` runs the same input through two roles
     // and prints a side-by-side comparison (or a JSON object under `-o json`).
     if cli.compare.len() == 2 {
@@ -321,6 +334,12 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
     }
 
     let abort_signal = create_abort_signal();
+
+    // QoL: `--demo <FEATURE>` asks a model to pick the matching showboat demo
+    // under docs/demos/. Respects `--dry-run` (prints the prompt, no model call).
+    if let Some(feature) = &cli.demo {
+        return run_demo(&config, feature, abort_signal.clone()).await;
+    }
 
     if cli.sync_models {
         let url = config.read().sync_models_url();
@@ -927,6 +946,27 @@ async fn start_directive(
     let has_output_schema = input.role().output_schema().cloned();
     let output_format = config.read().output_format;
     let is_dry_run = config.read().dry_run;
+
+    // QoL: `--explain-context` is a richer dry-run. It builds the fully
+    // assembled context (system prompt + injected memory + user turn + tool
+    // schemas) and prints a per-section token breakdown, then exits before any
+    // provider call — no client, no credentials, zero tokens spent. Where
+    // `--dry-run` answers "what config will this run with?", this answers "what
+    // lands in the window, and where do the tokens go?".
+    if config.read().explain_context {
+        let data = input.prepare_completion_data(input.role().model(), false)?;
+        let report =
+            crate::explain::explain_context(&data.messages, data.functions.as_deref());
+        if matches!(
+            output_format,
+            Some(crate::cli::OutputFormat::Json | crate::cli::OutputFormat::Jsonl)
+        ) {
+            println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+        } else {
+            print!("{}", report.render());
+        }
+        return Ok(());
+    }
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;
@@ -1683,6 +1723,72 @@ fn run_fork_role(args: &[String], output_format: Option<crate::cli::OutputFormat
             println!("  Uncomment the fields you want to override, then edit the prompt body.");
         }
     }
+    Ok(())
+}
+
+/// QoL: install the companion tools (uv, showboat, pi), skipping any present.
+/// Respects `--dry-run` to preview the plan without running an installer.
+fn run_install_deps(config: &GlobalConfig) -> Result<()> {
+    use crate::install_deps::{default_deps, plan_install, render_plan, DepAction};
+    let deps = default_deps();
+    let plan = plan_install(&deps, |bin| which::which(bin).is_ok());
+
+    if config.read().dry_run {
+        print!("{}", render_plan(&plan));
+        return Ok(());
+    }
+
+    for item in &plan {
+        match item.action {
+            DepAction::SkipPresent => {
+                eprintln!("[install-deps] {} already present, skipping", item.name);
+            }
+            DepAction::Install => {
+                eprintln!("[install-deps] installing {}: {}", item.name, item.install_cmd);
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&item.install_cmd)
+                    .status()
+                    .with_context(|| format!("failed to launch installer for {}", item.name))?;
+                if !status.success() {
+                    bail!(
+                        "[install-deps] {} install failed (command: {})",
+                        item.name,
+                        item.install_cmd
+                    );
+                }
+            }
+        }
+    }
+    eprintln!("[install-deps] done");
+    Ok(())
+}
+
+/// QoL: ask a model to locate the showboat demo under docs/demos/ that best
+/// matches FEATURE, and print its answer. Respects `--dry-run` (prints the
+/// prompt rather than calling the model).
+async fn run_demo(config: &GlobalConfig, feature: &str, abort_signal: AbortSignal) -> Result<()> {
+    let dir = std::path::Path::new(crate::demo::DEMOS_DIR);
+    let demos = crate::demo::scan_demos(dir);
+    if demos.is_empty() {
+        bail!(
+            "--demo: no demos found in {}/ — run from the aichat repo root",
+            crate::demo::DEMOS_DIR
+        );
+    }
+    let prompt = crate::demo::build_demo_prompt(feature, &demos);
+
+    if config.read().dry_run {
+        print!("{prompt}");
+        return Ok(());
+    }
+
+    let input = Input::from_str(config, &prompt, None);
+    let client = input.create_client()?;
+    config.write().before_chat_completion(&input)?;
+    let (output, _, _) =
+        call_chat_completions(&input, false, false, client.as_ref(), abort_signal).await?;
+    println!("{}", output.trim());
     Ok(())
 }
 

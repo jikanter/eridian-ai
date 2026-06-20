@@ -569,6 +569,13 @@ check-brief() {
     return $exit_code
 }
 
+# @cmd install the local build into cargo ~/.cargo/bin/. this command is overwritten with "cargo install --path=."
+local-install() {
+  printf "installing debug aichat to local PATH"
+  exit_code=0
+  cargo build && ln -sf "$(pwd)/target/debug/aichat" "${HOME}/.cargo/bin/aichat"
+}
+
 
 
 # See more details at https://github.com/sigoden/argc

@@ -182,6 +182,7 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
     info!("launching pi from {}", pi_bin.display());
 
     let mut command = Command::new(&pi_bin);
+    command.args(pi_repl_args());
     command.env("AICHAT_BRIDGE_URL", &bridge_url);
     if let Some(token) = &token {
         command.env("AICHAT_BRIDGE_TOKEN", token);
@@ -217,6 +218,19 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// CLI args aichat passes on every `pi` launch.
+///
+/// `--continue` resumes the most recent session for the cwd. Pi keeps no
+/// standalone command-history file: the REPL's up-arrow editor history is
+/// rebuilt from a resumed session's user messages (pi `interactive-mode`
+/// populateHistory). Without `--continue`, pi calls `SessionManager.create`
+/// for a fresh empty session and command history never carries across
+/// launches. Pi's `continueRecent` falls back to a fresh session when the cwd
+/// has none, so this is safe on the very first launch.
+fn pi_repl_args() -> &'static [&'static str] {
+    &["--continue"]
 }
 
 /// Mint a per-launch bridge token used to authenticate slash-command
@@ -762,6 +776,22 @@ mod tests {
         // FIXME: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::remove_var(PI_SESSIONS_DIR_ENV) };
         assert_eq!(dir, PathBuf::from("/tmp/custom-pi-store"));
+    }
+
+    #[test]
+    fn pi_launch_continues_recent_session_for_command_history() {
+        // Pi keeps no standalone command-history file: the REPL's up-arrow
+        // editor history is rebuilt from a *resumed* session's user messages
+        // (pi `interactive-mode` populateHistory). A bare `pi` launch calls
+        // `SessionManager.create` — a fresh, empty session — so command history
+        // never carries across launches. aichat therefore passes `--continue`
+        // on every pi launch so the most recent session for the cwd resumes
+        // (pi `continueRecent` falls back to a fresh session when none exists,
+        // so this is safe on the first launch).
+        assert!(
+            pi_repl_args().contains(&"--continue"),
+            "pi must be launched with --continue so REPL command history persists"
+        );
     }
 
     #[test]
