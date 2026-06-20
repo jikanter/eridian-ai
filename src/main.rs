@@ -170,7 +170,7 @@ async fn async_main() -> Result<()> {
         || cli.memory_load.is_some()
         || cli.memory_reflect
         || cli.memory_curate;
-    setup_logger(working_mode.is_serve() || working_mode.is_mcp())?;
+    setup_logger(working_mode.is_serve() || working_mode.is_mcp(), cli.verbose)?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
     let output_format = cli.output_format;
     if let Err(err) = run(config, cli, text).await {
@@ -1821,8 +1821,8 @@ fn run_explain_role(name: &str, output_format: Option<crate::cli::OutputFormat>)
     Ok(())
 }
 
-fn setup_logger(is_serve: bool) -> Result<()> {
-    let (log_level, log_path) = Config::log_config(is_serve)?;
+fn setup_logger(is_serve: bool, verbose: bool) -> Result<()> {
+    let (log_level, log_path) = Config::log_config(is_serve, verbose)?;
     if log_level == LevelFilter::Off {
         return Ok(());
     }

@@ -336,9 +336,10 @@ pub struct Cli {
     /// (`text`, `json`, `array`, or a literal `json{...}` shape).
     #[clap(long, value_name = "TYPE", help_heading = "Discovery")]
     pub produces: Option<String>,
-    /// Include port signatures, capabilities, and composition info
-    /// in `--list-roles` / `--find-role` output.
-    #[clap(long, help_heading = "Discovery")]
+    /// Verbose mode: raise the log level to debug (logs to stderr, overriding
+    /// AICHAT_LOG_LEVEL) and include port signatures, capabilities, and
+    /// composition info in `--list-roles` / `--find-role` output.
+    #[clap(long, help_heading = "Output")]
     pub verbose: bool,
     /// List all prompts
     #[clap(long, help_heading = "Discovery")]

@@ -20,7 +20,7 @@ before pulling it in.
 | Item | Description | Compat | Status |
 |---|---|---|---|
 | 54A | Grouped `--help` (clap `help_heading`) + generated man page (`clap_mangen`) | additive | **Done** |
-| 54B | Standard flags: `--color=auto\|always\|never`, `-q/--quiet`, global `--verbose` | additive | -- |
+| 54B | Standard flags: `--color=auto\|always\|never`, `-q/--quiet`, global `--verbose` | additive | **Done** |
 | 54C | Non-interactive safety: `--no-input` guard + destructive-op confirm + `--yes` | additive | -- |
 | 54D | "Did you mean?" suggestions for unknown role / model / session / agent | additive | -- |
 | 54E | `aichat config path` / `aichat config get KEY` introspection | additive | -- |
@@ -75,6 +75,16 @@ emits diagnostics to stderr only, never stdout.
 **Test.** bats: pipe `--color=always` into `cat -v`, assert escape codes present; `--color=never`
 on forced-TTY, assert absent. `-q` run vs normal run → assert stdout identical, stderr shrinks.
 Unit: color-decision function truth table (flag × NO_COLOR × is_tty).
+
+**Shipped.** `--color` unified behind `no_color()`/`decide_no_color`; `-q` behind
+`spinner_suppressed`/`should_show_cost`; `--verbose` overloaded to force `effective_log_level` →
+Debug (overrides `AICHAT_LOG_LEVEL`) and route to stderr, keeping its legacy role-list detail.
+Behavioral suppression (spinner/cost) and `--verbose` stderr emission are runtime/TTY-bound and
+covered by unit truth tables; bats pins the deterministic CLI surface.
+
+**Known follow-up.** `--verbose` log lines can be dropped on `process::exit` (buffered logger
+writes not flushed on the fast-exit paths). Tracked for a later flush-on-exit fix; does not affect
+the level-resolution logic.
 
 **Showboat.** Demo the color truth table and a quiet-mode diff. Deterministic.
 
