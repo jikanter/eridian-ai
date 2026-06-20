@@ -77,6 +77,15 @@ async fn async_main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Phase 54A: emit the generated man page and exit. Pure output from the
+    // clap definitions — no config load, so it works in any environment.
+    if cli.man {
+        use std::io::Write;
+        let page = cli::render_man_page()?;
+        std::io::stdout().write_all(&page)?;
+        process::exit(0);
+    }
+
     // Phase 31E: validate a portable mcp.json declarations file. Runs before
     // any aichat config load so a broken config.yaml doesn't mask validation
     // results. Exits with the right code from inside the helper.
