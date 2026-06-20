@@ -6,6 +6,7 @@ mod config;
 mod context_budget;
 mod discovery;
 mod exec_pi;
+mod explain;
 mod function;
 mod knowledge;
 mod mcp;
@@ -177,6 +178,9 @@ fn apply_runtime_flags(config: &GlobalConfig, cli: &Cli) {
     }
     if cli.dry_run {
         config.write().dry_run = true;
+    }
+    if cli.explain_context {
+        config.write().explain_context = true;
     }
     // Phase 34C: opt-in session-exit Reflector trigger. Also honour the env var
     // AICHAT_MEMORY_REFLECT_ON_EXIT so it can be set without a CLI flag.
@@ -927,6 +931,27 @@ async fn start_directive(
     let has_output_schema = input.role().output_schema().cloned();
     let output_format = config.read().output_format;
     let is_dry_run = config.read().dry_run;
+
+    // QoL: `--explain-context` is a richer dry-run. It builds the fully
+    // assembled context (system prompt + injected memory + user turn + tool
+    // schemas) and prints a per-section token breakdown, then exits before any
+    // provider call — no client, no credentials, zero tokens spent. Where
+    // `--dry-run` answers "what config will this run with?", this answers "what
+    // lands in the window, and where do the tokens go?".
+    if config.read().explain_context {
+        let data = input.prepare_completion_data(input.role().model(), false)?;
+        let report =
+            crate::explain::explain_context(&data.messages, data.functions.as_deref());
+        if matches!(
+            output_format,
+            Some(crate::cli::OutputFormat::Json | crate::cli::OutputFormat::Jsonl)
+        ) {
+            println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+        } else {
+            print!("{}", report.render());
+        }
+        return Ok(());
+    }
 
     let client = input.create_client()?;
     config.write().before_chat_completion(&input)?;

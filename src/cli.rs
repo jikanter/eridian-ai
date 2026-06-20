@@ -253,6 +253,12 @@ pub struct Cli {
     /// Display the message without sending it
     #[clap(long)]
     pub dry_run: bool,
+    /// Print the assembled context (system prompt, injected memory, user turn,
+    /// tool schemas) with a per-section token breakdown, then exit without
+    /// calling the model. A richer dry-run for context engineering. Pair with
+    /// `-o json` for machine consumption.
+    #[clap(long = "explain-context")]
+    pub explain_context: bool,
     /// Display information
     #[clap(long)]
     pub info: bool,
