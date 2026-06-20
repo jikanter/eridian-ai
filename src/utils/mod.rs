@@ -95,6 +95,30 @@ pub fn no_color() -> bool {
     decide_no_color(color_override(), env_no_color, *IS_STDOUT_TERMINAL)
 }
 
+// Global `--quiet` flag (Phase 54B). Suppresses the spinner and the cost line.
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Record the `--quiet` choice. Call once, early in startup.
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(quiet, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether quiet mode is on.
+pub fn is_quiet() -> bool {
+    QUIET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Pure predicate for whether the spinner should be suppressed: off when not a
+/// TTY, in quiet mode, or with an empty message.
+pub fn spinner_suppressed(is_tty: bool, quiet: bool, empty_message: bool) -> bool {
+    !is_tty || quiet || empty_message
+}
+
+/// Whether the cost summary should print: requested via `--cost` and not quiet.
+pub fn should_show_cost(cost_flag: bool, quiet: bool) -> bool {
+    cost_flag && !quiet
+}
+
 pub fn now() -> String {
     chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
 }
@@ -282,6 +306,34 @@ mod tests {
         // `--color=always` enables color even when piped (non-TTY) and with NO_COLOR set.
         assert!(!decide_no_color(ColorWhen::Always, Some(true), false));
         assert!(!decide_no_color(ColorWhen::Always, None, false));
+    }
+
+    #[test]
+    fn spinner_suppressed_when_quiet_or_non_tty_or_empty() {
+        // Shown only on a TTY, not quiet, with a non-empty message.
+        assert!(!spinner_suppressed(true, false, false));
+        // Quiet suppresses even on a TTY with a message.
+        assert!(spinner_suppressed(true, true, false));
+        // Non-TTY suppresses.
+        assert!(spinner_suppressed(false, false, false));
+        // Empty message suppresses.
+        assert!(spinner_suppressed(true, false, true));
+    }
+
+    #[test]
+    fn cost_shows_only_when_requested_and_not_quiet() {
+        assert!(should_show_cost(true, false));
+        assert!(!should_show_cost(true, true)); // quiet overrides --cost
+        assert!(!should_show_cost(false, false));
+        assert!(!should_show_cost(false, true));
+    }
+
+    #[test]
+    fn quiet_override_roundtrips() {
+        set_quiet(true);
+        assert!(is_quiet());
+        set_quiet(false);
+        assert!(!is_quiet());
     }
 
     #[test]

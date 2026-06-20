@@ -1,4 +1,7 @@
-use super::{poll_abort_signal, wait_abort_signal, AbortSignal, IS_STDOUT_TERMINAL};
+use super::{
+    is_quiet, poll_abort_signal, spinner_suppressed, wait_abort_signal, AbortSignal,
+    IS_STDOUT_TERMINAL,
+};
 
 use anyhow::{bail, Result};
 use crossterm::{cursor, queue, style, terminal};
@@ -25,7 +28,7 @@ impl SpinnerInner {
     const DATA: [&'static str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
     fn step(&mut self) -> Result<()> {
-        if !*IS_STDOUT_TERMINAL || self.message.is_empty() {
+        if spinner_suppressed(*IS_STDOUT_TERMINAL, is_quiet(), self.message.is_empty()) {
             return Ok(());
         }
         let mut writer = stdout();
@@ -50,7 +53,7 @@ impl SpinnerInner {
     }
 
     fn clear_message(&mut self) -> Result<()> {
-        if !*IS_STDOUT_TERMINAL || self.message.is_empty() {
+        if spinner_suppressed(*IS_STDOUT_TERMINAL, is_quiet(), self.message.is_empty()) {
             return Ok(());
         }
         self.message.clear();
@@ -145,7 +148,7 @@ pub async fn abortable_run_with_spinner_rx<F, T>(
 where
     F: Future<Output = Result<T>>,
 {
-    if *IS_STDOUT_TERMINAL {
+    if *IS_STDOUT_TERMINAL && !is_quiet() {
         let (done_tx, done_rx) = oneshot::channel();
         let run_task = async {
             tokio::select! {

@@ -255,6 +255,10 @@ pub struct Cli {
     /// Display cost summary on stderr
     #[clap(long, help_heading = "Output")]
     pub cost: bool,
+    /// Suppress the spinner and cost line (non-essential stderr); stdout is
+    /// unaffected. Overrides --cost.
+    #[clap(short = 'q', long, help_heading = "Output")]
+    pub quiet: bool,
     /// Display interaction trace on stderr
     #[clap(long, help_heading = "Output")]
     pub trace: bool,

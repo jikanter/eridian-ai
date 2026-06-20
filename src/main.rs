@@ -80,6 +80,7 @@ async fn async_main() -> Result<()> {
     // Phase 54B: record the --color choice before any colorized output or
     // config color resolution so the override wins over NO_COLOR / TTY.
     utils::set_color_when(cli.color);
+    utils::set_quiet(cli.quiet);
 
     // Phase 54A: emit the generated man page and exit. Pure output from the
     // clap definitions — no config load, so it works in any environment.
@@ -206,7 +207,7 @@ fn apply_runtime_flags(config: &GlobalConfig, cli: &Cli) {
     if cli.memory_reflect_on_exit || env_reflect_on_exit {
         config.write().memory_reflect_on_exit = true;
     }
-    if cli.cost {
+    if utils::should_show_cost(cli.cost, cli.quiet) {
         config.write().show_cost = true;
     }
     // Run log from env var AICHAT_RUN_LOG
