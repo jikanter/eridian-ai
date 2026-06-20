@@ -1,6 +1,6 @@
 use super::REPL_COMMANDS;
 
-use crate::{config::GlobalConfig, utils::NO_COLOR};
+use crate::{config::GlobalConfig, utils::no_color};
 
 use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
@@ -20,7 +20,7 @@ impl Highlighter for ReplHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
         let mut styled_text = StyledText::new();
 
-        if *NO_COLOR {
+        if no_color() {
             styled_text.push((Style::default(), line.to_string()));
         } else if REPL_COMMANDS.iter().any(|cmd| line.contains(cmd.name)) {
             let matches: Vec<&str> = REPL_COMMANDS

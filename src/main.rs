@@ -77,6 +77,10 @@ async fn async_main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Phase 54B: record the --color choice before any colorized output or
+    // config color resolution so the override wins over NO_COLOR / TTY.
+    utils::set_color_when(cli.color);
+
     // Phase 54A: emit the generated man page and exit. Pure output from the
     // clap definitions — no config load, so it works in any environment.
     if cli.man {

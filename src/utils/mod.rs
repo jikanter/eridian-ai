@@ -43,13 +43,57 @@ pub static CODE_BLOCK_RE: LazyLock<Regex> =
 pub static THINK_TAG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)^\s*<think>.*?</think>(\s*|$)").unwrap());
 pub static IS_STDOUT_TERMINAL: LazyLock<bool> = LazyLock::new(|| std::io::stdout().is_terminal());
-pub static NO_COLOR: LazyLock<bool> = LazyLock::new(|| {
-    env::var("NO_COLOR")
-        .ok()
-        .and_then(|v| parse_bool(&v))
-        .unwrap_or_default()
-        || !*IS_STDOUT_TERMINAL
-});
+
+/// When to colorize output. Backs the `--color` flag (Phase 54B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ColorWhen {
+    /// Colorize when stdout is a terminal and NO_COLOR is unset (default).
+    #[default]
+    Auto,
+    /// Always colorize, even when piped.
+    Always,
+    /// Never colorize.
+    Never,
+}
+
+// Global `--color` override. 0 = Auto (unset), 1 = Always, 2 = Never.
+static COLOR_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Record the `--color` choice. Call once, early in startup, before any
+/// colorized output or config color resolution.
+pub fn set_color_when(when: ColorWhen) {
+    let v = match when {
+        ColorWhen::Auto => 0,
+        ColorWhen::Always => 1,
+        ColorWhen::Never => 2,
+    };
+    COLOR_OVERRIDE.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn color_override() -> ColorWhen {
+    match COLOR_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => ColorWhen::Always,
+        2 => ColorWhen::Never,
+        _ => ColorWhen::Auto,
+    }
+}
+
+/// Pure color-suppression decision. `env_no_color` is the parsed NO_COLOR env
+/// value (None when unset/unparseable), `is_tty` whether stdout is a terminal.
+fn decide_no_color(when: ColorWhen, env_no_color: Option<bool>, is_tty: bool) -> bool {
+    match when {
+        ColorWhen::Never => true,
+        ColorWhen::Always => false,
+        ColorWhen::Auto => env_no_color.unwrap_or(false) || !is_tty,
+    }
+}
+
+/// Whether color output is suppressed, honoring `--color`, then NO_COLOR, then
+/// TTY detection. Replaces the former `NO_COLOR` static so `--color` can win.
+pub fn no_color() -> bool {
+    let env_no_color = env::var("NO_COLOR").ok().and_then(|v| parse_bool(&v));
+    decide_no_color(color_override(), env_no_color, *IS_STDOUT_TERMINAL)
+}
 
 pub fn now() -> String {
     chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
@@ -165,7 +209,7 @@ pub fn warning_text(input: &str) -> String {
 }
 
 pub fn color_text(input: &str, color: nu_ansi_term::Color) -> String {
-    if *NO_COLOR {
+    if no_color() {
         return input.to_string();
     }
     nu_ansi_term::Style::new()
@@ -175,7 +219,7 @@ pub fn color_text(input: &str, color: nu_ansi_term::Color) -> String {
 }
 
 pub fn dimmed_text(input: &str) -> String {
-    if *NO_COLOR {
+    if no_color() {
         return input.to_string();
     }
     nu_ansi_term::Style::new().dimmed().paint(input).to_string()
@@ -229,6 +273,28 @@ pub fn decode_bin<T: serde::de::DeserializeOwned>(data: &[u8]) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn color_override_forces_regardless_of_env_and_tty() {
+        // `--color=never` (ColorWhen::Never) disables color even on a TTY.
+        assert!(decide_no_color(ColorWhen::Never, Some(false), true));
+        assert!(decide_no_color(ColorWhen::Never, None, true));
+        // `--color=always` enables color even when piped (non-TTY) and with NO_COLOR set.
+        assert!(!decide_no_color(ColorWhen::Always, Some(true), false));
+        assert!(!decide_no_color(ColorWhen::Always, None, false));
+    }
+
+    #[test]
+    fn color_auto_follows_env_and_tty() {
+        // auto + interactive TTY + no NO_COLOR => color on.
+        assert!(!decide_no_color(ColorWhen::Auto, None, true));
+        // auto + piped (non-TTY) => color off.
+        assert!(decide_no_color(ColorWhen::Auto, None, false));
+        // auto + TTY but NO_COLOR truthy => color off.
+        assert!(decide_no_color(ColorWhen::Auto, Some(true), true));
+        // auto + TTY + NO_COLOR explicitly false => color on.
+        assert!(!decide_no_color(ColorWhen::Auto, Some(false), true));
+    }
 
     #[test]
     #[cfg(not(target_os = "windows"))]

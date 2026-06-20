@@ -233,6 +233,10 @@ pub struct Cli {
     /// Output format (json, jsonl, tsv, csv, text)
     #[clap(short = 'o', long = "output", value_name = "FORMAT", help_heading = "Output")]
     pub output_format: Option<OutputFormat>,
+    /// When to colorize output: auto (default), always, never. Overrides
+    /// NO_COLOR and TTY detection — use `always` to keep color through a pager.
+    #[clap(long = "color", value_name = "WHEN", default_value = "auto", help_heading = "Output")]
+    pub color: crate::utils::ColorWhen,
     /// Execute commands in natural language
     #[clap(short = 'e', long, help_heading = "Execution")]
     pub execute: bool,

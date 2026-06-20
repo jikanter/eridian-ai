@@ -3488,7 +3488,7 @@ impl Config {
         if let Some(Some(v)) = read_env_bool(&get_env_name("highlight")) {
             self.highlight = v;
         }
-        if *NO_COLOR {
+        if no_color() {
             self.highlight = false;
         }
         if self.highlight && self.theme.is_none() {
