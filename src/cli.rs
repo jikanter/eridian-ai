@@ -259,6 +259,16 @@ pub struct Cli {
     /// `-o json` for machine consumption.
     #[clap(long = "explain-context")]
     pub explain_context: bool,
+    /// Install the external companion tools aichat leans on (uv, showboat, pi),
+    /// skipping any already on PATH. Pair with `--dry-run` to preview the plan
+    /// without running any installer.
+    #[clap(long = "install-deps")]
+    pub install_deps: bool,
+    /// Ask a model to find the showboat demo under docs/demos/ that best matches
+    /// FEATURE and print its path. Pair with `--dry-run` to print the prompt
+    /// instead of calling the model.
+    #[clap(long = "demo", value_name = "FEATURE")]
+    pub demo: Option<String>,
     /// Display information
     #[clap(long)]
     pub info: bool,
