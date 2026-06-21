@@ -25,7 +25,7 @@ before pulling it in.
 | 54D | "Did you mean?" suggestions for unknown role / model / session / agent | additive | **Done** |
 | 54E | `--config-path` / `--config-get KEY` introspection (flag form) | additive | **Done** |
 | 54F | Noun-verb subcommand layer; existing flags become hidden deprecated aliases | **Ask-First** | -- |
-| 54G | Cross-surface syntax map doc (CLI `--` / legacy REPL `.` / pi `/`) | doc only | -- |
+| 54G | Cross-surface syntax map doc (CLI `--` / legacy REPL `.` / pi `/`) | doc only | **Done** |
 
 **Sequencing.** 54A–54E are independent, low-risk, shippable in any order (54A first = highest
 discoverability ROI). 54F is gated on explicit owner approval (backward-compat = Ask-First) and
@@ -216,6 +216,12 @@ why (pi owns interactive; aichat owns batch).
 exists (catch drift when a flag is renamed).
 
 **Showboat.** Render the cross-surface table as an evergreen note.
+
+**Shipped.** [`docs/features/cross-surface-commands.md`](../features/cross-surface-commands.md) — the
+operation × surface table (batch CLI / legacy REPL / pi) with the ownership rule (pi owns
+interactive, aichat owns batch) and a why-three-syntaxes note. Linked from `repl-pi.md`.
+`tests/cli/cross-surface-doc.sh` doc-lints it (core legacy commands present; claimed CLI flags exist
+in `--help`).
 
 ---
 
