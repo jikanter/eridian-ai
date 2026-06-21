@@ -21,7 +21,7 @@ before pulling it in.
 |---|---|---|---|
 | 54A | Grouped `--help` (clap `help_heading`) + generated man page (`clap_mangen`) | additive | **Done** |
 | 54B | Standard flags: `--color=auto\|always\|never`, `-q/--quiet`, global `--verbose` | additive | **Done** |
-| 54C | Non-interactive safety: `--no-input` guard + destructive-op confirm + `--yes` | additive | -- |
+| 54C | Non-interactive safety: `--no-input` guard + destructive-op confirm + `--yes` | additive | **Done** |
 | 54D | "Did you mean?" suggestions for unknown role / model / session / agent | additive | -- |
 | 54E | `aichat config path` / `aichat config get KEY` introspection | additive | -- |
 | 54F | Noun-verb subcommand layer; existing flags become hidden deprecated aliases | **Ask-First** | -- |
@@ -108,6 +108,13 @@ hang (bounded timeout, poll output file — no `|| true` masking). Delete-with-`
 delete-without on non-TTY refuses. Unit: TTY/`--no-input`/`--yes` decision matrix.
 
 **Showboat.** Demo the refuse-on-no-TTY path and the `--yes` bypass. Deterministic (no API call).
+
+**Shipped.** Primitive in place: `--no-input`, `--yes` (alias `--force`), an `IS_STDIN_TERMINAL`
+static, and pure `can_prompt` / `resolve_confirm` (`Proceed`/`Prompt`/`Refuse`). Wired into the
+deterministic destructive batch op `--migrate-sessions` (removes legacy `.yaml`): confirms when
+interactive, refuses with the usage exit code (2) under non-TTY/`--no-input`, bypassed by `--yes`.
+Other `inquire` prompt sites (role/macro creation, agent variables) already error rather than hang
+on a non-TTY; routing them through `resolve_confirm` for uniform messaging is a follow-on.
 
 ---
 

@@ -132,6 +132,13 @@ pub struct Cli {
     /// Set role variable (key=value)
     #[clap(short = 'v', long = "variable", value_name = "KEY=VALUE", help_heading = "Core")]
     pub variable: Vec<String>,
+    /// Never prompt for input. If an action needs interactive input, fail loudly
+    /// instead of hanging. Useful in scripts and CI.
+    #[clap(long = "no-input", help_heading = "Core")]
+    pub no_input: bool,
+    /// Proceed past confirmation prompts for destructive actions without asking.
+    #[clap(long = "yes", visible_alias = "force", help_heading = "Core")]
+    pub yes: bool,
     /// Start a RAG
     #[clap(long, help_heading = "RAG")]
     pub rag: Option<String>,

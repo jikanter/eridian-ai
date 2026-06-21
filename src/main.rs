@@ -120,7 +120,7 @@ async fn async_main() -> Result<()> {
     // circuits before full config init for the same reason as the converter
     // above: it only needs the sessions directory, not a live model client.
     if cli.migrate_sessions {
-        let exit = run_migrate_sessions();
+        let exit = run_migrate_sessions(cli.yes, cli.no_input);
         process::exit(exit);
     }
 
@@ -848,7 +848,7 @@ fn collect_yaml_sessions(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf
 /// `.jsonl` is written. Parses each session straight from YAML (no model
 /// client needed) and writes through `Session::export_to_pi_jsonl`. Returns
 /// the process exit code: 0 on full success, 1 if any file failed.
-fn run_migrate_sessions() -> i32 {
+fn run_migrate_sessions(yes: bool, no_input: bool) -> i32 {
     let root = sessions_root();
     if !root.exists() {
         eprintln!("No sessions directory at '{}'; nothing to migrate.", root.display());
@@ -859,6 +859,38 @@ fn run_migrate_sessions() -> i32 {
     if yamls.is_empty() {
         eprintln!("No legacy YAML sessions under '{}'.", root.display());
         return 0;
+    }
+
+    // Migration removes each legacy .yaml after writing its .jsonl — a
+    // destructive, in-place change. Confirm first (Phase 54C).
+    match resolve_confirm(yes, can_prompt(*IS_STDIN_TERMINAL, no_input)) {
+        ConfirmAction::Proceed => {}
+        ConfirmAction::Prompt => {
+            let msg = format!(
+                "Migrate and remove {} legacy YAML session(s) under '{}'?",
+                yamls.len(),
+                root.display()
+            );
+            match inquire::Confirm::new(&msg).with_default(false).prompt() {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!("Aborted; no sessions changed.");
+                    return 0;
+                }
+                Err(e) => {
+                    eprintln!("Confirmation failed: {e}");
+                    return ExitCode::GeneralError as i32;
+                }
+            }
+        }
+        ConfirmAction::Refuse => {
+            eprintln!(
+                "Refusing to migrate {} legacy YAML session(s) without confirmation \
+                 (stdin is not a terminal or --no-input is set). Re-run with --yes to proceed.",
+                yamls.len()
+            );
+            return ExitCode::UsageError as i32;
+        }
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));

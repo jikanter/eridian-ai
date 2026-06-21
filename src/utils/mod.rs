@@ -119,6 +119,39 @@ pub fn should_show_cost(cost_flag: bool, quiet: bool) -> bool {
     cost_flag && !quiet
 }
 
+/// Whether stdin is an interactive terminal. Paired with `IS_STDOUT_TERMINAL`;
+/// used by the non-interactive input policy (Phase 54C).
+pub static IS_STDIN_TERMINAL: LazyLock<bool> = LazyLock::new(|| std::io::stdin().is_terminal());
+
+/// What to do when a destructive action needs confirmation.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfirmAction {
+    /// Proceed without asking (`--yes`).
+    Proceed,
+    /// Ask the user interactively.
+    Prompt,
+    /// Refuse: no `--yes` and no way to ask (non-TTY or `--no-input`).
+    Refuse,
+}
+
+/// Whether an interactive prompt is possible: stdin is a TTY and `--no-input`
+/// was not given.
+pub fn can_prompt(stdin_is_tty: bool, no_input: bool) -> bool {
+    stdin_is_tty && !no_input
+}
+
+/// Resolve how to handle a destructive confirmation: `--yes` proceeds; else
+/// prompt when interactive; else refuse rather than hang.
+pub fn resolve_confirm(yes: bool, can_prompt: bool) -> ConfirmAction {
+    if yes {
+        ConfirmAction::Proceed
+    } else if can_prompt {
+        ConfirmAction::Prompt
+    } else {
+        ConfirmAction::Refuse
+    }
+}
+
 pub fn now() -> String {
     chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
 }
@@ -318,6 +351,25 @@ mod tests {
         assert!(spinner_suppressed(false, false, false));
         // Empty message suppresses.
         assert!(spinner_suppressed(true, false, true));
+    }
+
+    #[test]
+    fn can_prompt_requires_tty_and_no_no_input() {
+        assert!(can_prompt(true, false)); // interactive TTY, input allowed
+        assert!(!can_prompt(true, true)); // --no-input forces off even on a TTY
+        assert!(!can_prompt(false, false)); // piped stdin => cannot prompt
+        assert!(!can_prompt(false, true));
+    }
+
+    #[test]
+    fn resolve_confirm_yes_proceeds_else_prompt_else_refuse() {
+        // --yes always proceeds, even non-interactive.
+        assert_eq!(resolve_confirm(true, false), ConfirmAction::Proceed);
+        assert_eq!(resolve_confirm(true, true), ConfirmAction::Proceed);
+        // No --yes but interactive => prompt.
+        assert_eq!(resolve_confirm(false, true), ConfirmAction::Prompt);
+        // No --yes and non-interactive => refuse (don't hang).
+        assert_eq!(resolve_confirm(false, false), ConfirmAction::Refuse);
     }
 
     #[test]
