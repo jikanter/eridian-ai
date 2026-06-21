@@ -2,30 +2,47 @@
 #
 # Phase 54B — `--color=auto|always|never`.
 # The override must beat TTY detection: `--color=always` emits ANSI even when
-# stdout is piped (non-TTY), while `auto` stays plain when piped. Exercised on
-# the error path (deterministic, no network) which colorizes via error_text.
+# stdout is piped (non-TTY), while `auto`/`never` stay plain when piped.
+#
+# Self-contained and CI-safe: exercised on an isolated --config-get error path
+# (unknown key) which colorizes via error_text on the light init path — no
+# model, provider, network, or live instance.
 
 AICHAT_BIN="${AICHAT_BIN:-./target/debug/aichat}"
 AICHAT="$AICHAT_BIN"
-BAD_ROLE="__no_such_role_54b__"
 ESC=$'\033'
 
+setup() {
+  CFG_DIR="$(mktemp -d)"
+  printf 'compress_threshold: 1\n' > "${CFG_DIR}/config.yaml"
+}
+
+teardown() {
+  rm -rf "${CFG_DIR}"
+}
+
+# stderr captured through a pipe (2>&1 1>/dev/null) so stdout is dropped and
+# only the (possibly colorized) error remains.
+err() {
+  bash -c "AICHAT_CONFIG_DIR='${CFG_DIR}' '${AICHAT}' --config-get badkey $1 2>&1 1>/dev/null"
+}
+
 @test "color=always emits ANSI through a pipe (overrides non-TTY)" {
-  run bash -c "'${AICHAT}' -r ${BAD_ROLE} --color=always x 2>&1 1>/dev/null"
+  run err --color=always
   [[ "$output" == *"${ESC}["* ]]
 }
 
 @test "color=auto stays plain when piped" {
-  run bash -c "'${AICHAT}' -r ${BAD_ROLE} --color=auto x 2>&1 1>/dev/null"
+  run err --color=auto
   [[ "$output" != *"${ESC}["* ]]
 }
 
 @test "color=never stays plain through a pipe" {
-  run bash -c "'${AICHAT}' -r ${BAD_ROLE} --color=never x 2>&1 1>/dev/null"
+  run err --color=never
   [[ "$output" != *"${ESC}["* ]]
 }
 
 @test "color rejects an invalid value" {
-  run "${AICHAT}" --color=rainbow -r ${BAD_ROLE} x
+  run env AICHAT_CONFIG_DIR="${CFG_DIR}" "${AICHAT}" --color=rainbow --config-get badkey
   [ "$status" -ne 0 ]
 }

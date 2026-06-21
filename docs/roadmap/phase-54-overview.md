@@ -23,7 +23,7 @@ before pulling it in.
 | 54B | Standard flags: `--color=auto\|always\|never`, `-q/--quiet`, global `--verbose` | additive | **Done** |
 | 54C | Non-interactive safety: `--no-input` guard + destructive-op confirm + `--yes` | additive | **Done** |
 | 54D | "Did you mean?" suggestions for unknown role / model / session / agent | additive | **Done** |
-| 54E | `aichat config path` / `aichat config get KEY` introspection | additive | -- |
+| 54E | `--config-path` / `--config-get KEY` introspection (flag form) | additive | **Done** |
 | 54F | Noun-verb subcommand layer; existing flags become hidden deprecated aliases | **Ask-First** | -- |
 | 54G | Cross-surface syntax map doc (CLI `--` / legacy REPL `.` / pi `/`) | doc only | -- |
 
@@ -156,6 +156,16 @@ where cheap).
 a seeded key returns the seeded value; `-o json` parses. Unit: key resolver against a fixture config.
 
 **Showboat.** Demo `config path` + `config get` (text and json) against a temp config. Deterministic.
+
+**Shipped.** Delivered as **flags** `--config-path` / `--config-get KEY` (not a `config`
+subcommand — that is 54F's Ask-First surface; a subcommand would also clash with the trailing-text
+positional). `--config-path` is a pure static early-exit (no init, no model). `--config-get` reuses
+`Config::sysinfo_items()` (the exact `--info` key/value set), takes the light `info_flag` init (no
+client/network/model), is `-o json` aware, and suggests via [`did_you_mean`](#54d) on unknown keys.
+
+**Testing note.** All Phase 54 bats are self-contained / CI-safe — isolated `AICHAT_CONFIG_DIR`
+and light-init paths, no dependency on a running model or ambient config. See
+[`feedback_ci_safe_tests`].
 
 ---
 

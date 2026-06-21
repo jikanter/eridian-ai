@@ -302,6 +302,13 @@ pub struct Cli {
     /// Display information
     #[clap(long, help_heading = "Discovery")]
     pub info: bool,
+    /// Print the resolved config file path and exit.
+    #[clap(long = "config-path", help_heading = "Discovery")]
+    pub config_path: bool,
+    /// Print one resolved config value by key (same keys as --info) and exit.
+    /// Pair with `-o json` for `{"key": value}`.
+    #[clap(long = "config-get", value_name = "KEY", help_heading = "Discovery")]
+    pub config_get: Option<String>,
     /// Sync models updates
     #[clap(long, help_heading = "Discovery")]
     pub sync_models: bool,

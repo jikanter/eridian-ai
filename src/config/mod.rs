@@ -1141,6 +1141,18 @@ impl Config {
     }
 
     pub fn sysinfo(&self) -> Result<String> {
+        let items = self.sysinfo_items();
+        let output = items
+            .iter()
+            .map(|(name, value)| format!("{name:<24}{value}\n"))
+            .collect::<Vec<String>>()
+            .join("");
+        Ok(output)
+    }
+
+    /// The resolved config key/value pairs shown by `--info` / `.info`. Shared
+    /// with `--config-get` (Phase 54E) so both surfaces stay in lockstep.
+    pub fn sysinfo_items(&self) -> Vec<(&'static str, String)> {
         let display_path = |path: &Path| path.display().to_string();
         let wrap = self
             .wrap
@@ -1210,12 +1222,7 @@ impl Config {
         if let Ok((_, Some(log_path))) = Self::log_config(self.working_mode.is_serve(), false) {
             items.push(("log_path", display_path(&log_path)));
         }
-        let output = items
-            .iter()
-            .map(|(name, value)| format!("{name:<24}{value}\n"))
-            .collect::<Vec<String>>()
-            .join("");
-        Ok(output)
+        items
     }
 
     pub fn update(config: &GlobalConfig, data: &str) -> Result<()> {

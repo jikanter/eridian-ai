@@ -82,6 +82,13 @@ async fn async_main() -> Result<()> {
     utils::set_color_when(cli.color);
     utils::set_quiet(cli.quiet);
 
+    // Phase 54E: print the resolved config file path. Pure static resolution —
+    // runs before config init so it needs no model/provider and never blocks.
+    if cli.config_path {
+        println!("{}", Config::config_file().display());
+        process::exit(0);
+    }
+
     // Phase 54A: emit the generated man page and exit. Pure output from the
     // clap definitions — no config load, so it works in any environment.
     if cli.man {
@@ -169,7 +176,10 @@ async fn async_main() -> Result<()> {
         // they need no heavy client setup (mirrors the knowledge ops above).
         || cli.memory_load.is_some()
         || cli.memory_reflect
-        || cli.memory_curate;
+        || cli.memory_curate
+        // Phase 54E: --config-get reads resolved config values and exits; no
+        // LLM client/network setup needed (mirrors --info).
+        || cli.config_get.is_some();
     setup_logger(working_mode.is_serve() || working_mode.is_mcp(), cli.verbose)?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
     let output_format = cli.output_format;
@@ -653,6 +663,26 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
             println!("{info}");
         }
         return Ok(());
+    }
+    // Phase 54E: read-only config value lookup (shares --info's key/value set).
+    if let Some(key) = cli.config_get.as_deref() {
+        let items = config.read().sysinfo_items();
+        match items.iter().find(|(k, _)| *k == key) {
+            Some((_, value)) => {
+                if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
+                    let obj = serde_json::json!({ key: value });
+                    println!("{}", serde_json::to_string_pretty(&obj)?);
+                } else {
+                    println!("{value}");
+                }
+                return Ok(());
+            }
+            None => {
+                let keys: Vec<String> = items.iter().map(|(k, _)| k.to_string()).collect();
+                let msg = utils::did_you_mean(&format!("Unknown config key `{key}`"), key, &keys);
+                return Err(anyhow::anyhow!(msg));
+            }
+        }
     }
     if let Some(addr) = cli.serve {
         return serve::run(config, addr).await;
