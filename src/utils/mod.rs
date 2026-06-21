@@ -119,6 +119,45 @@ pub fn should_show_cost(cost_flag: bool, quiet: bool) -> bool {
     cost_flag && !quiet
 }
 
+/// Levenshtein edit distance between two strings (insert/delete/substitute).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
+/// Nearest candidate to `input` by edit distance, if within `max_distance`.
+/// Powers "did you mean ...?" suggestions for unknown role/model/agent names.
+/// On ties, the first candidate at the minimum distance wins.
+pub fn nearest_match(input: &str, candidates: &[String], max_distance: usize) -> Option<String> {
+    candidates
+        .iter()
+        .map(|c| (c, levenshtein(input, c)))
+        .filter(|(_, d)| *d <= max_distance)
+        .min_by_key(|(_, d)| *d)
+        .map(|(c, _)| c.clone())
+}
+
+/// Append a "did you mean `X`?" hint to `base` when a near candidate exists.
+pub fn did_you_mean(base: &str, input: &str, candidates: &[String]) -> String {
+    // Allow a slightly looser bound for longer inputs.
+    let max_distance = (input.chars().count() / 3).max(2);
+    match nearest_match(input, candidates, max_distance) {
+        Some(s) => format!("{base}. Did you mean `{s}`?"),
+        None => base.to_string(),
+    }
+}
+
 /// Whether stdin is an interactive terminal. Paired with `IS_STDOUT_TERMINAL`;
 /// used by the non-interactive input policy (Phase 54C).
 pub static IS_STDIN_TERMINAL: LazyLock<bool> = LazyLock::new(|| std::io::stdin().is_terminal());
@@ -351,6 +390,32 @@ mod tests {
         assert!(spinner_suppressed(false, false, false));
         // Empty message suppresses.
         assert!(spinner_suppressed(true, false, true));
+    }
+
+    #[test]
+    fn nearest_match_suggests_close_typo() {
+        let cands = ["summarize".to_string(), "translate".to_string()];
+        assert_eq!(
+            nearest_match("summarise", &cands, 2).as_deref(),
+            Some("summarize")
+        );
+    }
+
+    #[test]
+    fn nearest_match_exact_is_distance_zero() {
+        let cands = ["translate".to_string(), "summarize".to_string()];
+        assert_eq!(
+            nearest_match("translate", &cands, 2).as_deref(),
+            Some("translate")
+        );
+    }
+
+    #[test]
+    fn nearest_match_none_when_too_far_or_empty() {
+        let cands = ["summarize".to_string(), "translate".to_string()];
+        assert_eq!(nearest_match("zzzzzzzz", &cands, 2), None);
+        let empty: [String; 0] = [];
+        assert_eq!(nearest_match("summarize", &empty, 2), None);
     }
 
     #[test]

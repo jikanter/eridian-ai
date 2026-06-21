@@ -22,7 +22,7 @@ before pulling it in.
 | 54A | Grouped `--help` (clap `help_heading`) + generated man page (`clap_mangen`) | additive | **Done** |
 | 54B | Standard flags: `--color=auto\|always\|never`, `-q/--quiet`, global `--verbose` | additive | **Done** |
 | 54C | Non-interactive safety: `--no-input` guard + destructive-op confirm + `--yes` | additive | **Done** |
-| 54D | "Did you mean?" suggestions for unknown role / model / session / agent | additive | -- |
+| 54D | "Did you mean?" suggestions for unknown role / model / session / agent | additive | **Done** |
 | 54E | `aichat config path` / `aichat config get KEY` introspection | additive | -- |
 | 54F | Noun-verb subcommand layer; existing flags become hidden deprecated aliases | **Ask-First** | -- |
 | 54G | Cross-surface syntax map doc (CLI `--` / legacy REPL `.` / pi `/`) | doc only | -- |
@@ -133,6 +133,11 @@ far-off input asserts no suggestion line. Unit: distance/threshold function over
 set.
 
 **Showboat.** Demo typo → suggestion for each of the four kinds. Deterministic.
+
+**Shipped.** Pure `nearest_match` (Levenshtein, threshold `max(2, len/3)`) + `did_you_mean` helper,
+wired into the unknown-role (`Role::resolve`), unknown-agent (`Agent::init`), and unknown-model
+(`Model::retrieve_model`) errors. Session is N/A by design — `-s NAME` creates a session on demand
+rather than erroring, so there is no unknown-session to suggest against.
 
 ---
 
