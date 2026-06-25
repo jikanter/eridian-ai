@@ -139,6 +139,13 @@ pub struct Cli {
     /// Also honored when the environment variable `AICHAT_REPL=pi` is set.
     #[clap(long)]
     pub pi_repl: bool,
+    /// Run as an ACP (Agent Client Protocol) agent over stdio, exposing
+    /// aichat's pi REPL surface to ACP clients like Zed. Brings up the aichat
+    /// bridge server, pins pi to aichat's models, then delegates ACP protocol
+    /// translation to the `pi-acp` adapter (override with AICHAT_ACP_COMMAND).
+    /// Requires `pi-acp` and `pi` on PATH.
+    #[clap(long, conflicts_with_all = ["pi_repl", "legacy_repl"])]
+    pub acp: bool,
     /// Force the built-in Reedline REPL even when `AICHAT_REPL=pi` would
     /// otherwise route through pi. Reserved for the cutover window so users
     /// can fall back to the legacy surface during the deprecation period.

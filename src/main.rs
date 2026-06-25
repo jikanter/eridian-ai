@@ -113,11 +113,16 @@ async fn async_main() -> Result<()> {
     // MCP mode uses stdin as transport — don't consume it here. The memory
     // write/reflect subcommands (Phase 34C/D) likewise own stdin: the curator
     // reads accept/skip decisions and the Reflector reads a transcript from it.
-    let owns_stdin = cli.mcp || cli.memory_reflect || cli.memory_curate;
+    // ACP mode owns stdin too: it is the JSON-RPC transport, forwarded straight
+    // to the pi-acp adapter. Reading it here as prompt text would steal the
+    // protocol stream.
+    let owns_stdin = cli.mcp || cli.acp || cli.memory_reflect || cli.memory_curate;
     let text = if owns_stdin { None } else { cli.text()? };
     let working_mode = if cli.mcp {
         WorkingMode::Mcp
-    } else if cli.serve.is_some() {
+    } else if cli.serve.is_some() || cli.acp {
+        // ACP behaves like the server: long-running, in-process bridge, logs to
+        // stderr (never stdout, which is the ACP channel), and no REPL prelude.
         WorkingMode::Serve
     } else if cli.mcp_server.is_some() {
         WorkingMode::Cmd
@@ -241,6 +246,12 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
 
     if let Some(ref server_cmd) = cli.mcp_server {
         return mcp_client::run_mcp_client_command(&cli, server_cmd).await;
+    }
+
+    // ACP agent over stdio. Like `--mcp`/`--serve`, it short-circuits the
+    // command/REPL dispatch entirely and runs until the client disconnects.
+    if cli.acp {
+        return crate::repl::pi::launch_acp(&config).await;
     }
 
     // Phase 15C: `--check` validates a role/pipeline definition without
