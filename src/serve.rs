@@ -1494,6 +1494,7 @@ impl Server {
             (&Method::POST, "/v1/state/agent") => self.state_agent(req).await,
             (&Method::POST, "/v1/state/exit-context") => self.state_exit_context(req).await,
             (&Method::POST, "/v1/state/macro") => self.state_macro(req).await,
+            (&Method::POST, "/v1/state/subprocess") => self.state_subprocess(req).await,
             // `.edit <target>` bridge: GET reads the current file text, POST
             // persists an edited body and reloads the live context. Both ride
             // the same path; the verb selects read vs. write.
@@ -1514,6 +1515,7 @@ impl Server {
             | (_, "/v1/state/agent")
             | (_, "/v1/state/exit-context")
             | (_, "/v1/state/macro")
+            | (_, "/v1/state/subprocess")
             | (_, "/v1/state/edit") => {
                 bridge_status_response(StatusCode::METHOD_NOT_ALLOWED, "Method Not Allowed")
             }
@@ -1704,6 +1706,52 @@ impl Server {
         Ok(json_response(
             StatusCode::OK,
             json!({ "ok": true, "kind": "macro", "name": body.name, "output": last }),
+        ))
+    }
+
+    /// `POST /v1/state/subprocess` body: `{"surface"?: "acp", "pid"?: <n>,
+    /// "session"?: "<name>"}` — all fields optional. Registers a `pi`
+    /// subprocess attached to this bridge and returns the live entity context
+    /// (active role/agent/session/rag names, `null` when none is bound).
+    ///
+    /// The bundled `aichat-bridge` extension calls this once on load when it
+    /// detects it is running under an external ACP host (Zed via `pi-acp`,
+    /// signalled by `AICHAT_BRIDGE_SURFACE=acp`). The host can then surface the
+    /// current aichat context in its session startup block. The body is
+    /// advisory — the bridge tolerates an empty or absent payload.
+    async fn state_subprocess(
+        self: &Arc<Self>,
+        req: hyper::Request<Incoming>,
+    ) -> Result<AppResponse> {
+        #[derive(Deserialize, Default)]
+        struct Body {
+            #[serde(default)]
+            surface: Option<String>,
+            #[serde(default)]
+            pid: Option<u64>,
+            #[serde(default)]
+            session: Option<String>,
+        }
+        // Optional payload: a bodyless or empty POST is valid and yields an
+        // all-`None` registration whose response is pure live context.
+        let body: Body = read_json_body(req).await.unwrap_or_default();
+        let cfg = self.config.read();
+        let context = json!({
+            "role": cfg.role.as_ref().map(|r| r.name()),
+            "agent": cfg.agent.as_ref().map(|a| a.name()),
+            "session": cfg.session.as_ref().map(|s| s.name()),
+            "rag": cfg.rag.as_ref().map(|r| r.name()),
+        });
+        Ok(json_response(
+            StatusCode::OK,
+            json!({
+                "ok": true,
+                "kind": "subprocess",
+                "surface": body.surface,
+                "pid": body.pid,
+                "session": body.session,
+                "context": context,
+            }),
         ))
     }
 

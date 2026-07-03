@@ -75,8 +75,11 @@ STUB
 
 # Spawn aichat in background; wait up to 5s for the stub pi to record env.
 start_aichat_bg() {
+  # $PI_EXTRA_ENV lets a test forward extra vars through the clean `env -i`
+  # (e.g. AICHAT_PI_NATIVE_MODELS=1 PI_CODING_AGENT_DIR=… to steer staging).
   env -i HOME="$HOME" AICHAT_CONFIG_DIR="$cfg" \
     PATH="$PI_STUB_PATH:/usr/bin:/bin" \
+    ${PI_EXTRA_ENV:-} \
     "$AICHAT_BIN" --pi-repl >"$BATS_TEST_TMPDIR/aichat.out" 2>&1 &
   AICHAT_PID=$!
   for _ in $(seq 1 100); do
@@ -305,18 +308,25 @@ stop_aichat_bg() {
   stop_aichat_bg
 }
 
-@test "bridge: bundled extension lands in .pi/extensions/ during launch" {
+@test "bridge: bundled extension lands in pi's agent extensions dir during launch" {
   make_blocking_stub
+
+  # The launcher stages the bundle into pi's agent dir (PI_CODING_AGENT_DIR),
+  # NOT <cwd>/.pi/extensions/. In native-models mode the agent dir is
+  # pi_real_agent_dir(), which honors PI_CODING_AGENT_DIR — so point it at a
+  # temp dir and assert the bundle lands there deterministically.
+  local piagent="$BATS_TEST_TMPDIR/piagent"
+  PI_EXTRA_ENV="AICHAT_PI_NATIVE_MODELS=1 PI_CODING_AGENT_DIR=$piagent"
   start_aichat_bg
 
-  # Sanity: the launcher staged the bundle into the CWD's .pi/extensions.
-  [ -f ".pi/extensions/aichat-bridge.js" ]
+  local staged="$piagent/extensions/aichat-bridge.js"
+  [ -f "$staged" ]
   # Bundle should contain the registerCommand call and the bridge env name.
-  grep -q 'registerCommand' .pi/extensions/aichat-bridge.js
-  grep -q 'AICHAT_BRIDGE_URL' .pi/extensions/aichat-bridge.js
+  grep -q 'registerCommand' "$staged"
+  grep -q 'AICHAT_BRIDGE_URL' "$staged"
 
   stop_aichat_bg
 
   # And cleanup removed it (the launcher cleans up when AICHAT_KEEP_PI_STAGE is unset).
-  [ ! -f ".pi/extensions/aichat-bridge.js" ]
+  [ ! -f "$staged" ]
 }

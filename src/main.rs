@@ -357,6 +357,7 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
         return run_install_deps(&config);
     }
 
+
     // Phase 23B: `--compare ROLE1 ROLE2` runs the same input through two roles
     // and prints a side-by-side comparison (or a JSON object under `-o json`).
     if cli.compare.len() == 2 {

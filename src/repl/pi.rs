@@ -264,6 +264,11 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
     let mut command = Command::new(&pi_bin);
     command.args(pi_repl_args());
     bridge.apply_env(&mut command);
+    // Tag the surface so the bundled extension can tell an aichat-owned
+    // terminal REPL apart from an external ACP host (Zed via pi-acp). Only the
+    // latter registers itself via `POST /v1/state/subprocess`; here the value
+    // is `repl`, so that registration is intentionally skipped.
+    command.env("AICHAT_BRIDGE_SURFACE", "repl");
     let spawn_result = command.status().await;
 
     bridge.teardown();
@@ -306,6 +311,11 @@ pub async fn launch_acp(config: &GlobalConfig) -> Result<()> {
     let mut command = Command::new(&adapter_bin);
     command.args(&adapter_args);
     bridge.apply_env(&mut command);
+    // Signal the bundled extension that pi is running under an external ACP
+    // host, so it registers via `POST /v1/state/subprocess` and the host can
+    // surface aichat's live context. Set on the adapter; pi-acp passes its env
+    // through to the `pi` subprocess that loads the extension.
+    command.env("AICHAT_BRIDGE_SURFACE", "acp");
     // Pin the adapter's pi subprocess to the exact binary aichat resolved, so
     // it matches the bridge-staged, model-pinned agent dir. pi-acp reads
     // `PI_ACP_PI_COMMAND` when spawning pi.

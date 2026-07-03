@@ -304,12 +304,17 @@ function aichatBridge(pi) {
       );
     }
   });
-  if (process.env.ZED_BRIDGE_URL) {
+  if (process.env.AICHAT_BRIDGE_SURFACE === "acp") {
     void (async () => {
-      await bridgeFetch("/v1/state/subprocess", {
-        method: "POST",
-        body: {}
-      });
+      try {
+        await bridgeFetch("/v1/state/subprocess", {
+          method: "POST",
+          body: { surface: "acp" }
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error(`aichat-bridge: subprocess registration failed: ${detail}`);
+      }
     })();
   }
 }
