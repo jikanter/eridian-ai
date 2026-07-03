@@ -1,7 +1,17 @@
 use anyhow::{Context, Result};
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, Parser, ValueEnum};
 use is_terminal::IsTerminal;
 use std::io::{stdin, Read};
+
+/// Render the roff(7) man page for the CLI to a byte buffer, generated from the
+/// live clap definitions so it never drifts from the flags. Backs `--man`.
+pub fn render_man_page() -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    clap_mangen::Man::new(Cli::command())
+        .render(&mut buf)
+        .context("failed to render man page")?;
+    Ok(buf)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
@@ -96,105 +106,119 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(author, version = VERSION, about, long_about = None)]
 pub struct Cli {
     /// Select a LLM model
-    #[clap(short, long)]
+    #[clap(short, long, help_heading = "Core")]
     pub model: Option<String>,
     /// Use the system prompt
-    #[clap(long)]
+    #[clap(long, help_heading = "Core")]
     pub prompt: Option<String>,
     /// Select a role
-    #[clap(short, long)]
+    #[clap(short, long, help_heading = "Core")]
     pub role: Option<String>,
     /// Start or join a session
-    #[clap(short = 's', long)]
+    #[clap(short = 's', long, help_heading = "Core")]
     pub session: Option<Option<String>>,
     /// Ensure the session is empty
-    #[clap(long)]
+    #[clap(long, help_heading = "Sessions")]
     pub empty_session: bool,
     /// Ensure the new conversation is saved to the session
-    #[clap(long)]
+    #[clap(long, help_heading = "Sessions")]
     pub save_session: bool,
     /// Start a agent
-    #[clap(short = 'a', long)]
+    #[clap(short = 'a', long, help_heading = "Core")]
     pub agent: Option<String>,
     /// Set agent variables
-    #[clap(long, value_names = ["NAME", "VALUE"], num_args = 2)]
+    #[clap(long, value_names = ["NAME", "VALUE"], num_args = 2, help_heading = "Core")]
     pub agent_variable: Vec<String>,
     /// Set role variable (key=value)
-    #[clap(short = 'v', long = "variable", value_name = "KEY=VALUE")]
+    #[clap(short = 'v', long = "variable", value_name = "KEY=VALUE", help_heading = "Core")]
     pub variable: Vec<String>,
+    /// Never prompt for input. If an action needs interactive input, fail loudly
+    /// instead of hanging. Useful in scripts and CI.
+    #[clap(long = "no-input", help_heading = "Core")]
+    pub no_input: bool,
+    /// Proceed past confirmation prompts for destructive actions without asking.
+    #[clap(long = "yes", visible_alias = "force", help_heading = "Core")]
+    pub yes: bool,
     /// Start a RAG
-    #[clap(long)]
+    #[clap(long, help_heading = "RAG")]
     pub rag: Option<String>,
     /// Rebuild the RAG to sync document changes
-    #[clap(long)]
+    #[clap(long, help_heading = "RAG")]
     pub rebuild_rag: bool,
     /// Execute a macro
-    #[clap(long = "macro", value_name = "MACRO")]
+    #[clap(long = "macro", value_name = "MACRO", help_heading = "Core")]
     pub macro_name: Option<String>,
     /// Serve the LLM API and WebAPP
-    #[clap(long, value_name = "ADDRESS")]
+    #[clap(long, value_name = "ADDRESS", help_heading = "Server")]
     pub serve: Option<Option<String>>,
     /// Launch the pi coding-agent harness as the REPL surface instead of the
     /// built-in Reedline REPL. Requires `pi` on PATH (see https://pi.dev).
     /// Also honored when the environment variable `AICHAT_REPL=pi` is set.
-    #[clap(long)]
+    #[clap(long, help_heading = "REPL")]
     pub pi_repl: bool,
+    /// Run as an ACP (Agent Client Protocol) agent over stdio, exposing
+    /// aichat's pi REPL surface to ACP clients like Zed. Brings up the aichat
+    /// bridge server, pins pi to aichat's models, then delegates ACP protocol
+    /// translation to the `pi-acp` adapter (override with AICHAT_ACP_COMMAND).
+    /// Requires `pi-acp` and `pi` on PATH.
+    #[clap(long, conflicts_with_all = ["pi_repl", "legacy_repl"])]
+    pub acp: bool,
     /// Force the built-in Reedline REPL even when `AICHAT_REPL=pi` would
     /// otherwise route through pi. Reserved for the cutover window so users
     /// can fall back to the legacy surface during the deprecation period.
-    #[clap(long, visible_alias="raw-repl", conflicts_with = "pi_repl")]
+    #[clap(long, visible_alias="raw-repl", conflicts_with = "pi_repl", help_heading = "REPL")]
     pub legacy_repl: bool,
     /// Convert an aichat session file to pi's JSONL session-tree format
     /// and write the result to stdout (or to --out PATH). Accepts either
     /// a bare session name (resolved against the configured sessions
     /// directory) or a path to a `.yaml` session file.
-    #[clap(long = "convert-session", value_name = "NAME_OR_PATH")]
+    #[clap(long = "convert-session", value_name = "NAME_OR_PATH", help_heading = "Sessions")]
     pub convert_session: Option<String>,
     /// Conversion target for --convert-session. Currently `pi` is the only
     /// supported target; the flag exists so future targets fit cleanly.
-    #[clap(long = "to", value_name = "TARGET", default_value = "pi", requires = "convert_session")]
+    #[clap(long = "to", value_name = "TARGET", default_value = "pi", requires = "convert_session", help_heading = "Sessions")]
     pub convert_to: String,
     /// Destination path for --convert-session output. When omitted, the
     /// converted JSONL is streamed to stdout so it pipes into `pi` or
     /// `jq` directly.
-    #[clap(long = "out", value_name = "PATH", requires = "convert_session")]
+    #[clap(long = "out", value_name = "PATH", requires = "convert_session", help_heading = "Sessions")]
     pub convert_out: Option<String>,
     /// Migrate all legacy `.yaml` sessions in the sessions directory to the
     /// native pi JSONL format (`.jsonl`), in place. The YAML session format is
     /// deprecated; this is the one-shot bulk converter. Recurses into the
     /// auto-named `_/` subdir. Each converted `.yaml` is removed after its
     /// `.jsonl` is written.
-    #[clap(long = "migrate-sessions")]
+    #[clap(long = "migrate-sessions", help_heading = "Sessions")]
     pub migrate_sessions: bool,
     /// Run as an MCP stdio server
-    #[clap(long)]
+    #[clap(long, help_heading = "MCP")]
     pub mcp: bool,
     /// Connect to an external MCP server (stdio transport)
-    #[clap(long = "mcp-server", value_name = "COMMAND")]
+    #[clap(long = "mcp-server", value_name = "COMMAND", help_heading = "MCP")]
     pub mcp_server: Option<String>,
     /// List tools from a connected MCP server
-    #[clap(long = "list-tools")]
+    #[clap(long = "list-tools", help_heading = "MCP")]
     pub list_tools: bool,
     /// Show schema for a specific MCP tool
-    #[clap(long = "tool-info", value_name = "TOOL")]
+    #[clap(long = "tool-info", value_name = "TOOL", help_heading = "MCP")]
     pub tool_info: Option<String>,
     /// Call an MCP tool directly
-    #[clap(long, value_name = "TOOL")]
+    #[clap(long, value_name = "TOOL", help_heading = "MCP")]
     pub call: Option<String>,
     /// JSON arguments for --call
-    #[clap(long = "json", value_name = "JSON", requires = "call")]
+    #[clap(long = "json", value_name = "JSON", requires = "call", help_heading = "MCP")]
     pub call_json: Option<String>,
     /// Tool call arguments as KEY=VALUE pairs (repeatable, use with --call)
-    #[clap(long = "arg", value_name = "KEY=VALUE", requires = "call")]
+    #[clap(long = "arg", value_name = "KEY=VALUE", requires = "call", help_heading = "MCP")]
     pub call_args: Vec<String>,
     /// Bypass MCP schema cache (force re-fetch from server)
-    #[clap(long)]
+    #[clap(long, help_heading = "MCP")]
     pub refresh: bool,
     /// Validate a portable `mcp.json` declarations file. With no PATH, searches
     /// `./mcp.json`, `$XDG_CONFIG_HOME/mcp/mcp.json`, then `~/.config/mcp/mcp.json`.
     /// Exits 0 when valid, non-zero with a diagnostic when not. Combine with
     /// `-o json` for machine-readable output.
-    #[clap(long = "validate-mcp-config", value_name = "PATH")]
+    #[clap(long = "validate-mcp-config", value_name = "PATH", help_heading = "MCP")]
     pub validate_mcp_config: Option<Option<String>>,
     /// Validate a role or pipeline definition without executing it.
     /// Checks stage existence, model/tool capability, DAG structure, cycles,
@@ -203,89 +227,103 @@ pub struct Cli {
     /// zero-token. Combine with `-r <role>`, `--pipe --stage ...`, or
     /// `--pipe --pipe-def <file>`. Exits 0 when valid, 3 when not. Add
     /// `-o json` for machine-readable output.
-    #[clap(long)]
+    #[clap(long, help_heading = "Execution")]
     pub check: bool,
     /// Run a multi-stage pipeline
-    #[clap(long)]
+    #[clap(long, help_heading = "Execution")]
     pub pipe: bool,
     /// Run input through two roles and compare them side-by-side
-    #[clap(long, value_names = ["ROLE1", "ROLE2"], num_args = 2)]
+    #[clap(long, value_names = ["ROLE1", "ROLE2"], num_args = 2, help_heading = "Execution")]
     pub compare: Vec<String>,
     /// Pipeline stages (role or role@model)
-    #[clap(long = "stage", value_name = "ROLE[@MODEL]", requires = "pipe")]
+    #[clap(long = "stage", value_name = "ROLE[@MODEL]", requires = "pipe", help_heading = "Execution")]
     pub stages: Vec<String>,
     /// Pipeline definition file
-    #[clap(long = "pipe-def", value_name = "FILE", requires = "pipe")]
+    #[clap(long = "pipe-def", value_name = "FILE", requires = "pipe", help_heading = "Execution")]
     pub pipe_def: Option<String>,
     /// Bypass the pipeline stage output cache
-    #[clap(long = "no-cache", requires = "pipe")]
+    #[clap(long = "no-cache", requires = "pipe", help_heading = "Execution")]
     pub no_cache: bool,
     /// Output format (json, jsonl, tsv, csv, text)
-    #[clap(short = 'o', long = "output", value_name = "FORMAT")]
+    #[clap(short = 'o', long = "output", value_name = "FORMAT", help_heading = "Output")]
     pub output_format: Option<OutputFormat>,
+    /// When to colorize output: auto (default), always, never. Overrides
+    /// NO_COLOR and TTY detection — use `always` to keep color through a pager.
+    #[clap(long = "color", value_name = "WHEN", default_value = "auto", help_heading = "Output")]
+    pub color: crate::utils::ColorWhen,
     /// Execute commands in natural language
-    #[clap(short = 'e', long)]
+    #[clap(short = 'e', long, help_heading = "Execution")]
     pub execute: bool,
     /// Output code only
-    #[clap(short = 'c', long)]
+    #[clap(short = 'c', long, help_heading = "Execution")]
     pub code: bool,
     /// Include files, directories, or URLs
-    #[clap(short = 'f', long, value_name = "FILE")]
+    #[clap(short = 'f', long, value_name = "FILE", help_heading = "Input")]
     pub file: Vec<String>,
     /// Strip <think>...</think> blocks from the model response (disables streaming)
-    #[clap(long)]
+    #[clap(long, help_heading = "Output")]
     pub strip_thinking: bool,
     /// Turn off stream mode
-    #[clap(short = 'S', long)]
+    #[clap(short = 'S', long, help_heading = "Output")]
     pub no_stream: bool,
     /// Display cost summary on stderr
-    #[clap(long)]
+    #[clap(long, help_heading = "Output")]
     pub cost: bool,
+    /// Suppress the spinner and cost line (non-essential stderr); stdout is
+    /// unaffected. Overrides --cost.
+    #[clap(short = 'q', long, help_heading = "Output")]
+    pub quiet: bool,
     /// Display interaction trace on stderr
-    #[clap(long)]
+    #[clap(long, help_heading = "Output")]
     pub trace: bool,
     /// Process stdin line-by-line, one invocation per record
-    #[clap(long)]
+    #[clap(long, help_heading = "Input")]
     pub each: bool,
     /// Number of parallel workers for --each
-    #[clap(long, default_value = "1", requires = "each")]
+    #[clap(long, default_value = "1", requires = "each", help_heading = "Input")]
     pub parallel: usize,
     /// Display the message without sending it
-    #[clap(long)]
+    #[clap(long, help_heading = "Output")]
     pub dry_run: bool,
     /// Print the assembled context (system prompt, injected memory, user turn,
     /// tool schemas) with a per-section token breakdown, then exit without
     /// calling the model. A richer dry-run for context engineering. Pair with
     /// `-o json` for machine consumption.
-    #[clap(long = "explain-context")]
+    #[clap(long = "explain-context", help_heading = "Output")]
     pub explain_context: bool,
     /// Install the external companion tools aichat leans on (uv, showboat, pi),
     /// skipping any already on PATH. Pair with `--dry-run` to preview the plan
     /// without running any installer.
-    #[clap(long = "install-deps")]
+    #[clap(long = "install-deps", help_heading = "Setup")]
     pub install_deps: bool,
-    /// Install the bundled pi bridge extension into a pi agent extensions dir so
-    /// `pi` loads aichat's slash-commands when launched by an external ACP host
-    /// (Zed via pi-acp). Defaults to `~/.pi/agent/extensions/`; pass a DIR to
-    /// override. Overwrites any existing bundle. See docs/features/zed.md.
-    #[clap(long = "install-pi-extension", value_name = "DIR")]
-    pub install_pi_extension: Option<Option<String>>,
     /// Ask a model to find the showboat demo under docs/demos/ that best matches
     /// FEATURE and print its path. Pair with `--dry-run` to print the prompt
     /// instead of calling the model.
-    #[clap(long = "demo", value_name = "FEATURE")]
+    #[clap(long = "demo", value_name = "FEATURE", help_heading = "Setup")]
     pub demo: Option<String>,
+    /// Emit a roff(7) man page generated from these flags to stdout.
+    /// Install with `aichat --man > man/aichat.1`. Hidden because it is a
+    /// build/packaging helper, not an everyday flag.
+    #[clap(long = "man", hide = true, help_heading = "Setup")]
+    pub man: bool,
     /// Display information
-    #[clap(long)]
+    #[clap(long, help_heading = "Discovery")]
     pub info: bool,
+    /// Print the resolved config file path and exit.
+    #[clap(long = "config-path", help_heading = "Discovery")]
+    pub config_path: bool,
+    /// Print one resolved config value by key (same keys as --info) and exit.
+    /// Pair with `-o json` for `{"key": value}`.
+    #[clap(long = "config-get", value_name = "KEY", help_heading = "Discovery")]
+    pub config_get: Option<String>,
     /// Sync models updates
-    #[clap(long)]
+    #[clap(long, help_heading = "Discovery")]
     pub sync_models: bool,
     /// List all available chat models
-    #[clap(long)]
+    #[clap(long, help_heading = "Discovery")]
     pub list_models: bool,
     /// List all roles
-    #[clap(long)]
+    #[clap(long, help_heading = "Discovery")]
     pub list_roles: bool,
     /// Create a new role that `extends:` an existing one. Writes
     /// `<roles_dir>/<NEW_NAME>.md` with parent-override hints commented out
@@ -294,107 +332,111 @@ pub struct Cli {
         long = "fork-role",
         value_names = ["SOURCE", "NEW_NAME"],
         num_args = 2,
+        help_heading = "Roles",
     )]
     pub fork_role: Vec<String>,
     /// Print a human-readable description of a role — what it
     /// does, how it composes (extends/include/pipeline/ports/capabilities),
     /// and where the source file lives. Pair with `-o json` for machine
     /// consumption.
-    #[clap(long = "explain-role", value_name = "NAME")]
+    #[clap(long = "explain-role", value_name = "NAME", help_heading = "Roles")]
     pub explain_role: Option<String>,
     /// Search roles by capability tag and/or port type. Combine
     /// with `--capability`, `--accepts`, and/or `--produces` to filter.
-    #[clap(long = "find-role")]
+    #[clap(long = "find-role", help_heading = "Discovery")]
     pub find_role: bool,
     /// Filter for `--find-role` — capability tag substring match
     /// (case-insensitive). Also allowed alongside `--list-roles`.
-    #[clap(long, value_name = "TAG")]
+    #[clap(long, value_name = "TAG", help_heading = "Discovery")]
     pub capability: Option<String>,
     /// Filter for `--find-role` — input port type
     /// (`text`, `json`, `array`, or a literal `json{...}` shape).
-    #[clap(long, value_name = "TYPE")]
+    #[clap(long, value_name = "TYPE", help_heading = "Discovery")]
     pub accepts: Option<String>,
     /// Filter for `--find-role` — output port type
     /// (`text`, `json`, `array`, or a literal `json{...}` shape).
-    #[clap(long, value_name = "TYPE")]
+    #[clap(long, value_name = "TYPE", help_heading = "Discovery")]
     pub produces: Option<String>,
-    /// Include port signatures, capabilities, and composition info
-    /// in `--list-roles` / `--find-role` output.
-    #[clap(long)]
+    /// Verbose mode: raise the log level to debug (logs to stderr, overriding
+    /// AICHAT_LOG_LEVEL) and include port signatures, capabilities, and
+    /// composition info in `--list-roles` / `--find-role` output.
+    #[clap(long, help_heading = "Output")]
     pub verbose: bool,
     /// List all prompts
-    #[clap(long)]
+    #[clap(long, help_heading = "Discovery")]
     pub list_prompts: bool,
     /// List all sessions
-    #[clap(long)]
+    #[clap(long, help_heading = "Discovery")]
     pub list_sessions: bool,
     /// List all agents
-    #[clap(long)]
+    #[clap(long, help_heading = "Discovery")]
     pub list_agents: bool,
     /// List all RAGs
-    #[clap(long)]
+    #[clap(long, help_heading = "Discovery")]
     pub list_rags: bool,
     /// List all macros
-    #[clap(long)]
+    #[clap(long, help_heading = "Discovery")]
     pub list_macros: bool,
     /// Attach a knowledge base to this invocation (repeatable)
-    #[clap(long = "knowledge", value_name = "KB_NAME")]
+    #[clap(long = "knowledge", value_name = "KB_NAME", help_heading = "Knowledge")]
     pub knowledge: Vec<String>,
     /// Bypass the LLM, search the named KB(s) for the given query
-    #[clap(long = "knowledge-search", value_name = "QUERY")]
+    #[clap(long = "knowledge-search", value_name = "QUERY", help_heading = "Knowledge")]
     pub knowledge_search: Option<String>,
     /// Compile source files into a knowledge base (requires -f)
-    #[clap(long = "knowledge-compile", value_name = "KB_NAME")]
+    #[clap(long = "knowledge-compile", value_name = "KB_NAME", help_heading = "Knowledge")]
     pub knowledge_compile: Option<String>,
     /// List all compiled knowledge bases
-    #[clap(long = "knowledge-list")]
+    #[clap(long = "knowledge-list", help_heading = "Knowledge")]
     pub knowledge_list: bool,
     /// Show stats (fact count, tag distribution, per-source coverage) for a KB
-    #[clap(long = "knowledge-stat", value_name = "KB_NAME")]
+    #[clap(long = "knowledge-stat", value_name = "KB_NAME", help_heading = "Knowledge")]
     pub knowledge_stat: Option<String>,
     /// Show a single fact; format is `KB_NAME:FACT_ID` (e.g. `docs:fact-abc123`)
-    #[clap(long = "knowledge-show", value_name = "KB:ID")]
+    #[clap(long = "knowledge-show", value_name = "KB:ID", help_heading = "Knowledge")]
     pub knowledge_show: Option<String>,
     /// Run the Reflector role over a KB, emit candidate patches (JSON)
-    #[clap(long = "knowledge-reflect", value_name = "KB_NAME")]
+    #[clap(long = "knowledge-reflect", value_name = "KB_NAME", help_heading = "Knowledge")]
     pub knowledge_reflect: Option<String>,
     /// Run the Curator role over candidates and apply accepted ones
-    #[clap(long = "knowledge-curate", value_name = "KB_NAME")]
+    #[clap(long = "knowledge-curate", value_name = "KB_NAME", help_heading = "Knowledge")]
     pub knowledge_curate: Option<String>,
     /// Path to a JSON candidate set (use with --knowledge-curate)
     #[clap(
         long = "knowledge-candidates",
         value_name = "FILE",
-        requires = "knowledge_curate"
+        requires = "knowledge_curate",
+        help_heading = "Knowledge"
     )]
     pub knowledge_candidates: Option<String>,
     /// Path to a JSONL trace file (use with --knowledge-reflect or --knowledge-curate)
-    #[clap(long = "knowledge-trace", value_name = "FILE")]
+    #[clap(long = "knowledge-trace", value_name = "FILE", help_heading = "Knowledge")]
     pub knowledge_trace: Option<String>,
     /// Run the memory Reflector over a transcript, emit candidate topic files (JSON)
-    #[clap(long = "memory-reflect")]
+    #[clap(long = "memory-reflect", help_heading = "Memory")]
     pub memory_reflect: bool,
     /// Run the memory curator gate (reflect or --memory-candidates) and write accepted topic files
-    #[clap(long = "memory-curate")]
+    #[clap(long = "memory-curate", help_heading = "Memory")]
     pub memory_curate: bool,
     /// Transcript file for --memory-reflect / --memory-curate (default: stdin)
-    #[clap(long = "memory-transcript", value_name = "FILE")]
+    #[clap(long = "memory-transcript", value_name = "FILE", help_heading = "Memory")]
     pub memory_transcript: Option<String>,
     /// JSON candidate set; skips the Reflector (use with --memory-curate)
     #[clap(
         long = "memory-candidates",
         value_name = "FILE",
-        requires = "memory_curate"
+        requires = "memory_curate",
+        help_heading = "Memory"
     )]
     pub memory_candidates: Option<String>,
     /// Auto-accept every memory candidate without prompting (opt-in; hidden by design)
-    #[clap(long = "memory-auto-curate", hide = true, requires = "memory_curate")]
+    #[clap(long = "memory-auto-curate", hide = true, requires = "memory_curate", help_heading = "Memory")]
     pub memory_auto_curate: bool,
     /// Resolve a topic reference against MEMORY.md and print its (capped) content
-    #[clap(long = "memory-load", value_name = "REFERENCE")]
+    #[clap(long = "memory-load", value_name = "REFERENCE", help_heading = "Memory")]
     pub memory_load: Option<String>,
     /// At REPL exit, reflect over the session and gate memory candidates (opt-in)
-    #[clap(long = "memory-reflect-on-exit")]
+    #[clap(long = "memory-reflect-on-exit", help_heading = "Memory")]
     pub memory_reflect_on_exit: bool,
     /// Input text
     #[clap(trailing_var_arg = true)]

@@ -169,28 +169,6 @@ teardown() {
   ! grep -q 'ZED_BRIDGE_URL' "$bundle"
 }
 
-@test "zed-acp: --install-pi-extension writes the bundle to a target dir" {
-  dest="$BATS_TEST_TMPDIR/piext"
-  run "$AICHAT_BIN" --install-pi-extension "$dest"
-  [ "$status" -eq 0 ]
-  [ -f "$dest/aichat-bridge.js" ]
-  # The installed artifact is the real bundle, not a stub.
-  grep -q '/v1/state/subprocess' "$dest/aichat-bridge.js"
-  # It tells the user where it landed so Zed wiring can point at it.
-  echo "$output" | grep -q "$dest/aichat-bridge.js"
-}
-
-@test "zed-acp: --install-pi-extension refreshes an existing install" {
-  dest="$BATS_TEST_TMPDIR/piext2"
-  mkdir -p "$dest"
-  printf 'stale' >"$dest/aichat-bridge.js"
-  run "$AICHAT_BIN" --install-pi-extension "$dest"
-  [ "$status" -eq 0 ]
-  # An explicit install overwrites so an aichat upgrade ships the new bridge.
-  ! grep -q '^stale$' "$dest/aichat-bridge.js"
-  grep -q '/v1/state/subprocess' "$dest/aichat-bridge.js"
-}
-
 @test "zed-acp: terminal REPL launch marks its surface as repl" {
   make_blocking_stub
   start_aichat_bg

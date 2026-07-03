@@ -108,39 +108,145 @@ const STAGED_EXTENSION_NAME: &str = "aichat-bridge.js";
 #[folder = "assets/pi-extensions/"]
 struct PiExtensionsAsset;
 
-/// Install the bundled bridge extension into a pi agent `extensions/` dir so
-/// a `pi` launched by an external ACP host (Zed via `pi-acp`) loads aichat's
-/// slash-commands. Unlike the throwaway launch-time staging, this is a
-/// permanent, user-invoked install: it overwrites any existing bundle so an
-/// aichat upgrade ships the current bridge. Returns the written path.
-///
-/// `dir` overrides the target extensions dir; `None` resolves the device-wide
-/// default `~/.pi/agent/extensions/`.
-pub fn install_extension(dir: Option<PathBuf>) -> Result<PathBuf> {
-    let ext_dir = match dir {
-        Some(d) => d,
-        None => default_pi_extensions_dir()?,
-    };
-    let ext_bytes = match PiExtensionsAsset::get(STAGED_EXTENSION_NAME) {
-        Some(f) => f.data,
-        None => bail!(
-            "aichat was built without the pi extension bundle (assets/pi-extensions/{STAGED_EXTENSION_NAME})",
-        ),
-    };
-    std::fs::create_dir_all(&ext_dir)
-        .with_context(|| format!("failed to create {}", ext_dir.display()))?;
-    let path = ext_dir.join(STAGED_EXTENSION_NAME);
-    std::fs::write(&path, ext_bytes.as_ref())
-        .with_context(|| format!("failed to install {}", path.display()))?;
-    Ok(path)
+/// Hint emitted when the `pi-acp` adapter is not discoverable on `PATH`.
+const ACP_INSTALL_HINT: &str = "\
+`pi-acp` not found on PATH.
+
+The ACP interface delegates protocol translation to the pi-acp adapter:
+  npm install -g pi-acp
+
+Or point aichat at a custom adapter with AICHAT_ACP_COMMAND
+(e.g. `AICHAT_ACP_COMMAND='npx -y pi-acp'`).";
+
+/// Env var overriding the ACP adapter invocation. Whitespace-split into a
+/// program plus leading args (e.g. `npx -y pi-acp`). Defaults to `pi-acp`.
+const ACP_ADAPTER_ENV: &str = "AICHAT_ACP_COMMAND";
+
+/// Shared bridge + staging context for launching a pi-backed surface — the
+/// interactive REPL ([`launch_pi`]) or the ACP adapter ([`launch_acp`]).
+/// Brings up (or reuses) the aichat HTTP bridge, pins pi to aichat's models
+/// via a staged agent dir, and stages the slash-command bridge extension.
+/// Holds the teardown handles so the caller can drive the child's lifetime.
+struct PiBridge {
+    bridge_url: String,
+    token: Option<String>,
+    /// `PI_CODING_AGENT_DIR` the child should read. `Some` when models are
+    /// pinned to aichat (the default); `None` in native-models mode, where the
+    /// child uses pi's real agent dir and we don't override the env var.
+    agent_dir_override: Option<PathBuf>,
+    /// Shutdown handle for the in-process server. `None` when we reused an
+    /// already-running external server (which we must leave running).
+    stop_server: Option<tokio::sync::oneshot::Sender<()>>,
+    staging: StagedExtension,
+    agent_stage: Option<StagedAgentDir>,
 }
 
-/// Device-wide pi agent extensions dir, `~/.pi/agent/extensions/`. pi
-/// auto-discovers extensions here regardless of who spawns it, so a bundle
-/// installed here is loaded by a `pi` that pi-acp launches under Zed.
-fn default_pi_extensions_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not resolve home directory"))?;
-    Ok(home.join(".pi").join("agent").join("extensions"))
+impl PiBridge {
+    /// Bring up the bridge and stage the agent dir + extension. Identical setup
+    /// for both the REPL and ACP surfaces — only the child process differs.
+    async fn setup(config: &GlobalConfig) -> Result<Self> {
+        // Prefer an aichat server already listening on the conventional port
+        // range: reusing it means one inference process instead of two, and the
+        // user's live roles/sessions on that server stay addressable. Fall back
+        // to a private in-process server on an ephemeral port when none is found.
+        let (bridge_url, token, stop_server) = match probe_existing_server().await {
+            Some(url) => {
+                info!("aichat bridge: reusing existing aichat server at {url}");
+                // `probe_existing_server` only returns a URL after a successful
+                // authenticated `/v1/state/info` call, so AICHAT_BRIDGE_TOKEN is
+                // guaranteed present here and the remote `/v1/state/*` slash
+                // commands will accept it. Pass that same token to the child.
+                (url, std::env::var("AICHAT_BRIDGE_TOKEN").ok(), None)
+            }
+            None => {
+                let listener = TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .context("aichat bridge: failed to bind ephemeral port on 127.0.0.1")?;
+                let addr = listener
+                    .local_addr()
+                    .context("aichat bridge: listener has no local address")?;
+                let url = format!("http://127.0.0.1:{}", addr.port());
+                let token = mint_bridge_token();
+                // Hand the freshly minted token straight to the in-process server
+                // instead of mutating our own process environment. Mutating env at
+                // runtime (set_var) is unsafe on the multi-threaded runtime — see
+                // the read-once discipline in serve::run. The child process still
+                // receives the token explicitly via [`apply_env`].
+                let stop = serve::run_on(listener, config, Some(token.clone()))
+                    .await
+                    .context("aichat bridge: failed to start in-process server")?;
+                info!("aichat bridge listening on {url}");
+                (url, Some(token), Some(stop))
+            }
+        };
+
+        // Pin pi to aichat's models: stage a throwaway agent dir whose
+        // `models.json` registers only the in-process aichat server as a provider,
+        // and point pi at it via `PI_CODING_AGENT_DIR`. pi then ignores its own
+        // configured providers/models entirely. Opt out with
+        // `AICHAT_PI_NATIVE_MODELS=1` to keep pi's own model config.
+        let agent_stage = if std::env::var_os(PI_NATIVE_MODELS_ENV).is_some() {
+            None
+        } else {
+            match stage_pi_agent_dir(config, &bridge_url) {
+                Ok(staged) => Some(staged),
+                Err(e) => {
+                    warn!("aichat bridge: could not pin pi to aichat models ({e}); pi will use its own model config");
+                    None
+                }
+            }
+        };
+
+        // Stage the bridge extension into the agent dir pi will actually read.
+        // pi auto-discovers extensions from `<PI_CODING_AGENT_DIR>/extensions/`;
+        // when we pin models that is our throwaway stage, otherwise it is pi's
+        // real agent dir. Staging anywhere else (e.g. `<cwd>/.pi/extensions/`) is
+        // silently ignored by pi and our slash-commands never register.
+        let agent_dir: PathBuf = match &agent_stage {
+            Some(staged) => staged.path.clone(),
+            None => pi_real_agent_dir(),
+        };
+        let staging = StagedExtension::stage(&agent_dir)?;
+
+        Ok(Self {
+            bridge_url,
+            token,
+            agent_dir_override: agent_stage.as_ref().map(|s| s.path.clone()),
+            stop_server,
+            staging,
+            agent_stage,
+        })
+    }
+
+    /// Export the bridge env onto a child command (pi, or the ACP adapter
+    /// which in turn spawns pi). The child inherits `PI_CODING_AGENT_DIR` so
+    /// pi-acp's own pi subprocess reads our staged, model-pinned agent dir.
+    fn apply_env(&self, command: &mut Command) {
+        command.env("AICHAT_BRIDGE_URL", &self.bridge_url);
+        if let Some(token) = &self.token {
+            command.env("AICHAT_BRIDGE_TOKEN", token);
+        }
+        if let Some(dir) = &self.agent_dir_override {
+            command.env(PI_AGENT_DIR_ENV, dir);
+        }
+    }
+
+    /// Signal the in-process server to shut down (no-op when we reused one) and
+    /// clean up the staged extension + agent dir, unless the user asked us not
+    /// to via `AICHAT_KEEP_PI_STAGE` (handy when debugging load failures). No
+    /// env cleanup needed: the token was handed to the server and the child
+    /// explicitly, never written into our own process environment.
+    fn teardown(self) {
+        if let Some(stop) = self.stop_server {
+            let _ = stop.send(());
+        }
+        if std::env::var_os("AICHAT_KEEP_PI_STAGE").is_none() {
+            self.staging.cleanup();
+            if let Some(staged) = self.agent_stage {
+                staged.cleanup();
+            }
+        }
+    }
 }
 
 /// Launch `pi` as the REPL surface, with aichat's HTTP server running
@@ -151,102 +257,21 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
         Err(_) => bail!("{PI_INSTALL_HINT}"),
     };
 
-    // Prefer an aichat server already listening on the conventional port
-    // range: reusing it means one inference process instead of two, and the
-    // user's live roles/sessions on that server stay addressable. Fall back
-    // to a private in-process server on an ephemeral port when none is found.
-    let (bridge_url, token, stop_server) = match probe_existing_server().await {
-        Some(url) => {
-            info!("aichat bridge: reusing existing aichat server at {url}");
-            // `probe_existing_server` only returns a URL after a successful
-            // authenticated `/v1/state/info` call, so AICHAT_BRIDGE_TOKEN is
-            // guaranteed present here and the remote `/v1/state/*` slash
-            // commands will accept it. Pass that same token to the child.
-            (url, std::env::var("AICHAT_BRIDGE_TOKEN").ok(), None)
-        }
-        None => {
-            let listener = TcpListener::bind("127.0.0.1:0")
-                .await
-                .context("aichat bridge: failed to bind ephemeral port on 127.0.0.1")?;
-            let addr = listener
-                .local_addr()
-                .context("aichat bridge: listener has no local address")?;
-            let url = format!("http://127.0.0.1:{}", addr.port());
-            let token = mint_bridge_token();
-            // Hand the freshly minted token straight to the in-process server
-            // instead of mutating our own process environment. Mutating env at
-            // runtime (set_var) is unsafe on the multi-threaded runtime — see
-            // the read-once discipline in serve::run. The child pi process
-            // still receives the token explicitly via Command::env below.
-            let stop = serve::run_on(listener, config, Some(token.clone()))
-                .await
-                .context("aichat bridge: failed to start in-process server")?;
-            info!("aichat bridge listening on {url}");
-            (url, Some(token), Some(stop))
-        }
-    };
-
-    // Pin pi to aichat's models: stage a throwaway agent dir whose
-    // `models.json` registers only the in-process aichat server as a provider,
-    // and point pi at it via `PI_CODING_AGENT_DIR`. pi then ignores its own
-    // configured providers/models entirely. Opt out with
-    // `AICHAT_PI_NATIVE_MODELS=1` to keep pi's own model config.
-    let agent_stage = if std::env::var_os(PI_NATIVE_MODELS_ENV).is_some() {
-        None
-    } else {
-        match stage_pi_agent_dir(config, &bridge_url) {
-            Ok(staged) => Some(staged),
-            Err(e) => {
-                warn!("aichat bridge: could not pin pi to aichat models ({e}); pi will use its own model config");
-                None
-            }
-        }
-    };
-
-    // Stage the bridge extension into the agent dir pi will actually read.
-    // pi auto-discovers extensions from `<PI_CODING_AGENT_DIR>/extensions/`;
-    // when we pin models that is our throwaway stage, otherwise it is pi's
-    // real agent dir. Staging anywhere else (e.g. `<cwd>/.pi/extensions/`) is
-    // silently ignored by pi and our slash-commands never register.
-    let agent_dir: PathBuf = match &agent_stage {
-        Some(staged) => staged.path.clone(),
-        None => pi_real_agent_dir(),
-    };
-    let staging = StagedExtension::stage(&agent_dir)?;
+    let bridge = PiBridge::setup(config).await?;
 
     info!("launching pi from {}", pi_bin.display());
 
     let mut command = Command::new(&pi_bin);
     command.args(pi_repl_args());
-    command.env("AICHAT_BRIDGE_URL", &bridge_url);
-    if let Some(token) = &token {
-        command.env("AICHAT_BRIDGE_TOKEN", token);
-    }
+    bridge.apply_env(&mut command);
     // Tag the surface so the bundled extension can tell an aichat-owned
     // terminal REPL apart from an external ACP host (Zed via pi-acp). Only the
     // latter registers itself via `POST /v1/state/subprocess`; here the value
     // is `repl`, so that registration is intentionally skipped.
     command.env("AICHAT_BRIDGE_SURFACE", "repl");
-    if let Some(staged) = &agent_stage {
-        command.env(PI_AGENT_DIR_ENV, &staged.path);
-    }
     let spawn_result = command.status().await;
 
-    // Signal the in-process server to shut down (no-op when we reused one).
-    // No env cleanup needed: the token was handed to the server and the child
-    // process explicitly, never written into our own process environment.
-    if let Some(stop) = stop_server {
-        let _ = stop.send(());
-    }
-    // Clean up the staged extension + agent dir unless the user asked us not
-    // to. The escape hatch is handy when debugging extension/model load
-    // failures.
-    if std::env::var_os("AICHAT_KEEP_PI_STAGE").is_none() {
-        staging.cleanup();
-        if let Some(staged) = agent_stage {
-            staged.cleanup();
-        }
-    }
+    bridge.teardown();
 
     let status = spawn_result
         .with_context(|| format!("failed to spawn pi at {}", pi_bin.display()))?;
@@ -258,6 +283,78 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Run as an ACP agent over stdio. Reuses the same bridge + model-pinning
+/// staging as [`launch_pi`], but instead of execing the interactive pi TUI it
+/// spawns the `pi-acp` adapter with stdio inherited: the ACP client that
+/// launched `aichat --acp` talks JSON-RPC straight through to the adapter over
+/// aichat's stdin/stdout. The adapter spawns `pi --mode rpc` itself, inheriting
+/// the staged `PI_CODING_AGENT_DIR`. Blocks until the adapter exits.
+///
+/// stdout MUST stay clean here — it is the ACP transport. ACP mode routes
+/// through `WorkingMode::Serve`, so logging goes to stderr and no banner is
+/// printed (`serve::run_on`, unlike `serve::run`, prints nothing).
+pub async fn launch_acp(config: &GlobalConfig) -> Result<()> {
+    // The adapter spawns pi; fail early with a clear, pi-specific message if
+    // it's missing, and pin the adapter to the exact binary we resolved.
+    let pi_bin = match which::which("pi") {
+        Ok(p) => p,
+        Err(_) => bail!("{PI_INSTALL_HINT}"),
+    };
+    let (adapter_bin, adapter_args) = resolve_acp_adapter()?;
+
+    let bridge = PiBridge::setup(config).await?;
+
+    info!("launching ACP adapter from {}", adapter_bin.display());
+
+    let mut command = Command::new(&adapter_bin);
+    command.args(&adapter_args);
+    bridge.apply_env(&mut command);
+    // Signal the bundled extension that pi is running under an external ACP
+    // host, so it registers via `POST /v1/state/subprocess` and the host can
+    // surface aichat's live context. Set on the adapter; pi-acp passes its env
+    // through to the `pi` subprocess that loads the extension.
+    command.env("AICHAT_BRIDGE_SURFACE", "acp");
+    // Pin the adapter's pi subprocess to the exact binary aichat resolved, so
+    // it matches the bridge-staged, model-pinned agent dir. pi-acp reads
+    // `PI_ACP_PI_COMMAND` when spawning pi.
+    command.env("PI_ACP_PI_COMMAND", &pi_bin);
+    // stdio is inherited (tokio's default), making the adapter the ACP endpoint
+    // on aichat's stdin/stdout.
+    let spawn_result = command.status().await;
+
+    bridge.teardown();
+
+    let status = spawn_result
+        .with_context(|| format!("failed to spawn ACP adapter at {}", adapter_bin.display()))?;
+
+    if !status.success() {
+        match status.code() {
+            Some(code) => bail!("ACP adapter exited with status {code}"),
+            None => bail!("ACP adapter terminated by signal"),
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the ACP adapter invocation: program path + leading args. Defaults
+/// to the `pi-acp` binary on `PATH`; override with `AICHAT_ACP_COMMAND`
+/// (whitespace-split, e.g. `npx -y pi-acp`).
+fn resolve_acp_adapter() -> Result<(PathBuf, Vec<String>)> {
+    if let Some(raw) = std::env::var_os(ACP_ADAPTER_ENV) {
+        let raw = raw.to_string_lossy();
+        let mut parts = raw.split_whitespace().map(|s| s.to_string());
+        let prog = parts
+            .next()
+            .with_context(|| format!("{ACP_ADAPTER_ENV} is set but empty"))?;
+        let path = which::which(&prog).with_context(|| {
+            format!("ACP adapter '{prog}' (from {ACP_ADAPTER_ENV}) not found on PATH")
+        })?;
+        return Ok((path, parts.collect()));
+    }
+    let path = which::which("pi-acp").map_err(|_| anyhow::anyhow!("{ACP_INSTALL_HINT}"))?;
+    Ok((path, Vec::new()))
 }
 
 /// CLI args aichat passes on every `pi` launch.

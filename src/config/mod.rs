@@ -1026,21 +1026,18 @@ impl Config {
         self.serve_addr.clone().unwrap_or_else(|| SERVE_ADDR.into())
     }
 
-    pub fn log_config(is_serve: bool) -> Result<(LevelFilter, Option<PathBuf>)> {
-        let log_level = env::var(get_env_name("log_level"))
+    pub fn log_config(is_serve: bool, verbose: bool) -> Result<(LevelFilter, Option<PathBuf>)> {
+        let env_level = env::var(get_env_name("log_level"))
             .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(match cfg!(debug_assertions) {
-                true => LevelFilter::Debug,
-                false => {
-                    if is_serve {
-                        LevelFilter::Info
-                    } else {
-                        LevelFilter::Off
-                    }
-                }
-            });
+            .and_then(|v| v.parse().ok());
+        let log_level =
+            effective_log_level(verbose, env_level, is_serve, cfg!(debug_assertions));
         if log_level == LevelFilter::Off {
+            return Ok((log_level, None));
+        }
+        // --verbose routes diagnostics to stderr (no file) so they are visible
+        // in the terminal; otherwise honor AICHAT_LOG_PATH / the default file.
+        if verbose {
             return Ok((log_level, None));
         }
         let log_path = match env::var(get_env_name("log_path")) {
@@ -1144,6 +1141,18 @@ impl Config {
     }
 
     pub fn sysinfo(&self) -> Result<String> {
+        let items = self.sysinfo_items();
+        let output = items
+            .iter()
+            .map(|(name, value)| format!("{name:<24}{value}\n"))
+            .collect::<Vec<String>>()
+            .join("");
+        Ok(output)
+    }
+
+    /// The resolved config key/value pairs shown by `--info` / `.info`. Shared
+    /// with `--config-get` (Phase 54E) so both surfaces stay in lockstep.
+    pub fn sysinfo_items(&self) -> Vec<(&'static str, String)> {
         let display_path = |path: &Path| path.display().to_string();
         let wrap = self
             .wrap
@@ -1210,15 +1219,10 @@ impl Config {
             ("functions_dir", display_path(&Self::functions_dir())),
             ("messages_file", display_path(&self.messages_file())),
         ]);
-        if let Ok((_, Some(log_path))) = Self::log_config(self.working_mode.is_serve()) {
+        if let Ok((_, Some(log_path))) = Self::log_config(self.working_mode.is_serve(), false) {
             items.push(("log_path", display_path(&log_path)));
         }
-        let output = items
-            .iter()
-            .map(|(name, value)| format!("{name:<24}{value}\n"))
-            .collect::<Vec<String>>()
-            .join("");
-        Ok(output)
+        items
     }
 
     pub fn update(config: &GlobalConfig, data: &str) -> Result<()> {
@@ -3488,7 +3492,7 @@ impl Config {
         if let Some(Some(v)) = read_env_bool(&get_env_name("highlight")) {
             self.highlight = v;
         }
-        if *NO_COLOR {
+        if no_color() {
             self.highlight = false;
         }
         if self.highlight && self.theme.is_none() {
@@ -3975,9 +3979,72 @@ fn validate_pipe_to_command(cmd: &str) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the effective log level. `--verbose` forces Debug, overriding the
+/// AICHAT_LOG_LEVEL env value and the build/serve defaults. Otherwise the env
+/// level wins, then the default (Debug in debug builds, Info when serving,
+/// else Off). Pure for testability.
+pub fn effective_log_level(
+    verbose: bool,
+    env_level: Option<LevelFilter>,
+    is_serve: bool,
+    is_debug_build: bool,
+) -> LevelFilter {
+    if verbose {
+        return LevelFilter::Debug;
+    }
+    env_level.unwrap_or(if is_debug_build {
+        LevelFilter::Debug
+    } else if is_serve {
+        LevelFilter::Info
+    } else {
+        LevelFilter::Off
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- effective_log_level: --verbose overrides env + build defaults ----
+
+    #[test]
+    fn verbose_forces_debug_over_env_and_defaults() {
+        // --verbose wins even when AICHAT_LOG_LEVEL says Off.
+        assert_eq!(
+            effective_log_level(true, Some(LevelFilter::Off), false, false),
+            LevelFilter::Debug
+        );
+        // --verbose wins when no env is set in a release non-serve build
+        // (which would otherwise be Off).
+        assert_eq!(
+            effective_log_level(true, None, false, false),
+            LevelFilter::Debug
+        );
+    }
+
+    #[test]
+    fn non_verbose_uses_env_then_build_default() {
+        // Env level honored when not verbose.
+        assert_eq!(
+            effective_log_level(false, Some(LevelFilter::Warn), false, false),
+            LevelFilter::Warn
+        );
+        // Release non-serve, no env => Off.
+        assert_eq!(
+            effective_log_level(false, None, false, false),
+            LevelFilter::Off
+        );
+        // Release serve, no env => Info.
+        assert_eq!(
+            effective_log_level(false, None, true, false),
+            LevelFilter::Info
+        );
+        // Debug build, no env => Debug.
+        assert_eq!(
+            effective_log_level(false, None, false, true),
+            LevelFilter::Debug
+        );
+    }
 
     // ---- parse_env_file: pure parsing of .env contents (no env mutation) ----
 

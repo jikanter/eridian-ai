@@ -48,14 +48,17 @@ content, including:
 
 ## How aichat relates to ACP
 
-aichat does **not** speak ACP itself. The chain under Zed is:
+aichat does **not** speak ACP itself. `aichat --acp` is the entry point; the
+chain under Zed is:
 
 ```
 Zed (ACP Client)
-  └─ spawns  pi-acp            (ACP adapter; JSON-RPC/stdio ⇄ Zed)
-        └─ spawns  pi --mode rpc   (the coding agent)
-              └─ loads  aichat-bridge.js   (this repo's extension)
-                    └─ HTTP ⇒ aichat --serve   (the /v1/state/* bridge)
+  └─ spawns  aichat --acp
+        ├─ brings up the aichat bridge (/v1/state/*) + stages aichat-bridge.js
+        └─ spawns  pi-acp            (ACP adapter; JSON-RPC/stdio ⇄ Zed)
+              └─ spawns  pi --mode rpc   (the coding agent)
+                    └─ loads  aichat-bridge.js   (this repo's extension)
+                          └─ HTTP ⇒ aichat bridge   (the /v1/state/* routes)
 ```
 
 - **`pi-acp`** (npm, `pi-acp`) is the ACP↔pi adapter. It maps ACP methods to

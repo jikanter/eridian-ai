@@ -43,13 +43,153 @@ pub static CODE_BLOCK_RE: LazyLock<Regex> =
 pub static THINK_TAG_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?s)^\s*<think>.*?</think>(\s*|$)").unwrap());
 pub static IS_STDOUT_TERMINAL: LazyLock<bool> = LazyLock::new(|| std::io::stdout().is_terminal());
-pub static NO_COLOR: LazyLock<bool> = LazyLock::new(|| {
-    env::var("NO_COLOR")
-        .ok()
-        .and_then(|v| parse_bool(&v))
-        .unwrap_or_default()
-        || !*IS_STDOUT_TERMINAL
-});
+
+/// When to colorize output. Backs the `--color` flag (Phase 54B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ColorWhen {
+    /// Colorize when stdout is a terminal and NO_COLOR is unset (default).
+    #[default]
+    Auto,
+    /// Always colorize, even when piped.
+    Always,
+    /// Never colorize.
+    Never,
+}
+
+// Global `--color` override. 0 = Auto (unset), 1 = Always, 2 = Never.
+static COLOR_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Record the `--color` choice. Call once, early in startup, before any
+/// colorized output or config color resolution.
+pub fn set_color_when(when: ColorWhen) {
+    let v = match when {
+        ColorWhen::Auto => 0,
+        ColorWhen::Always => 1,
+        ColorWhen::Never => 2,
+    };
+    COLOR_OVERRIDE.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn color_override() -> ColorWhen {
+    match COLOR_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => ColorWhen::Always,
+        2 => ColorWhen::Never,
+        _ => ColorWhen::Auto,
+    }
+}
+
+/// Pure color-suppression decision. `env_no_color` is the parsed NO_COLOR env
+/// value (None when unset/unparseable), `is_tty` whether stdout is a terminal.
+fn decide_no_color(when: ColorWhen, env_no_color: Option<bool>, is_tty: bool) -> bool {
+    match when {
+        ColorWhen::Never => true,
+        ColorWhen::Always => false,
+        ColorWhen::Auto => env_no_color.unwrap_or(false) || !is_tty,
+    }
+}
+
+/// Whether color output is suppressed, honoring `--color`, then NO_COLOR, then
+/// TTY detection. Replaces the former `NO_COLOR` static so `--color` can win.
+pub fn no_color() -> bool {
+    let env_no_color = env::var("NO_COLOR").ok().and_then(|v| parse_bool(&v));
+    decide_no_color(color_override(), env_no_color, *IS_STDOUT_TERMINAL)
+}
+
+// Global `--quiet` flag (Phase 54B). Suppresses the spinner and the cost line.
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Record the `--quiet` choice. Call once, early in startup.
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(quiet, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether quiet mode is on.
+pub fn is_quiet() -> bool {
+    QUIET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Pure predicate for whether the spinner should be suppressed: off when not a
+/// TTY, in quiet mode, or with an empty message.
+pub fn spinner_suppressed(is_tty: bool, quiet: bool, empty_message: bool) -> bool {
+    !is_tty || quiet || empty_message
+}
+
+/// Whether the cost summary should print: requested via `--cost` and not quiet.
+pub fn should_show_cost(cost_flag: bool, quiet: bool) -> bool {
+    cost_flag && !quiet
+}
+
+/// Levenshtein edit distance between two strings (insert/delete/substitute).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut curr = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (prev[j + 1] + 1).min(curr[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[b.len()]
+}
+
+/// Nearest candidate to `input` by edit distance, if within `max_distance`.
+/// Powers "did you mean ...?" suggestions for unknown role/model/agent names.
+/// On ties, the first candidate at the minimum distance wins.
+pub fn nearest_match(input: &str, candidates: &[String], max_distance: usize) -> Option<String> {
+    candidates
+        .iter()
+        .map(|c| (c, levenshtein(input, c)))
+        .filter(|(_, d)| *d <= max_distance)
+        .min_by_key(|(_, d)| *d)
+        .map(|(c, _)| c.clone())
+}
+
+/// Append a "did you mean `X`?" hint to `base` when a near candidate exists.
+pub fn did_you_mean(base: &str, input: &str, candidates: &[String]) -> String {
+    // Allow a slightly looser bound for longer inputs.
+    let max_distance = (input.chars().count() / 3).max(2);
+    match nearest_match(input, candidates, max_distance) {
+        Some(s) => format!("{base}. Did you mean `{s}`?"),
+        None => base.to_string(),
+    }
+}
+
+/// Whether stdin is an interactive terminal. Paired with `IS_STDOUT_TERMINAL`;
+/// used by the non-interactive input policy (Phase 54C).
+pub static IS_STDIN_TERMINAL: LazyLock<bool> = LazyLock::new(|| std::io::stdin().is_terminal());
+
+/// What to do when a destructive action needs confirmation.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConfirmAction {
+    /// Proceed without asking (`--yes`).
+    Proceed,
+    /// Ask the user interactively.
+    Prompt,
+    /// Refuse: no `--yes` and no way to ask (non-TTY or `--no-input`).
+    Refuse,
+}
+
+/// Whether an interactive prompt is possible: stdin is a TTY and `--no-input`
+/// was not given.
+pub fn can_prompt(stdin_is_tty: bool, no_input: bool) -> bool {
+    stdin_is_tty && !no_input
+}
+
+/// Resolve how to handle a destructive confirmation: `--yes` proceeds; else
+/// prompt when interactive; else refuse rather than hang.
+pub fn resolve_confirm(yes: bool, can_prompt: bool) -> ConfirmAction {
+    if yes {
+        ConfirmAction::Proceed
+    } else if can_prompt {
+        ConfirmAction::Prompt
+    } else {
+        ConfirmAction::Refuse
+    }
+}
 
 pub fn now() -> String {
     chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
@@ -165,7 +305,7 @@ pub fn warning_text(input: &str) -> String {
 }
 
 pub fn color_text(input: &str, color: nu_ansi_term::Color) -> String {
-    if *NO_COLOR {
+    if no_color() {
         return input.to_string();
     }
     nu_ansi_term::Style::new()
@@ -175,7 +315,7 @@ pub fn color_text(input: &str, color: nu_ansi_term::Color) -> String {
 }
 
 pub fn dimmed_text(input: &str) -> String {
-    if *NO_COLOR {
+    if no_color() {
         return input.to_string();
     }
     nu_ansi_term::Style::new().dimmed().paint(input).to_string()
@@ -229,6 +369,101 @@ pub fn decode_bin<T: serde::de::DeserializeOwned>(data: &[u8]) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn color_override_forces_regardless_of_env_and_tty() {
+        // `--color=never` (ColorWhen::Never) disables color even on a TTY.
+        assert!(decide_no_color(ColorWhen::Never, Some(false), true));
+        assert!(decide_no_color(ColorWhen::Never, None, true));
+        // `--color=always` enables color even when piped (non-TTY) and with NO_COLOR set.
+        assert!(!decide_no_color(ColorWhen::Always, Some(true), false));
+        assert!(!decide_no_color(ColorWhen::Always, None, false));
+    }
+
+    #[test]
+    fn spinner_suppressed_when_quiet_or_non_tty_or_empty() {
+        // Shown only on a TTY, not quiet, with a non-empty message.
+        assert!(!spinner_suppressed(true, false, false));
+        // Quiet suppresses even on a TTY with a message.
+        assert!(spinner_suppressed(true, true, false));
+        // Non-TTY suppresses.
+        assert!(spinner_suppressed(false, false, false));
+        // Empty message suppresses.
+        assert!(spinner_suppressed(true, false, true));
+    }
+
+    #[test]
+    fn nearest_match_suggests_close_typo() {
+        let cands = ["summarize".to_string(), "translate".to_string()];
+        assert_eq!(
+            nearest_match("summarise", &cands, 2).as_deref(),
+            Some("summarize")
+        );
+    }
+
+    #[test]
+    fn nearest_match_exact_is_distance_zero() {
+        let cands = ["translate".to_string(), "summarize".to_string()];
+        assert_eq!(
+            nearest_match("translate", &cands, 2).as_deref(),
+            Some("translate")
+        );
+    }
+
+    #[test]
+    fn nearest_match_none_when_too_far_or_empty() {
+        let cands = ["summarize".to_string(), "translate".to_string()];
+        assert_eq!(nearest_match("zzzzzzzz", &cands, 2), None);
+        let empty: [String; 0] = [];
+        assert_eq!(nearest_match("summarize", &empty, 2), None);
+    }
+
+    #[test]
+    fn can_prompt_requires_tty_and_no_no_input() {
+        assert!(can_prompt(true, false)); // interactive TTY, input allowed
+        assert!(!can_prompt(true, true)); // --no-input forces off even on a TTY
+        assert!(!can_prompt(false, false)); // piped stdin => cannot prompt
+        assert!(!can_prompt(false, true));
+    }
+
+    #[test]
+    fn resolve_confirm_yes_proceeds_else_prompt_else_refuse() {
+        // --yes always proceeds, even non-interactive.
+        assert_eq!(resolve_confirm(true, false), ConfirmAction::Proceed);
+        assert_eq!(resolve_confirm(true, true), ConfirmAction::Proceed);
+        // No --yes but interactive => prompt.
+        assert_eq!(resolve_confirm(false, true), ConfirmAction::Prompt);
+        // No --yes and non-interactive => refuse (don't hang).
+        assert_eq!(resolve_confirm(false, false), ConfirmAction::Refuse);
+    }
+
+    #[test]
+    fn cost_shows_only_when_requested_and_not_quiet() {
+        assert!(should_show_cost(true, false));
+        assert!(!should_show_cost(true, true)); // quiet overrides --cost
+        assert!(!should_show_cost(false, false));
+        assert!(!should_show_cost(false, true));
+    }
+
+    #[test]
+    fn quiet_override_roundtrips() {
+        set_quiet(true);
+        assert!(is_quiet());
+        set_quiet(false);
+        assert!(!is_quiet());
+    }
+
+    #[test]
+    fn color_auto_follows_env_and_tty() {
+        // auto + interactive TTY + no NO_COLOR => color on.
+        assert!(!decide_no_color(ColorWhen::Auto, None, true));
+        // auto + piped (non-TTY) => color off.
+        assert!(decide_no_color(ColorWhen::Auto, None, false));
+        // auto + TTY but NO_COLOR truthy => color off.
+        assert!(decide_no_color(ColorWhen::Auto, Some(true), true));
+        // auto + TTY + NO_COLOR explicitly false => color on.
+        assert!(!decide_no_color(ColorWhen::Auto, Some(false), true));
+    }
 
     #[test]
     #[cfg(not(target_os = "windows"))]

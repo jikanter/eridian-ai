@@ -24,7 +24,7 @@ Epic 1 (Core Platform, aichat)  ──── DONE (Phases 0–8; 8 active) ─�
   │
   ├── Epic 10 (Entity Evolution, aichat ↔ llm-functions) ─ 52 → 28 → 29 → 49 ─ PLANNED ★ 52 = Entity foundation
   ├── Epic 11 (Bridge Retirement, cross-repo) ─ Phase 31 ─ DONE
-  ├── Epic 12 (Developer Experience, aichat) ─── Phase 30 ──── DONE
+  ├── Epic 12 (Developer Experience, aichat) ─ 30 DONE; 54 PLANNED (CLI UX hardening, indep.; 54F Ask-First)
   ├── Epic 13 (Pi as REPL Surface, aichat ↔ harness) ─── Phase 32 ──── DONE
   └── Epic 14 (Memory Surface, aichat ↔ harness) ─ 34 DONE; 35 PLANNED
 ```

@@ -38,7 +38,11 @@ impl Agent {
         let functions_dir = Config::agent_functions_dir(name);
         let definition_file_path = functions_dir.join("index.yaml");
         if !definition_file_path.exists() {
-            bail!("Unknown agent `{name}`");
+            bail!(crate::utils::did_you_mean(
+                &format!("Unknown agent `{name}`"),
+                name,
+                &list_agents()
+            ));
         }
         let functions_file_path = functions_dir.join("functions.json");
         let rag_path = Config::agent_rag_file(name, DEFAULT_AGENT_NAME);

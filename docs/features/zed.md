@@ -2,102 +2,76 @@
 
 Run aichat's roles, agents, sessions, and macros from inside [Zed](https://zed.dev)'s
 AI panel. Zed speaks the [Agent Client Protocol](../reference/standards/acp/README.md)
-(ACP); aichat rides on top of `pi` through the [`pi-acp`](https://www.npmjs.com/package/pi-acp)
-adapter and a bundled bridge extension.
+(ACP); `aichat --acp` exposes aichat's pi surface to it.
 
 ## How it fits together
 
-aichat does **not** speak ACP directly. The launch chain is:
+aichat does **not** speak ACP directly. `aichat --acp` runs aichat *as* an ACP
+agent over stdio: it brings up the aichat bridge, pins pi to aichat's models,
+stages the bridge extension into the agent dir pi reads, then delegates ACP
+protocol translation to the [`pi-acp`](https://www.npmjs.com/package/pi-acp)
+adapter.
 
 ```
 Zed  (ACP client)
-  └─ spawns  pi-acp            ACP JSON-RPC/stdio  ⇄  Zed
-        └─ spawns  pi --mode rpc
-              └─ loads  aichat-bridge.js        (bundled extension)
-                    └─ HTTP ⇒ aichat --serve    (the /v1/state/* bridge)
+  └─ spawns  aichat --acp
+        ├─ brings up the aichat bridge (/v1/state/*) + stages aichat-bridge.js
+        └─ spawns  pi-acp             ACP JSON-RPC/stdio ⇄ Zed
+              └─ spawns  pi --mode rpc
+                    └─ loads  aichat-bridge.js   → HTTP ⇒ aichat bridge
 ```
 
-- **`pi-acp`** is the ACP backend proper — it translates ACP methods to pi and
-  emits `agent_message_chunk` / `tool_call` updates back to Zed.
+- **`aichat --acp`** is the single entry point — no separate `aichat --serve`,
+  no manual extension install, no bridge env to hand-wire. It stages everything
+  per launch and tears it down on exit.
+- **`pi-acp`** is the ACP backend proper: it maps ACP methods to pi and emits
+  `agent_message_chunk` / `tool_call` updates back to Zed.
 - **`aichat-bridge.js`** exposes aichat's slash-commands (`/role`, `/agent`,
   `/session`, `/rag`, `/macro`, `/info`, `/aichat-edit`, …) inside the pi
-  session by calling aichat's HTTP `/v1/state/*` routes.
-- Because pi-acp — not aichat — launches pi under Zed, you must hand the bridge
-  its wiring explicitly: a running `aichat --serve`, the bridge env vars, and
-  the extension installed where pi will find it.
+  session via aichat's `/v1/state/*` routes. On load under ACP it registers via
+  `POST /v1/state/subprocess` so Zed can surface aichat's live context.
 
 ## Prerequisites
 
 ```bash
-# pi + the ACP adapter
-npm install -g @earendil-works/pi-coding-agent pi-acp
-
-# aichat's companion tools (installs pi too, if missing)
+# aichat's companion tools (installs pi, showboat, uv if missing)
 aichat --install-deps
+
+# the ACP adapter (not yet covered by --install-deps)
+npm install -g pi-acp
 ```
 
-## Wiring
+`aichat --acp` fails fast with an install hint if `pi` or `pi-acp` is missing.
+Point aichat at a non-default adapter with `AICHAT_ACP_COMMAND`
+(e.g. `AICHAT_ACP_COMMAND='npx -y pi-acp'`).
 
-### 1. Run the aichat bridge server
+## Wiring Zed
 
-The bridge routes require a bearer token. Export it, pick an address, and serve:
-
-```bash
-export AICHAT_BRIDGE_TOKEN="$(uuidgen)"   # any secret string
-aichat --serve 127.0.0.1:8000
-```
-
-`aichat --serve` reads `AICHAT_BRIDGE_TOKEN` once at startup; the same value
-must be handed to pi-acp below. Keep this process running.
-
-### 2. Install the bridge extension where pi-acp's pi will load it
-
-pi auto-discovers extensions from its agent dir, `~/.pi/agent/extensions/`.
-Because pi-acp spawns a plain `pi` (not an aichat-managed one), install the
-bundle there once:
-
-```bash
-aichat --install-pi-extension
-# → Installed aichat pi bridge extension: ~/.pi/agent/extensions/aichat-bridge.js
-```
-
-Pass a directory to override the default (e.g. a project-local `.pi/agent`).
-Re-run after an aichat upgrade to refresh the bundle — the install overwrites.
-
-### 3. Point Zed's agent server at pi-acp with the bridge env
-
-In Zed `settings.json`, register pi-acp as a custom ACP agent and pass the
-three bridge env vars. `AICHAT_BRIDGE_SURFACE=acp` is the signal that tells the
-extension it is running under an ACP host (so it registers itself and surfaces
-aichat's live context in Zed's session startup block):
+Register aichat as a custom ACP agent server in Zed `settings.json`:
 
 ```json
 {
   "agent_servers": {
-    "aichat (pi-acp)": {
-      "command": "pi-acp",
-      "args": [],
-      "env": {
-        "AICHAT_BRIDGE_URL": "http://127.0.0.1:8000",
-        "AICHAT_BRIDGE_TOKEN": "<same token you exported in step 1>",
-        "AICHAT_BRIDGE_SURFACE": "acp"
-      }
+    "aichat": {
+      "command": "aichat",
+      "args": ["--acp"]
     }
   }
 }
 ```
 
-Open Zed's agent panel, pick **aichat (pi-acp)**, and start a thread. The
-aichat slash-commands are available, and switching a role/agent/session there
-mutates the same live aichat context the `--serve` process holds.
+Open Zed's agent panel, pick **aichat**, start a thread. aichat's slash-commands
+are available, and switching a role/agent/session there mutates the live aichat
+context the `--acp` process holds.
 
-## How the surface signal works
+## The surface signal
 
-The bundled extension self-detects its host:
+The bundled extension self-detects its host via `AICHAT_BRIDGE_SURFACE`, which
+the launcher sets on the child:
 
-| `AICHAT_BRIDGE_SURFACE` | Set by | Behavior |
-|---|---|---|
-| `acp` | Zed agent-server env (step 3) | Registers via `POST /v1/state/subprocess`, surfaces context |
+| Value | Set by | Behavior |
+|-------|--------|----------|
+| `acp` | `aichat --acp` (on the pi-acp adapter) | Registers via `POST /v1/state/subprocess`, surfaces context |
 | `repl` | `aichat --pi-repl` (aichat's own terminal REPL) | Skips registration — aichat already owns the context |
 | unset | manual/other pi launch | Skips registration |
 
@@ -117,8 +91,8 @@ to stderr — captured in Zed's agent-server logs — rather than failing silent
 
 ## Verifying
 
-With the bridge up and the env exported, the same routes Zed drives are
-curl-able:
+Drive the same route Zed's session uses against a running bridge (e.g. an
+`aichat --serve` you started with `AICHAT_BRIDGE_TOKEN` exported):
 
 ```bash
 curl -sS -X POST \
@@ -129,15 +103,12 @@ curl -sS -X POST \
 
 ## Troubleshooting
 
-- **Slash-commands missing in Zed** — the extension isn't installed where
-  pi-acp's pi looks. Re-run `aichat --install-pi-extension` and restart the Zed
-  thread. Confirm `~/.pi/agent/extensions/aichat-bridge.js` exists.
-- **401 from the bridge** — `AICHAT_BRIDGE_TOKEN` in Zed's env doesn't match the
-  one exported to `aichat --serve`. They must be identical.
-- **No context in the startup block** — `AICHAT_BRIDGE_SURFACE` isn't `acp` in
-  Zed's agent-server env, so registration was skipped.
-- **Connection refused** — `AICHAT_BRIDGE_URL` doesn't match the address
-  `aichat --serve` is listening on.
+- **`pi-acp` not found** — `npm install -g pi-acp`, or set `AICHAT_ACP_COMMAND`.
+- **`pi` not found** — `aichat --install-deps` (or `npm install -g @earendil-works/pi-coding-agent`).
+- **Slash-commands missing in Zed** — the extension didn't stage. Re-run with
+  `AICHAT_KEEP_PI_STAGE=1` and check the staged agent dir's `extensions/`.
+- **No context in the startup block** — registration was skipped; confirm the
+  child saw `AICHAT_BRIDGE_SURFACE=acp` (it is set automatically by `--acp`).
 
 ## See also
 
