@@ -76,6 +76,7 @@ What is in flight, what is committed next, what is parked — independent of epi
 | Observability Keystone | **Phases 43 → 44** — test harness ([`SPEC-002`](analysis/caching/SPEC-002-test-harness.md)) then trace projections + training extraction. | aichat |
 | Astrophage Substrate | **Phases 45 → 46 → 47 → 48** — cache-policy gateway + `replay-core` (45), cassette/eval-replay loop (46), mock/fault injection (47), brief companion (48). | cross-repo |
 | Entity Evolution | **Phase 52 → 28 → 29 → 49** — formalize the Entity model (the foundation), then agent composability, dynamism, memory federation. | cross-repo (aichat ↔ llm-functions) |
+| Developer Experience | **Phase 54 — CLI UX hardening** (54A–G): grouped help + man page, standard flags (`--color`/`-q`/`--verbose`), non-interactive safety, did-you-mean, config introspection, additive noun-verb subcommands (Ask-First), cross-surface syntax map. | aichat |
 
 ### Later — parked / deferred
 
@@ -150,6 +151,7 @@ design doc; planned/new phases link the live doc.
 | 10 Entity Evolution | 49 | aichat ↔ llm-functions ↔ harness | Agent memory federation | 49A–C **Planned** (Next) | [phase-49-overview.md](roadmap/phase-49-overview.md) |
 | 11 Bridge Retirement | 31 | cross-repo | MCP pool hardening | 31A–E **Done · archived** | [archive/phase-31-overview.md](roadmap/archive/phase-31-overview.md) |
 | 12 Developer Experience | 30 | aichat | Macro compilation | 30A–D **Done · archived** | [archive/phase-30-macro-compilation.md](roadmap/archive/phase-30-macro-compilation.md) |
+| 12 Developer Experience | 54 | aichat | CLI UX hardening | 54A–G **Planned** (Next; 54F Ask-First) | [phase-54-overview.md](roadmap/phase-54-overview.md) |
 | 13 Pi as REPL Surface | 32 | aichat ↔ harness | Pi cutover | 32A–D **Done** | [features/repl-pi.md](features/repl-pi.md) |
 | 13 Pi as REPL Surface | 53 | aichat ↔ harness | Discovery surface (`/aichat-flags`, `/aichat-docs`) | **Done** | [features/discovery.md](features/discovery.md) |
 | 14 Memory Surface | 34 | aichat (↔ harness) | Auto-memory wiring | 34A–D **Done · archived** | [archive/phase-34-overview.md](roadmap/archive/phase-34-overview.md) |

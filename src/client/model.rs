@@ -85,7 +85,12 @@ impl Model {
                 }
             }
         };
-        bail!("Unknown {model_type} model '{model_id}'")
+        let model_ids: Vec<String> = models.iter().map(|v| v.id()).collect();
+        bail!(crate::utils::did_you_mean(
+            &format!("Unknown {model_type} model '{model_id}'"),
+            model_id,
+            &model_ids
+        ))
     }
 
     pub fn id(&self) -> String {

@@ -59,6 +59,7 @@ Status is in the [ledger](../ROADMAP.md#status-ledger).
 | 49 Agent memory federation | 10 Entity Evolution | [phase-49-overview.md](phase-49-overview.md) |
 | 50 Knowledge-as-cassette / federated KB | 17 Federation & Scale | [phase-50-overview.md](phase-50-overview.md) |
 | 51 Vendor model extensions | 17 Federation & Scale | [phase-51-overview.md](phase-51-overview.md) |
+| 54 CLI UX hardening | 12 Developer Experience | [phase-54-overview.md](phase-54-overview.md) |
 
 ### Deferred
 

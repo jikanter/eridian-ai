@@ -77,6 +77,27 @@ async fn async_main() -> Result<()> {
 
     let cli = Cli::parse();
 
+    // Phase 54B: record the --color choice before any colorized output or
+    // config color resolution so the override wins over NO_COLOR / TTY.
+    utils::set_color_when(cli.color);
+    utils::set_quiet(cli.quiet);
+
+    // Phase 54E: print the resolved config file path. Pure static resolution —
+    // runs before config init so it needs no model/provider and never blocks.
+    if cli.config_path {
+        println!("{}", Config::config_file().display());
+        process::exit(0);
+    }
+
+    // Phase 54A: emit the generated man page and exit. Pure output from the
+    // clap definitions — no config load, so it works in any environment.
+    if cli.man {
+        use std::io::Write;
+        let page = cli::render_man_page()?;
+        std::io::stdout().write_all(&page)?;
+        process::exit(0);
+    }
+
     // Phase 31E: validate a portable mcp.json declarations file. Runs before
     // any aichat config load so a broken config.yaml doesn't mask validation
     // results. Exits with the right code from inside the helper.
@@ -106,7 +127,7 @@ async fn async_main() -> Result<()> {
     // circuits before full config init for the same reason as the converter
     // above: it only needs the sessions directory, not a live model client.
     if cli.migrate_sessions {
-        let exit = run_migrate_sessions();
+        let exit = run_migrate_sessions(cli.yes, cli.no_input);
         process::exit(exit);
     }
 
@@ -160,8 +181,11 @@ async fn async_main() -> Result<()> {
         // they need no heavy client setup (mirrors the knowledge ops above).
         || cli.memory_load.is_some()
         || cli.memory_reflect
-        || cli.memory_curate;
-    setup_logger(working_mode.is_serve() || working_mode.is_mcp())?;
+        || cli.memory_curate
+        // Phase 54E: --config-get reads resolved config values and exits; no
+        // LLM client/network setup needed (mirrors --info).
+        || cli.config_get.is_some();
+    setup_logger(working_mode.is_serve() || working_mode.is_mcp(), cli.verbose)?;
     let config = Arc::new(RwLock::new(Config::init(working_mode, info_flag).await?));
     let output_format = cli.output_format;
     if let Err(err) = run(config, cli, text).await {
@@ -198,7 +222,7 @@ fn apply_runtime_flags(config: &GlobalConfig, cli: &Cli) {
     if cli.memory_reflect_on_exit || env_reflect_on_exit {
         config.write().memory_reflect_on_exit = true;
     }
-    if cli.cost {
+    if utils::should_show_cost(cli.cost, cli.quiet) {
         config.write().show_cost = true;
     }
     // Run log from env var AICHAT_RUN_LOG
@@ -651,6 +675,26 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
         }
         return Ok(());
     }
+    // Phase 54E: read-only config value lookup (shares --info's key/value set).
+    if let Some(key) = cli.config_get.as_deref() {
+        let items = config.read().sysinfo_items();
+        match items.iter().find(|(k, _)| *k == key) {
+            Some((_, value)) => {
+                if matches!(cli.output_format, Some(crate::cli::OutputFormat::Json)) {
+                    let obj = serde_json::json!({ key: value });
+                    println!("{}", serde_json::to_string_pretty(&obj)?);
+                } else {
+                    println!("{value}");
+                }
+                return Ok(());
+            }
+            None => {
+                let keys: Vec<String> = items.iter().map(|(k, _)| k.to_string()).collect();
+                let msg = utils::did_you_mean(&format!("Unknown config key `{key}`"), key, &keys);
+                return Err(anyhow::anyhow!(msg));
+            }
+        }
+    }
     if let Some(addr) = cli.serve {
         return serve::run(config, addr).await;
     }
@@ -845,7 +889,7 @@ fn collect_yaml_sessions(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf
 /// `.jsonl` is written. Parses each session straight from YAML (no model
 /// client needed) and writes through `Session::export_to_pi_jsonl`. Returns
 /// the process exit code: 0 on full success, 1 if any file failed.
-fn run_migrate_sessions() -> i32 {
+fn run_migrate_sessions(yes: bool, no_input: bool) -> i32 {
     let root = sessions_root();
     if !root.exists() {
         eprintln!("No sessions directory at '{}'; nothing to migrate.", root.display());
@@ -856,6 +900,38 @@ fn run_migrate_sessions() -> i32 {
     if yamls.is_empty() {
         eprintln!("No legacy YAML sessions under '{}'.", root.display());
         return 0;
+    }
+
+    // Migration removes each legacy .yaml after writing its .jsonl — a
+    // destructive, in-place change. Confirm first (Phase 54C).
+    match resolve_confirm(yes, can_prompt(*IS_STDIN_TERMINAL, no_input)) {
+        ConfirmAction::Proceed => {}
+        ConfirmAction::Prompt => {
+            let msg = format!(
+                "Migrate and remove {} legacy YAML session(s) under '{}'?",
+                yamls.len(),
+                root.display()
+            );
+            match inquire::Confirm::new(&msg).with_default(false).prompt() {
+                Ok(true) => {}
+                Ok(false) => {
+                    eprintln!("Aborted; no sessions changed.");
+                    return 0;
+                }
+                Err(e) => {
+                    eprintln!("Confirmation failed: {e}");
+                    return ExitCode::GeneralError as i32;
+                }
+            }
+        }
+        ConfirmAction::Refuse => {
+            eprintln!(
+                "Refusing to migrate {} legacy YAML session(s) without confirmation \
+                 (stdin is not a terminal or --no-input is set). Re-run with --yes to proceed.",
+                yamls.len()
+            );
+            return ExitCode::UsageError as i32;
+        }
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -1818,8 +1894,8 @@ fn run_explain_role(name: &str, output_format: Option<crate::cli::OutputFormat>)
     Ok(())
 }
 
-fn setup_logger(is_serve: bool) -> Result<()> {
-    let (log_level, log_path) = Config::log_config(is_serve)?;
+fn setup_logger(is_serve: bool, verbose: bool) -> Result<()> {
+    let (log_level, log_path) = Config::log_config(is_serve, verbose)?;
     if log_level == LevelFilter::Off {
         return Ok(());
     }

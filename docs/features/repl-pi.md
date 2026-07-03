@@ -11,6 +11,10 @@ TUI; aichat owns the inference, roles, agents, RAG, MCP pool, and macros.
 > `--legacy-repl` for long-term side-by-side comparison. There is no
 > scheduled removal date.
 
+> Crossing surfaces? See the [cross-surface command map](cross-surface-commands.md)
+> for how each operation maps across the batch CLI (`--flag`), the legacy REPL
+> (`.cmd`), and pi (`/cmd`).
+
 ## Install
 
 ```bash

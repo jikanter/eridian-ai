@@ -1503,8 +1503,14 @@ fn read_raw_role_content(name: &str) -> Result<String> {
         return read_to_string(&path)
             .with_context(|| format!("Failed to read role file '{}'", path.display()));
     }
-    let content =
-        RolesAsset::get(&format!("{name}.md")).ok_or_else(|| anyhow!("Unknown role `{name}`"))?;
+    let content = RolesAsset::get(&format!("{name}.md")).ok_or_else(|| {
+        let candidates = Config::list_roles(true);
+        anyhow!(crate::utils::did_you_mean(
+            &format!("Unknown role `{name}`"),
+            name,
+            &candidates
+        ))
+    })?;
     let content = unsafe { std::str::from_utf8_unchecked(&content.data) };
     Ok(content.to_string())
 }
