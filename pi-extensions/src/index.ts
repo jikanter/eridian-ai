@@ -447,15 +447,27 @@ export default function aichatBridge(pi: ExtensionAPI): void {
     },
   });
 
-  // register the subprocess with acp if invoking under zed
-  // generate a subprocess by invoking the bridge. `aichatBridge` is sync (pi
-  // calls it without awaiting), so fire-and-forget inside an async IIFE.
-  if (process.env.ZED_BRIDGE_URL) {
+  // When running under an external ACP host (Zed via pi-acp), register this
+  // pi subprocess with the aichat bridge so the host can surface the live
+  // aichat context (active role/agent/session/rag) in its session startup
+  // block. The surface is signalled by `AICHAT_BRIDGE_SURFACE=acp`, set in the
+  // ACP client's agent-server env (see docs/features/zed.md). aichat's own
+  // terminal REPL sets it to `repl` and is intentionally skipped here.
+  //
+  // `aichatBridge` is sync (pi calls it without awaiting), so registration is
+  // fire-and-forget inside an async IIFE — but failures are surfaced to
+  // stderr, not swallowed.
+  if (process.env.AICHAT_BRIDGE_SURFACE === "acp") {
     void (async () => {
-      await bridgeFetch("/v1/state/subprocess", {
-        method: "POST",
-        body: {},
-      });
+      try {
+        await bridgeFetch("/v1/state/subprocess", {
+          method: "POST",
+          body: { surface: "acp" },
+        });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        console.error(`aichat-bridge: subprocess registration failed: ${detail}`);
+      }
     })();
   }
 }

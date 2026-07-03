@@ -264,6 +264,12 @@ pub struct Cli {
     /// without running any installer.
     #[clap(long = "install-deps")]
     pub install_deps: bool,
+    /// Install the bundled pi bridge extension into a pi agent extensions dir so
+    /// `pi` loads aichat's slash-commands when launched by an external ACP host
+    /// (Zed via pi-acp). Defaults to `~/.pi/agent/extensions/`; pass a DIR to
+    /// override. Overwrites any existing bundle. See docs/features/zed.md.
+    #[clap(long = "install-pi-extension", value_name = "DIR")]
+    pub install_pi_extension: Option<Option<String>>,
     /// Ask a model to find the showboat demo under docs/demos/ that best matches
     /// FEATURE and print its path. Pair with `--dry-run` to print the prompt
     /// instead of calling the model.

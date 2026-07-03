@@ -128,6 +128,7 @@ async fn async_main() -> Result<()> {
     };
     let info_flag = cli.info
         || cli.install_deps
+        || cli.install_pi_extension.is_some()
         || cli.sync_models
         || cli.list_models
         || cli.list_roles
@@ -320,6 +321,16 @@ async fn run(config: GlobalConfig, mut cli: Cli, text: Option<String>) -> Result
     // exits. No model or input needed; respects `--dry-run` to preview the plan.
     if cli.install_deps {
         return run_install_deps(&config);
+    }
+
+    // Zed/ACP wiring: `--install-pi-extension [DIR]` installs the bundled pi
+    // bridge extension so a `pi` launched by pi-acp loads aichat's slash
+    // commands. No model or input needed.
+    if let Some(dir) = &cli.install_pi_extension {
+        let target = dir.as_deref().map(std::path::PathBuf::from);
+        let path = crate::repl::pi::install_extension(target)?;
+        println!("Installed aichat pi bridge extension: {}", path.display());
+        return Ok(());
     }
 
     // Phase 23B: `--compare ROLE1 ROLE2` runs the same input through two roles

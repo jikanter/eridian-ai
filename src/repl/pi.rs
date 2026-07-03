@@ -108,6 +108,41 @@ const STAGED_EXTENSION_NAME: &str = "aichat-bridge.js";
 #[folder = "assets/pi-extensions/"]
 struct PiExtensionsAsset;
 
+/// Install the bundled bridge extension into a pi agent `extensions/` dir so
+/// a `pi` launched by an external ACP host (Zed via `pi-acp`) loads aichat's
+/// slash-commands. Unlike the throwaway launch-time staging, this is a
+/// permanent, user-invoked install: it overwrites any existing bundle so an
+/// aichat upgrade ships the current bridge. Returns the written path.
+///
+/// `dir` overrides the target extensions dir; `None` resolves the device-wide
+/// default `~/.pi/agent/extensions/`.
+pub fn install_extension(dir: Option<PathBuf>) -> Result<PathBuf> {
+    let ext_dir = match dir {
+        Some(d) => d,
+        None => default_pi_extensions_dir()?,
+    };
+    let ext_bytes = match PiExtensionsAsset::get(STAGED_EXTENSION_NAME) {
+        Some(f) => f.data,
+        None => bail!(
+            "aichat was built without the pi extension bundle (assets/pi-extensions/{STAGED_EXTENSION_NAME})",
+        ),
+    };
+    std::fs::create_dir_all(&ext_dir)
+        .with_context(|| format!("failed to create {}", ext_dir.display()))?;
+    let path = ext_dir.join(STAGED_EXTENSION_NAME);
+    std::fs::write(&path, ext_bytes.as_ref())
+        .with_context(|| format!("failed to install {}", path.display()))?;
+    Ok(path)
+}
+
+/// Device-wide pi agent extensions dir, `~/.pi/agent/extensions/`. pi
+/// auto-discovers extensions here regardless of who spawns it, so a bundle
+/// installed here is loaded by a `pi` that pi-acp launches under Zed.
+fn default_pi_extensions_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("could not resolve home directory"))?;
+    Ok(home.join(".pi").join("agent").join("extensions"))
+}
+
 /// Launch `pi` as the REPL surface, with aichat's HTTP server running
 /// in-process on an ephemeral port. Blocks until pi exits.
 pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
@@ -187,6 +222,11 @@ pub async fn launch_pi(config: &GlobalConfig) -> Result<()> {
     if let Some(token) = &token {
         command.env("AICHAT_BRIDGE_TOKEN", token);
     }
+    // Tag the surface so the bundled extension can tell an aichat-owned
+    // terminal REPL apart from an external ACP host (Zed via pi-acp). Only the
+    // latter registers itself via `POST /v1/state/subprocess`; here the value
+    // is `repl`, so that registration is intentionally skipped.
+    command.env("AICHAT_BRIDGE_SURFACE", "repl");
     if let Some(staged) = &agent_stage {
         command.env(PI_AGENT_DIR_ENV, &staged.path);
     }
