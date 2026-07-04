@@ -143,6 +143,12 @@ The original session YAML files are untouched by the converter. Pi's
 imported copies live under `~/.pi/agent/sessions/` and can be deleted at
 will.
 
+## Future Plans
+
+As of 2026-07-01, I have no plans to migrate away from the built-in REPL for one-off spot-checking and speed testing 
+of agent servers. It still serves as a lightning-fast, minimal implementation of a REPL for local models, and I often
+find myself using it to spot-check bugs in the new repl.
+
 ## See also
 
 - [Aichat Pi Repl Documentation](./repl-pi.md)

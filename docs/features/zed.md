@@ -110,6 +110,9 @@ curl -sS -X POST \
 - **No context in the startup block** — registration was skipped; confirm the
   child saw `AICHAT_BRIDGE_SURFACE=acp` (it is set automatically by `--acp`).
 
+## Test Log
+- Tested 2026-07-04 by jordan on macosx
+
 ## See also
 
 - [server.md](./server.md) — the `aichat --serve` HTTP surface.
